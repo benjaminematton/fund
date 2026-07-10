@@ -1,0 +1,29 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# runtime state (volumes; SQLite is the source of truth but not in git)
+*.sqlite
+*.sqlite3
+*.db
+data/
+journals/*
+!journals/.gitkeep
+recordings/*
+!recordings/.gitkeep
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/

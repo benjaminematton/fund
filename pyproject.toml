@@ -1,0 +1,18 @@
+[project]
+name = "fund-backtest-starter"
+version = "0.1.0"
+description = "run_backtest tool + deterministic strategy gate (specs/strategy.md)"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.23,<3.0",
+    "pandas>=2.0,<3.0",
+]
+
+[project.optional-dependencies]
+vbt = ["vectorbt>=1.0.0,<1.1"]   # fast engine; numba>=0.60 comes with it
+dev = ["pytest>=8"]
+
+# CI must enforce (same rules as gate/):
+#  - stratgate/ and fundbt/ import no LLM/SDK code
+#  - no datetime.now() / time.sleep() in business logic (Clock is injected)
+#  - tests/test_golden.py numbers change only via deliberate re-record commits
