@@ -57,9 +57,8 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 ## Test invariants
 
 - Tests are the spec. A failing test means the implementation is wrong.
-- NEVER update a golden fixture, expected hash, or expected value to make a test pass. If you believe an expectation is genuinely wrong, STOP and ask. No exceptions, no "deliberate re-record."
-- Run: `make test`
+- NEVER update a golden fixture, expected hash, or expected value to make a test pass. STOP and ask. No "deliberate re-record."
 
 ## Compact instructions
 
-When compacting, preserve verbatim: the test invariants above; which plan tasks are complete with commit shas; any deviation from `plans/phase-1.md` and why. Discard file reads, test output, and exploration traces.
+When compacting, preserve verbatim: the test invariants above; which plan tasks are complete with commit shas; any deviation from `plans/phase-1a.md` / `plans/phase-1b.md` and why. Discard file reads, test output, and exploration traces.
