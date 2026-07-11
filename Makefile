@@ -3,31 +3,30 @@
 .PHONY: test lint sim-day replay live-paper
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
-# worktree — .venv is created on first run and re-synced from pyproject.toml
-# whenever it changes (the only step that touches the network). BOOT_PY picks
-# a >=3.12 interpreter explicitly; macOS /usr/bin/python3 (3.9) won't do.
+# worktree — .venv is created on first run, and deps re-sync whenever
+# pyproject.toml changes (the only steps that touch the network). The sync is
+# content-hash gated in scripts/sync_deps.py, NOT mtime-gated: Apple's GNU
+# make 3.81 treats equal 1-second timestamps as up-to-date, which silently
+# skips same-second pyproject edits. BOOT_PY picks a >=3.12 interpreter
+# explicitly; macOS /usr/bin/python3 (3.9) won't do.
 PYTHON := .venv/bin/python3
-DEPS_STAMP := .venv/.deps-synced
 BOOT_PY := $(shell command -v python3.14 || command -v python3.13 || command -v python3.12 || command -v python3)
 
-$(DEPS_STAMP): pyproject.toml
-	@$(BOOT_PY) -c "import sys; ok = sys.version_info >= (3, 12); \
-	    ok or print('fund: need python3 >= 3.12 on PATH, found ' + sys.version.split()[0], file=sys.stderr); \
-	    sys.exit(0 if ok else 1)"
-	$(BOOT_PY) -m venv .venv
-	$(PYTHON) -m pip install --quiet --upgrade pip
-	$(PYTHON) -c "import subprocess, sys, tomllib; \
-	    p = tomllib.load(open('pyproject.toml', 'rb'))['project']; \
-	    deps = p['dependencies'] + p.get('optional-dependencies', {}).get('dev', []); \
-	    sys.exit(subprocess.call([sys.executable, '-m', 'pip', 'install', '--quiet', *deps]))"
-	touch $(DEPS_STAMP)
+.PHONY: deps
+deps:
+	@test -x $(PYTHON) || { \
+	    $(BOOT_PY) -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
+	        || { echo "fund: need python3 >= 3.12 on PATH, found $$($(BOOT_PY) --version 2>&1)" >&2; exit 1; }; \
+	    $(BOOT_PY) -m venv .venv && $(PYTHON) -m pip install --quiet --upgrade pip; \
+	}
+	@$(PYTHON) scripts/sync_deps.py
 
 # Full offline suite: no network, no API keys. Must pass before every commit.
 test: lint
 	$(PYTHON) tests/run_tests.py
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
-lint: $(DEPS_STAMP)
+lint: deps
 	$(PYTHON) scripts/check_purity.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,

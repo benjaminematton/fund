@@ -115,7 +115,7 @@ Then tighten the SDK pin to the latest published version: run `.venv/bin/pip ind
 - [ ] **Step 2: Sync the venv**
 
 Run: `make lint`
-Expected: the Makefile bootstrap re-syncs `.venv` from the edited `pyproject.toml` (the deps stamp depends on it), then the purity lint passes. Verify: `.venv/bin/python -c "import pydantic, slack_bolt, claude_agent_sdk, pytest; print('ok')"` prints `ok`.
+Expected: the Makefile re-syncs `.venv` from the edited `pyproject.toml` (`scripts/sync_deps.py`, gated on a content hash of the file — not mtime), then the purity lint passes. Verify: `.venv/bin/python -c "import pydantic, slack_bolt, claude_agent_sdk, pytest; print('ok')"` prints `ok`.
 
 - [ ] **Step 3: Write the marker canary test**
 
