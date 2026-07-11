@@ -1,0 +1,1 @@
+{"seat": "exec", "tool": "mcp__alpaca__place_stock_order", "args": {"client_order_id": "00000000-0000-4000-8000-000000000000", "symbol": "NVDA", "side": "buy", "qty": 1, "type": "market", "time_in_force": "day"}}

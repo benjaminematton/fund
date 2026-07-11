@@ -1,0 +1,2 @@
+{"seat": "exec", "tool": "mcp__fund__list_open_tickets", "args": {}}
+{"seat": "exec", "tool": "mcp__alpaca__place_stock_order", "args": {"client_order_id": "a3f90000-0000-4000-8000-000000000001", "symbol": "NVDA", "side": "buy", "qty": 67, "type": "market", "time_in_force": "day", "order_class": "bracket", "stop_loss": {"stop_price": 168.0}}}
