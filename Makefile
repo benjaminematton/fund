@@ -2,15 +2,32 @@
 
 .PHONY: test lint sim-day replay live-paper
 
-# Use the project venv when present so plain `make test` works from a clean shell.
-PYTHON := $(if $(wildcard .venv/bin/python3),.venv/bin/python3,python3)
+# Bootstrap: plain `make test` works from a clean checkout or a fresh git
+# worktree — .venv is created on first run and re-synced from pyproject.toml
+# whenever it changes (the only step that touches the network). BOOT_PY picks
+# a >=3.12 interpreter explicitly; macOS /usr/bin/python3 (3.9) won't do.
+PYTHON := .venv/bin/python3
+DEPS_STAMP := .venv/.deps-synced
+BOOT_PY := $(shell command -v python3.14 || command -v python3.13 || command -v python3.12 || command -v python3)
+
+$(DEPS_STAMP): pyproject.toml
+	@$(BOOT_PY) -c "import sys; ok = sys.version_info >= (3, 12); \
+	    ok or print('fund: need python3 >= 3.12 on PATH, found ' + sys.version.split()[0], file=sys.stderr); \
+	    sys.exit(0 if ok else 1)"
+	$(BOOT_PY) -m venv .venv
+	$(PYTHON) -m pip install --quiet --upgrade pip
+	$(PYTHON) -c "import subprocess, sys, tomllib; \
+	    p = tomllib.load(open('pyproject.toml', 'rb'))['project']; \
+	    deps = p['dependencies'] + p.get('optional-dependencies', {}).get('dev', []); \
+	    sys.exit(subprocess.call([sys.executable, '-m', 'pip', 'install', '--quiet', *deps]))"
+	touch $(DEPS_STAMP)
 
 # Full offline suite: no network, no API keys. Must pass before every commit.
 test: lint
 	$(PYTHON) tests/run_tests.py
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
-lint:
+lint: $(DEPS_STAMP)
 	$(PYTHON) scripts/check_purity.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,
