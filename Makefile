@@ -2,13 +2,16 @@
 
 .PHONY: test lint sim-day replay live-paper
 
+# Use the project venv when present so plain `make test` works from a clean shell.
+PYTHON := $(if $(wildcard .venv/bin/python3),.venv/bin/python3,python3)
+
 # Full offline suite: no network, no API keys. Must pass before every commit.
 test: lint
-	python3 tests/run_tests.py
+	$(PYTHON) tests/run_tests.py
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
 lint:
-	python3 scripts/check_purity.py
+	$(PYTHON) scripts/check_purity.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,
 # real tool/gate/DB execution. Lands with Phase 1–2 (orchestrator + gate).

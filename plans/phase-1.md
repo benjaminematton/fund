@@ -29,21 +29,22 @@ Additional binding constraints:
 - Never put per-run values (timestamps, uuids, tmp paths) into prompts; pass them to tools out-of-band.
 - Offline-by-default tests: `make test` needs no network, no keys. `@pytest.mark.live` tests are excluded by default.
 - Spec-minimal: no abstractions or flexibility the spec doesn't require. Phase 2+ items (gate risk math, journals, PM/analyst tools, sim-day, docker) are OUT of scope.
-- **Test command:** the project venv must be on PATH: `PATH="$PWD/.venv/bin:$PATH" make test` (Makefile invokes `python3`). All commands below assume repo root `/Users/benjaminmatton/Developer/fund`.
+- **Test command:** plain `make test` from a clean shell — the Makefile resolves `.venv/bin/python3` automatically when the venv exists. All commands below assume repo root `/Users/benjaminmatton/Developer/fund`.
+- **Tests are the spec** (CLAUDE.md Test invariants): a failing test means the implementation is wrong. Never update a golden fixture, expected hash, or expected value to make a test pass — if an expectation seems genuinely wrong, STOP and escalate to the human.
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`, `test:`.
 - Work directly on `master` (kickoff: work on the default branch until Phase 1 lands).
 
-## Decisions raised for review (kickoff rule: raise, never silently redesign)
+## Decisions (settled)
 
-These are gaps where the spec is silent; the plan takes the least-invasive default. **Reviewer: flag any you want changed.**
+Spec-silent gaps, ruled at plan review (2026-07-10). Every task below is already written against these rulings — they are binding, not open.
 
-1. **`mcp__fund__list_open_tickets` read tool (Task 7).** Prompts may not contain per-run values (ticket uuids, expiries), so the trader must learn tickets via a tool. `contracts.md` §4 defines only the three `submit_*` tools. Default taken: add a read-only, argument-less fund tool `list_open_tickets`, exec seat only. It writes nothing (invariant 7 concerns agent→state writes, which remain `submit_*`-only).
-2. **Recording JSONL line format (Task 7).** Unspecified anywhere. Default: one JSON object per line: `{"seat": str, "tool": str, "args": object}`. File naming `<run_date>-<seat>-<stage>.jsonl`.
-3. **Test recordings live in `tests/recordings/*.jsonl`** (checked in). Runtime `recordings/` is a gitignored volume, so acceptance fixtures can't live there.
-4. **Fill-message id length:** `fixtures/golden-day.md` shows `(ticket a3f9)`, `contracts.md` §8 says `<id[:8]>`. Contracts is canonical (golden-day's "a3f9…" is an ellipsis): 8 chars.
-5. **`WallClock` lives in `agents/wallclock.py`** — `orchestrator/` is purity-linted (no wall-clock calls allowed), so the one real-clock implementation sits in the impure boundary and is injected at the composition root.
-6. **Checkpoint found `running` at stage start = crash resume → re-run the idempotent body** (matches contracts §6 "Orchestrator crash: stages `done` never re-run" — non-done stages do re-run). Same-process duplicate-trigger suppression beyond `done`-skip is deferred; Phase 1 is single-process.
-7. **Charter location:** design.md §6 shows `agents/charters/`; the repo (and CLAUDE.md) use top-level `charters/`. Following the repo: `charters/exec.md`.
+1. **`mcp__fund__list_open_tickets` read tool (Task 7): adopted.** Prompts may not carry per-run values (ticket uuids, expiries), so the trader learns tickets through a tool; it is read-only and exec-seat-only, so agent→state writes remain `submit_*`-only (invariant 7 intact).
+2. **Recording JSONL line format (Task 7): `{"seat": str, "tool": str, "args": object}`, one object per line; files named `<run_date>-<seat>-<stage>.jsonl`.** The minimal shape that captures a tool-call decision; anything richer would bake per-run context into recordings and poison replays.
+3. **Test recordings live in `tests/recordings/*.jsonl`, checked in: adopted.** Runtime `recordings/` is a gitignored volume, so acceptance fixtures cannot live there.
+4. **Fill-message ticket id is `id[:8]`, per contracts §8: adopted.** `contracts.md` is canonical; golden-day's `(ticket a3f9)` is an abridging ellipsis, not a 4-char spec.
+5. **`WallClock` lives in `agents/wallclock.py`: adopted.** `orchestrator/` is purity-linted (wall-clock calls forbidden), so the one real-clock implementation sits in the impure boundary and is injected at composition roots only.
+6. **Checkpoint found `running` at stage start = crash resume → re-run the idempotent body: adopted.** Matches contracts §6 ("stages `done` never re-run" — non-done stages do re-run); same-process duplicate-trigger suppression beyond `done`-skip is deferred while Phase 1 is single-process.
+7. **Charters stay at top-level `charters/` (not design.md §6's `agents/charters/`): adopted.** CLAUDE.md and the existing repo layout govern.
 
 ## Acceptance checklist → task map
 
@@ -128,18 +129,18 @@ def test_live_canary_is_excluded_from_default_run():
 
 - [ ] **Step 4: Point `make test` at pytest**
 
-In `Makefile`, replace the `test` recipe line `python3 tests/run_tests.py` with:
+In `Makefile`, replace the `test` recipe line `$(PYTHON) tests/run_tests.py` with:
 
 ```make
 test: lint
-	python3 -m pytest tests/
+	$(PYTHON) -m pytest tests/
 ```
 
-(`addopts` supplies `-m 'not live' -q`. `tests/run_tests.py` stays in place as the zero-dep fallback runner.)
+(`$(PYTHON)` already resolves to `.venv/bin/python3`; `addopts` supplies `-m 'not live' -q`. `tests/run_tests.py` stays in place as the zero-dep fallback runner.)
 
 - [ ] **Step 5: Verify**
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
+Run: `make test`
 Expected: purity lint clean, all existing tests pass (34 at time of writing), `test_live_canary` NOT run, exit 0.
 
 Run: `.venv/bin/pytest tests/test_markers.py -m live` 
@@ -597,7 +598,7 @@ def transition(conn: sqlite3.Connection, table: str, key: dict,
 Run: `.venv/bin/pytest tests/test_state.py`
 Expected: all pass. The non-edge parameterization alone is 70 cases (all ordered status pairs per table, self-pairs included, minus the 16 legal edges: 31+7+19+13); every one must raise `IllegalTransition`.
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
+Run: `make test`
 Expected: green; purity lint now covers `state` too.
 
 - [ ] **Step 5: Commit**
@@ -1058,7 +1059,7 @@ def validate_order(conn: sqlite3.Connection, tool_input,
 Run: `.venv/bin/pytest tests/test_tickets.py`
 Expected: all pass.
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
+Run: `make test`
 Expected: green; purity lint covers `gate` now.
 
 - [ ] **Step 5: Commit**
@@ -1650,7 +1651,7 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
 Run: `.venv/bin/pytest tests/test_runtime_hooks.py tests/test_replay.py`
 Expected: 8 passed.
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
+Run: `make test`
 Expected: green (purity untouched — `agents/` and `slackkit/` are not linted, `orchestrator/state/gate` import nothing from them).
 
 - [ ] **Step 6: Commit**
@@ -1863,7 +1864,7 @@ def run_execution_stage(conn: sqlite3.Connection, *, run_date: str,
 Run: `.venv/bin/pytest tests/test_execution_stage.py`
 Expected: 4 passed.
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
+Run: `make test`
 Expected: green; purity lint clean (orchestrator imports only gate/state/slackkit.outbox — no slack_sdk, no agents, no wall clock).
 
 - [ ] **Step 6: Commit**
@@ -2008,7 +2009,7 @@ Expected first: FAIL (missing recording files if not yet written — write fixtu
 
 - [ ] **Step 4: Full suite**
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
+Run: `make test`
 Expected: green.
 
 - [ ] **Step 5: Commit**
@@ -2193,7 +2194,7 @@ Run: `.venv/bin/pytest tests/test_trader_wiring.py` → 2 passed.
 
 ```python
 """Acceptance P1 @live smoke (manual, never CI):
-    PATH="$PWD/.venv/bin:$PATH" pytest -m live tests/test_live_smoke.py -v
+    .venv/bin/pytest -m live tests/test_live_smoke.py -v
 Needs .env loaded in the shell (ALPACA_API_KEY, ALPACA_SECRET_KEY,
 SLACK_BOT_TOKEN_EXEC, ANTHROPIC_API_KEY). 1-share paper order round-trips
 (submitted -> filled/canceled) and the fill/outcome lands in real Slack."""
@@ -2299,7 +2300,7 @@ def test_one_share_paper_round_trip(tmp_path):
 
 - [ ] **Step 6: Verify offline suite untouched by live test**
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
+Run: `make test`
 Expected: green; `test_live_smoke` NOT collected into the run (marker).
 
 - [ ] **Step 7: Commit**
@@ -2321,8 +2322,8 @@ git commit -m "feat: exec charter, seat config, live trader wiring, @live smoke"
 
 - [ ] **Step 1: Full offline suite from clean state**
 
-Run: `PATH="$PWD/.venv/bin:$PATH" make test`
-Expected: purity lint clean over `['gate', 'stratgate', 'fundbt', 'calibration', 'orchestrator', 'state']`; ALL tests pass; zero network access (verify: run once with Wi-Fi off or `python3 -m pytest tests/ --. -p no:cacheprovider` in an env without keys — `.env` must not be loaded).
+Run: `make test`
+Expected: purity lint clean over `['gate', 'stratgate', 'fundbt', 'calibration', 'orchestrator', 'state']`; ALL tests pass; zero network access (verify: run `make test` once with networking disabled and no `.env` loaded — the shell must have no API keys set).
 
 - [ ] **Step 2: Cross-check every §0 + Phase 1 acceptance line against a passing test**
 
@@ -2330,7 +2331,7 @@ For each checklist line in `specs/acceptance.md` §0 and Phase 1, name the test 
 
 - [ ] **Step 3: @live smoke (only if `.env` exists with real keys)**
 
-Run: `set -a; source .env; set +a; PATH="$PWD/.venv/bin:$PATH" pytest -m live tests/test_live_smoke.py -v`
+Run: `set -a; source .env; set +a; .venv/bin/pytest -m live tests/test_live_smoke.py -v`
 Expected: 1 passed (or skipped with a clear reason if keys absent — then leave its box unticked and tell the human).
 
 - [ ] **Step 4: Tick the Phase-1 checkboxes**

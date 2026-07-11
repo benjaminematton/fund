@@ -53,3 +53,13 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 - Do not weaken or delete a red acceptance test to make it pass.
 - Do not run a backtest except through the `run_backtest` tool (it auto-logs the trial registry; an unlogged trial corrupts the deflated-Sharpe correction fund-wide).
 - Do not import from `agents/` inside `gate/` or `orchestrator/`.
+
+## Test invariants
+
+- Tests are the spec. A failing test means the implementation is wrong.
+- NEVER update a golden fixture, expected hash, or expected value to make a test pass. If you believe an expectation is genuinely wrong, STOP and ask. No exceptions, no "deliberate re-record."
+- Run: `make test`
+
+## Compact instructions
+
+When compacting, preserve verbatim: the test invariants above; which plan tasks are complete with commit shas; any deviation from `plans/phase-1.md` and why. Discard file reads, test output, and exploration traces.
