@@ -14,14 +14,14 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 
 ## Phase 1 — Plumbing (Execution Trader alone)
 
-- [ ] `make test` green with no network and no keys.
-- [ ] DDL applies cleanly; `state.transition()` rejects illegal edges (parameterized test over every non-edge).
-- [ ] Sim: seed an `open` ticket → fire execution stage → exactly one `orders` row, `client_order_id == ticket.id`, FakeSlack `#trade-log` has one fill message.
-- [ ] **Idempotency**: fire the execution stage twice with the same ticket → still exactly one order row, one Slack message.
-- [ ] **Hook**: replayed trader turn attempting `place_order` with no ticket / expired ticket / qty > max_qty / wrong symbol / stop leg ≠ ticket `stop_price` → `PreToolUse` deny in all five cases; zero order rows.
-- [ ] **Bracket orders**: ticket with `stop_price` set → trader submits a bracket order with that stop leg; ticket with `stop_price` NULL → plain order, no stop leg.
-- [ ] Expiry: `SimClock` past `expires_at` → ticket `expired`, order attempt denied.
-- [ ] Crash resume: kill the stage after ticket consumption, restart → checkpoint prevents re-execution.
+- [x] `make test` green with no network and no keys.
+- [x] DDL applies cleanly; `state.transition()` rejects illegal edges (parameterized test over every non-edge).
+- [x] Sim: seed an `open` ticket → fire execution stage → exactly one `orders` row, `client_order_id == ticket.id`, FakeSlack `#trade-log` has one fill message.
+- [x] **Idempotency**: fire the execution stage twice with the same ticket → still exactly one order row, one Slack message.
+- [x] **Hook**: replayed trader turn attempting `place_order` with no ticket / expired ticket / qty > max_qty / wrong symbol / stop leg ≠ ticket `stop_price` → `PreToolUse` deny in all five cases; zero order rows.
+- [x] **Bracket orders**: ticket with `stop_price` set → trader submits a bracket order with that stop leg; ticket with `stop_price` NULL → plain order, no stop leg.
+- [x] Expiry: `SimClock` past `expires_at` → ticket `expired`, order attempt denied.
+- [x] Crash resume: kill the stage after ticket consumption, restart → checkpoint prevents re-execution.
 - [ ] `@live` smoke: 1-share paper order round-trips (submitted → filled/canceled), fill lands in real Slack.
 
 ## Phase 2 — The desk (PM + 2 analysts + real gate)
