@@ -13,7 +13,8 @@ Synthetic, seeded (`tests/synthetic.py`, seed=42): 20 names, 2,520 daily bars
 edge — after a 5-day drop of ≥5%, next-day expected return gets a +50 bps kick.
 We planted the edge, so we know the ground truth the gate should find.
 
-Data snapshot hash: `dat_a2db977201569ab8`
+Data snapshot hash: `dat_a4d2ee4153d5df6d` (recorded under numpy≥2; numpy 1.x
+serializes the synthetic market with ~1e-11 bit-level differences)
 
 ## G1 — the spec
 
@@ -30,7 +31,7 @@ search_budget:    20 configs
 
 ## The PASS path — params {dip_days: 5, dip_pct: 0.05, trend_days: 200}
 
-`config_hash cfg_2ad6bd632a066999 · run_key run_7be704ab2ac85665`
+`config_hash cfg_2ad6bd632a066999 · run_key run_549f306118a70c4e`
 
 `run_backtest` (holdout = last 18 months quarantined; 8.448 visible years):
 
