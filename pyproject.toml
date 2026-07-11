@@ -6,6 +6,9 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.23,<3.0",
     "pandas>=2.0,<3.0",
+    "pydantic>=2.7,<3",
+    "claude-agent-sdk~=0.2.116",
+    "slack-bolt>=1.18,<2",
 ]
 
 [project.optional-dependencies]
@@ -16,3 +19,9 @@ dev = ["pytest>=8"]
 #  - stratgate/ and fundbt/ import no LLM/SDK code
 #  - no datetime.now() / time.sleep() in business logic (Clock is injected)
 #  - tests/test_golden.py numbers change only via deliberate re-record commits
+
+[tool.pytest.ini_options]
+addopts = "-m 'not live' -q"
+markers = [
+    "live: hits real APIs (Alpaca paper, Slack, Anthropic) — excluded from make test; run manually with: pytest -m live <file> -v",
+]

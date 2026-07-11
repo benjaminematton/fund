@@ -23,7 +23,7 @@ deps:
 
 # Full offline suite: no network, no API keys. Must pass before every commit.
 test: lint
-	$(PYTHON) tests/run_tests.py
+	$(PYTHON) -m pytest tests/
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
 lint: deps
