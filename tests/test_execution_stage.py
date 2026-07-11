@@ -49,6 +49,10 @@ def test_sim_ticket_to_order_to_fill_message(fund_db, sim_clock):
     assert msgs[0]["text"] == "🧾 NVDA buy 67@180.14 (ticket a3f90000)"
     cp = fund_db.execute("SELECT status FROM checkpoints WHERE stage='execution'").fetchone()
     assert cp["status"] == "done"
+    # invariant 6: a 'done' checkpoint must never coexist with an unposted
+    # (undrained) outbox event
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"] == 0
 
 
 def test_idempotency_fire_twice_same_ticket(fund_db, sim_clock):

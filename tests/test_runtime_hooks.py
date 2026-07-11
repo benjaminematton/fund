@@ -35,6 +35,19 @@ def test_order_gate_denies_with_reason(fund_db, sim_clock):
     assert "no gate ticket" in _deny_reason(out)
 
 
+def test_order_gate_fails_closed_on_internal_error(sim_clock):
+    """Invariant 4: any internal error in the gate (e.g. a dead connection
+    factory) must deny, never raise and never silently allow."""
+    def broken_conn_factory():
+        raise RuntimeError("db down")
+
+    gate = make_order_gate(broken_conn_factory, sim_clock)
+    out = _run(gate({"tool_name": "mcp__alpaca__place_stock_order",
+                     "tool_input": order()}, "t1", None))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "db down" in _deny_reason(out)
+
+
 def test_order_recorder_writes_once_and_projects(fund_db, sim_clock):
     did = _seed(fund_db)
     rec = make_order_recorder(lambda: fund_db, sim_clock)

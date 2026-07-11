@@ -38,7 +38,7 @@ def run_execution_stage(conn: sqlite3.Connection, *, run_date: str,
         try_transition(conn, "checkpoints", key, "pending", "running", now)
     # status 'running' falls through: crash resume re-runs the idempotent body
     run_trader_turn()
-    done_at = iso(clock.now())
-    try_transition(conn, "checkpoints", key, "running", "done", done_at)
-    drain(conn, slack, done_at)
+    now2 = iso(clock.now())
+    drain(conn, slack, now2)
+    try_transition(conn, "checkpoints", key, "running", "done", now2)
     return "done"

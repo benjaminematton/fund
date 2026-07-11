@@ -26,9 +26,12 @@ def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
     async def order_gate(input_data, tool_use_id, context) -> dict:
         if not str(input_data.get("tool_name", "")).startswith(PLACE_PREFIX):
             return {}
-        ok, reason = validate_order(conn_factory(),
-                                    input_data.get("tool_input"),
-                                    iso(clock.now()))
+        try:
+            ok, reason = validate_order(conn_factory(),
+                                        input_data.get("tool_input"),
+                                        iso(clock.now()))
+        except Exception as exc:  # fail closed (invariant 4): never let an
+            ok, reason = False, f"gate error: {exc}"  # internal error allow
         if ok:
             return {}
         return {"hookSpecificOutput": {
