@@ -1,0 +1,18 @@
+{
+  "run_date": "2026-07-06",
+  "equity": 100000.0,
+  "cash": 30000.0,
+  "prices": {"NVDA": 180.00, "AAPL": 232.00, "MSFT": 505.00},
+  "fill_prices": {"NVDA": 180.14},
+  "positions": {
+    "AAPL": {"qty": 120, "cost_basis": 210.00},
+    "MSFT": {"qty": 40, "cost_basis": 480.00}
+  },
+  "vol_60d": {"NVDA": 0.42},
+  "avg_corr": {"NVDA": 0.55},
+  "sector_weights": {"tech": 0.52},
+  "position_count": 2,
+  "daily_pnl_pct": -0.004,
+  "spy_day_pct": 0.003,
+  "t_plus_5": {"NVDA": 191.20, "spy_window_pct": 0.011}
+}
