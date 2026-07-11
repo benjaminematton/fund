@@ -24,7 +24,22 @@ Disagreement (neutral vs bullish) + contemplated new position → debate trigger
 - **Bear R2**: concede demand; maintain that position should be half-size until license ruling.
 - **Risk Q**: "What single print invalidates the capex thesis?" Bull: "Either top-2 hyperscaler guiding capex flat QoQ."
 
-## 11:00 Decision (PM, via `submit_decision`)
+## 11:00 Decision draft (PM, Slack only)
+
+`VERDICT NVDA: BUY 96` + thesis + invalidation, in the debate thread — not yet submitted.
+
+## 11:05 Critique (Critic, via `submit_critique` — Phase 3+; Phase 2 runs Decision as one turn)
+
+```json
+{"ticker": "NVDA", "verdict": "objections",
+ "objections": ["Bear's surviving half-size point is cited in the thesis but not applied: 96 shares is ~full allowed size, not half."]}
+```
+
+Slack: `CRITIQUE NVDA: 1 OBJECTION` + the sentence above, replied in the debate thread.
+
+## 11:10 Decision final (PM, via `submit_decision`)
+
+PM acknowledges in-thread ("Accepted — resizing to 80, ~half of draft intent over current base") then submits:
 
 ```json
 {"ticker": "NVDA", "action": "buy", "qty": 80,
@@ -33,8 +48,6 @@ Disagreement (neutral vs bullish) + contemplated new position → debate trigger
 ```
 
 `stop_price` is deliberately **unset** here: the invalidation is a *close* below 168 plus a non-price condition — neither is an intraday stop. A decision whose invalidation is a hard intraday level would pass `stop_price` and the trader would bracket the order.
-
-Slack verdict: `VERDICT NVDA: BUY 80` + thesis + invalidation, in the debate thread.
 
 ## 11:15 Gate — worked math (test vector)
 

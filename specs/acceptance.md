@@ -45,6 +45,11 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 - [ ] CEO approval: order above threshold blocks on `can_use_tool`; sim approve → executes; sim reject / 15-min timeout → decision `failed`, no order.
 - [ ] Ops: standup + EOD digest posted with fields per contracts §8; scoreboard math (hit rate, avg alpha, calibration) verified against hand-computed fixture.
 - [ ] Self-filter: FakeSlack loops each agent's own messages back → no agent responds to itself (bot_id filter test).
+- [ ] Critique flow: PM draft → critic `submit_critique` → PM final; `submit_decision` before a critique row exists → tool error; after → accepted (ordering test).
+- [ ] Critique defaults: critic timeout → orchestrator inserts `clear`/`critic_timeout`, PM proceeds, day completes; no-critic-seat config (Phase-2 mode) → `clear`/`no_critic_seat` rows at stage start, Decision runs as one turn.
+- [ ] Critique is advisory: replayed critic turn with 3 objections → pipeline unchanged (same ticket, same order); objections recorded, PM acknowledgment present in FakeSlack thread.
+- [ ] `submit_critique` seat-restricted (non-critic caller → error); schema rejects >3 objections, >200-char objection, and `objections` non-empty with verdict `clear`.
+- [ ] Scoreboard includes critic objection hit-rate, verified against a hand-computed fixture (objection on a decision that resolved badly counts as a hit).
 
 ## Phase 4 — Running it
 

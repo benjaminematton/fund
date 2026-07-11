@@ -27,6 +27,22 @@ CREATE TABLE signals (
   UNIQUE (run_date, agent, ticker)            -- re-submission overwrites via UPSERT
 );
 
+CREATE TABLE critiques (                       -- Critic's advisory review of the PM's DRAFT
+  id            INTEGER PRIMARY KEY,
+  run_date      TEXT NOT NULL,
+  ticker        TEXT NOT NULL,
+  verdict       TEXT NOT NULL CHECK (verdict IN ('clear','objections')),
+  objections    TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings, <=3, each <=200 chars
+                                              -- (empty iff verdict='clear')
+  note          TEXT,                         -- e.g. 'critic_timeout' when defaulted
+  slack_ts      TEXT,
+  created_at    TEXT NOT NULL,
+  UNIQUE (run_date, ticker)
+);
+-- Advisory only: no FK to decisions (the critique precedes the decision row) and
+-- nothing downstream branches on it. Joined by (run_date, ticker) for the
+-- scoreboard's objection hit-rate and for weekly reviews.
+
 CREATE TABLE decisions (
   id            INTEGER PRIMARY KEY,
   run_date      TEXT NOT NULL,
@@ -126,6 +142,16 @@ class Signal(BaseModel):
     confidence: int = Field(ge=0, le=100)
     summary: str = Field(max_length=500)
 
+class Critique(BaseModel):
+    run_date: date; ticker: str
+    verdict: Literal["clear", "objections"]
+    objections: list[str] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def objections_iff_verdict(self):
+        assert (self.verdict == "objections") == (len(self.objections) > 0)
+        assert all(len(o) <= 200 for o in self.objections); return self
+
 class Decision(BaseModel):
     run_date: date; ticker: str
     action: Action
@@ -168,6 +194,19 @@ All schemas declare `"strict": true`. Handlers validate with the pydantic models
        "additionalProperties": False},
       strict=True)
 
+@tool("submit_critique",
+      "Critic only. Record your advisory review of the PM's draft for one ticker. Call exactly once per assigned ticker.",
+      {"type": "object",
+       "properties": {
+         "ticker":     {"type": "string"},
+         "verdict":    {"type": "string", "enum": ["clear","objections"]},
+         "objections": {"type": "array", "items": {"type": "string", "maxLength": 200},
+                        "maxItems": 3,
+                        "description": "Required non-empty iff verdict='objections'."}},
+       "required": ["ticker","verdict"],
+       "additionalProperties": False},
+      strict=True)
+
 @tool("submit_decision",
       "PM only. Record the final decision for one ticker. Irrevocable for the day.",
       {"type": "object",
@@ -184,7 +223,9 @@ All schemas declare `"strict": true`. Handlers validate with the pydantic models
       strict=True)
 ```
 
-Availability: `submit_signal` → analyst seats only; `submit_decision` → PM only. A tool called by the wrong seat returns an error (checked against the seat name baked into the server at construction).
+Availability: `submit_signal` → analyst seats only; `submit_critique` → Critic only; `submit_decision` → PM only. A tool called by the wrong seat returns an error (checked against the seat name baked into the server at construction).
+
+Ordering within the Decision stage: PM draft (Slack only) → `submit_critique` → PM acknowledgment (Slack) → `submit_decision`. The handler for `submit_decision` refuses (tool error, PM retries) if no critique row exists yet for `(run_date, ticker)` — this enforces the draft→critique→final ordering without making the critique blocking: on critic timeout the orchestrator inserts the `clear`/`critic_timeout` row itself, and the PM proceeds. When no critic seat is configured (phases 1–2), the orchestrator inserts `clear`/`no_critic_seat` rows at stage start and the Decision stage runs as a single turn.
 
 ## 5. Idempotency & retry rules
 
@@ -197,6 +238,7 @@ Availability: `submit_signal` → analyst seats only; `submit_decision` → PM o
 | Failure | Behavior |
 |---|---|
 | Analyst never calls `submit_signal` by stage deadline | Missing signal recorded as `neutral/0` with summary "no report"; pipeline continues |
+| Critic never calls `submit_critique` by stage deadline | Orchestrator inserts `verdict='clear', note='critic_timeout'`; PM proceeds — the critique is advisory and never stalls the day |
 | PM tool call invalid / never arrives | Decision defaults to HOLD for that ticker; event `pm_timeout` posted to `#risk` |
 | Gate error/timeout/malformed input | REJECT with reason `gate_error` → HOLD (invariant 4) |
 | Alpaca MCP down at execution | Retry 3× w/ backoff within ticket expiry; then ticket `expired`, decision `failed`, alert `#risk` |
@@ -213,6 +255,7 @@ The canonical schemas, content-addressed ids (`spec_id`/`config_hash`/`run_key`)
 ## 8. Slack message formats (projection only)
 
 - Signal: `[<agent>] <TICKER> — <DIRECTION> (<confidence>/100): <summary>` in `#research` thread.
+- Critique: `CRITIQUE <TICKER>: CLEAR` or `CRITIQUE <TICKER>: <n> OBJECTION(S)` + numbered one-sentence objections, as a reply in the ticker's debate thread.
 - Gate approval: `✅ TICKET <id[:8]> <side> <TICKER> ≤<max_qty> expires <HH:MM>` in `#risk`; rejection: `⛔ <TICKER> <side> — <reason>`.
 - Fill: `🧾 <TICKER> <side> <filled_qty>@<avg_price> (ticket <id[:8]>)` in `#trade-log`, threaded to the decision message.
 - EOD digest fields: P&L $ and % vs SPY, positions table, decisions + outcomes, est. inference cost.
