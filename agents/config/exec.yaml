@@ -1,0 +1,10 @@
+seat: exec
+# Fast tier (design §2 seat table). Pin exact ids here, never in code.
+model: claude-haiku-4-5-20251001
+fallback_model: claude-sonnet-5
+max_budget_usd: 1.00        # BUDGET_FAST_SEAT
+max_turns: 12
+alpaca_toolsets: "account,trading,stock-data"   # ONLY seat with trading (invariant 2)
+channels:
+  trade_log: "#trade-log"
+  risk: "#risk"
