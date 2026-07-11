@@ -35,6 +35,11 @@ def test_iso_normalizes_to_utc_seconds():
     assert iso(datetime(2026, 7, 6, 15, 30, tzinfo=UTC)) == "2026-07-06T15:30:00+00:00"
 
 
+def test_iso_rejects_naive_datetime():
+    with pytest.raises(ValueError):
+        iso(datetime(2026, 7, 6, 15, 30))
+
+
 def test_wallclock_is_aware_utc():
     from agents.wallclock import WallClock
 
