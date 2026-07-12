@@ -54,6 +54,13 @@ class FakeAlpaca:
         coid = args["client_order_id"]
         if coid in self.orders:
             return {"error": "client_order_id must be unique", "status_code": 422}
+        # Mirror the real broker's order-class validation (probed 2026-07-12):
+        # a bracket order 422s without a take_profit leg. This is the fiction
+        # that passed offline while real Alpaca rejected it (BUG D) — a stop
+        # exit is an 'oto' carrying the single stop leg, never a bracket.
+        if args.get("order_class") == "bracket" and "take_profit" not in args:
+            return {"error": "bracket orders require take_profit.limit_price",
+                    "status_code": 422}
         symbol = args["symbol"]
         px = self.fill_prices.get(symbol, self.prices[symbol])
         order = {
@@ -65,7 +72,7 @@ class FakeAlpaca:
             "status": "filled",
             "filled_qty": args["qty"],
             "filled_avg_price": px,
-            "order_class": args.get("order_class", "simple"),
+            "order_class": args.get("order_class", ""),
             "stop_loss": args.get("stop_loss"),
         }
         self.orders[coid] = order

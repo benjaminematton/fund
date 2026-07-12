@@ -44,13 +44,25 @@ def test_duplicate_client_order_id_422_and_original_untouched():
     assert got["filled_qty"] == first["filled_qty"] == 67  # reconcile path, §5.1
 
 
-def test_bracket_order_shape_recorded():
+def test_oto_stop_leg_shape_recorded():
+    b = _broker()
+    resp = b.place_order(order(order_class="oto",
+                               stop_loss={"stop_price": 168.0}))
+    assert resp["order_class"] == "oto"
+    assert resp["stop_loss"] == {"stop_price": 168.0}
+    assert b.place_attempts[0]["stop_loss"] == {"stop_price": 168.0}
+
+
+def test_bracket_without_take_profit_is_422():
+    """Real Alpaca rejects a bracket order lacking a take_profit leg (BUG D). A
+    stop exit is an 'oto', never a bracket — the fake mirrors the 422 so a
+    hand-written recording can't resurrect the fiction. The attempt is recorded
+    but no order is stored."""
     b = _broker()
     resp = b.place_order(order(order_class="bracket",
                                stop_loss={"stop_price": 168.0}))
-    assert resp["order_class"] == "bracket"
-    assert resp["stop_loss"] == {"stop_price": 168.0}
-    assert b.place_attempts[0]["stop_loss"] == {"stop_price": 168.0}
+    assert resp["status_code"] == 422 and "take_profit" in resp["error"]
+    assert b.get_order_by_client_order_id(order()["client_order_id"]) is None
 
 
 def test_get_unknown_coid_is_none():

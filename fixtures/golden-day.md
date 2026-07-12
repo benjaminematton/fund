@@ -47,7 +47,7 @@ PM acknowledges in-thread ("Accepted — resizing to 80, ~half of draft intent o
  "invalidation": "Top-2 hyperscaler guides capex flat-or-down QoQ, or close below 168."}
 ```
 
-`stop_price` is deliberately **unset** here: the invalidation is a *close* below 168 plus a non-price condition — neither is an intraday stop. A decision whose invalidation is a hard intraday level would pass `stop_price` and the trader would bracket the order.
+`stop_price` is deliberately **unset** here: the invalidation is a *close* below 168 plus a non-price condition — neither is an intraday stop. A decision whose invalidation is a hard intraday level would pass `stop_price` and the trader would submit an `oto` order with a stop leg.
 
 ## 11:15 Gate — worked math (test vector)
 

@@ -62,10 +62,10 @@ def test_validate_happy_path_plain(fund_db):
     assert ok, reason
 
 
-def test_validate_happy_path_bracket(fund_db):
+def test_validate_happy_path_oto(fund_db):
     _seed(fund_db, stop_price=168.0)
     ok, reason = validate_order(
-        fund_db, order(order_class="bracket", stop_loss={"stop_price": 168.0}), NOW)
+        fund_db, order(order_class="oto", stop_loss={"stop_price": 168.0}), NOW)
     assert ok, reason
 
 
@@ -108,14 +108,14 @@ def test_deny_wrong_symbol(fund_db):
 def test_deny_stop_leg_mismatch(fund_db):
     _seed(fund_db, stop_price=168.0)
     ok, reason = validate_order(
-        fund_db, order(order_class="bracket", stop_loss={"stop_price": 150.0}), NOW)
+        fund_db, order(order_class="oto", stop_loss={"stop_price": 150.0}), NOW)
     assert not ok and "stop" in reason
 
 
 def test_deny_stop_leg_on_stopless_ticket(fund_db):
     _seed(fund_db)  # stop_price NULL
     ok, reason = validate_order(
-        fund_db, order(order_class="bracket", stop_loss={"stop_price": 168.0}), NOW)
+        fund_db, order(order_class="oto", stop_loss={"stop_price": 168.0}), NOW)
     assert not ok and "stop" in reason
 
 
@@ -123,6 +123,18 @@ def test_deny_missing_stop_leg_when_ticket_has_stop(fund_db):
     _seed(fund_db, stop_price=168.0)
     ok, reason = validate_order(fund_db, order(), NOW)
     assert not ok and "stop" in reason
+
+
+def test_deny_bracket_order_class_when_stop(fund_db):
+    """BUG D: a stop exit places at Alpaca as order_class 'oto', never
+    'bracket' — bracket 422s ("bracket orders require take_profit"), and the
+    ticket has no take-profit field. The stop leg here MATCHES the ticket, so
+    order_class is the only thing under test: the gate must fail-fast on the
+    unplaceable class rather than pass it to the broker (invariant 4)."""
+    _seed(fund_db, stop_price=168.0)
+    ok, reason = validate_order(
+        fund_db, order(order_class="bracket", stop_loss={"stop_price": 168.0}), NOW)
+    assert not ok and "oto" in reason
 
 
 # A digit-string qty ("67") is VALID (real tool shape). But floats, negatives,

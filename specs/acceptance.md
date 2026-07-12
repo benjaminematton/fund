@@ -19,7 +19,7 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 - [x] Sim: seed an `open` ticket → fire execution stage → exactly one `orders` row, `client_order_id == ticket.id`, FakeSlack `#trade-log` has one fill message.
 - [x] **Idempotency**: fire the execution stage twice with the same ticket → still exactly one order row, one Slack message.
 - [x] **Hook**: replayed trader turn attempting `place_order` with no ticket / expired ticket / qty > max_qty / wrong symbol / stop leg ≠ ticket `stop_price` → `PreToolUse` deny in all five cases; zero order rows.
-- [x] **Bracket orders**: ticket with `stop_price` set → trader submits a bracket order with that stop leg; ticket with `stop_price` NULL → plain order, no stop leg.
+- [x] **Stop-exit orders**: ticket with `stop_price` set → trader submits an `oto` order with that stop leg; ticket with `stop_price` NULL → plain order, no stop leg.
 - [x] Expiry: `SimClock` past `expires_at` → ticket `expired`, order attempt denied.
 - [x] Crash resume: kill the stage after ticket consumption, restart → checkpoint prevents re-execution.
 - [ ] `@live` smoke: 1-share paper order round-trips (submitted → filled/canceled), fill lands in real Slack.

@@ -111,6 +111,15 @@ def validate_order(conn: sqlite3.Connection, tool_input,
         if not isinstance(leg_price, (int, float)) or isinstance(leg_price, bool) \
                 or float(leg_price) != float(t["stop_price"]):
             return False, (f"stop leg {leg_price!r} != ticket stop_price "
-                           f"{t['stop_price']} — bracket order must carry the"
+                           f"{t['stop_price']} — the order must carry the"
                            " ticket's stop")
+        # A stop exit places at Alpaca as order_class 'oto' carrying the single
+        # stop leg — NOT 'bracket' (bracket 422s: it requires a take_profit leg
+        # the ticket has no field for). Fail-fast on the unplaceable class
+        # rather than let the broker reject it (invariant 4). The plain path
+        # (stop_price NULL) stays order_class-agnostic — no false-deny on a
+        # legitimate simple order.
+        if tool_input.get("order_class") != "oto":
+            return False, (f"order_class {tool_input.get('order_class')!r} must "
+                           "be 'oto' for a stop exit — bracket is unplaceable")
     return True, "ok"

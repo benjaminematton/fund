@@ -67,8 +67,8 @@ CREATE TABLE tickets (
   side          TEXT NOT NULL CHECK (side IN ('buy','sell')),
   max_qty       INTEGER NOT NULL CHECK (max_qty > 0),
   stop_price    REAL CHECK (stop_price IS NULL OR stop_price > 0),
-                                              -- copied from the decision; trader submits a
-                                              -- bracket order (stop leg) when present
+                                              -- copied from the decision; trader submits an
+                                              -- oto order (stop leg) when present
   expires_at    TEXT NOT NULL,                -- ISO8601; gate default: +45 min
   status        TEXT NOT NULL DEFAULT 'open',
   reason        TEXT,                         -- set when gate REJECTS (no row) — see note
@@ -217,7 +217,7 @@ All schemas declare `"strict": true`. Handlers validate with the pydantic models
          "thesis":       {"type": "string"},
          "invalidation": {"type": "string"},
          "stop_price":   {"type": "number", "exclusiveMinimum": 0,
-                          "description": "Optional. Set iff the invalidation is a hard price level (buy only); the trader will bracket the order with this stop."}},
+                          "description": "Optional. Set iff the invalidation is a hard price level (buy only); the trader will attach it as a broker-side stop leg (oto order)."}},
        "required": ["ticker","action","qty","thesis","invalidation"],
        "additionalProperties": False},
       strict=True)

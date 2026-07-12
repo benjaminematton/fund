@@ -51,8 +51,8 @@ CREATE TABLE tickets (
   side          TEXT NOT NULL CHECK (side IN ('buy','sell')),
   max_qty       INTEGER NOT NULL CHECK (max_qty > 0),
   stop_price    REAL CHECK (stop_price IS NULL OR stop_price > 0),
-                                              -- copied from the decision; trader submits a
-                                              -- bracket order (stop leg) when present
+                                              -- copied from the decision; trader submits an
+                                              -- oto order (stop leg) when present
   expires_at    TEXT NOT NULL,                -- ISO8601; gate default: +45 min
   status        TEXT NOT NULL DEFAULT 'open',
   reason        TEXT,                         -- set when gate REJECTS (no row) — see note
