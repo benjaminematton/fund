@@ -43,43 +43,71 @@ def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
     return order_gate
 
 
+def _extract_order(tool_response):
+    """Normalize a place_* tool_response to the order dict, or None if nothing
+    landed. The real alpaca-mcp-server returns a JSON STRING wrapping the order
+    under ``data`` with an ``_alpaca_mcp_security`` envelope; FakeAlpaca and the
+    offline fixtures return the order dict directly. A rejection (``error`` key,
+    or Alpaca ``code``/``message``) -> None: invariant 4, a rejection is never
+    recorded. Numeric fields may be strings ("67") and prices may be null."""
+    obj = tool_response
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(obj, dict):
+        return None
+    if isinstance(obj.get("data"), dict):
+        obj = obj["data"]                      # unwrap the MCP security envelope
+    if "error" in obj or "code" in obj:
+        return None                            # error/rejection payload
+    if not obj.get("client_order_id"):
+        return None
+    return obj
+
+
 def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
                         clock: Clock):
     """PostToolUse on place_*: mirror the broker's answer into SQLite.
     Idempotent under retry: INSERT OR IGNORE + CAS transitions; the fill
-    event is appended only when the order CAS submitted->filled wins."""
+    event is appended only when the order CAS submitted->filled wins.
+    Parses the real MCP envelope (JSON string + `data`) via _extract_order."""
 
     async def record_order(input_data, tool_use_id, context) -> dict:
         if not str(input_data.get("tool_name", "")).startswith(PLACE_PREFIX):
             return {}
-        resp = input_data.get("tool_response")
-        if not isinstance(resp, dict) or "error" in resp \
-                or "client_order_id" not in resp:
+        order = _extract_order(input_data.get("tool_response"))
+        if order is None:
             return {}  # nothing landed; retry/reconcile is the turn's job (§5.1)
         conn = conn_factory()
         now = iso(clock.now())
-        coid = resp["client_order_id"]
+        coid = order["client_order_id"]
         conn.execute(
             "INSERT OR IGNORE INTO orders (client_order_id, alpaca_order_id,"
             " symbol, side, qty, status, submitted_at)"
             " VALUES (?, ?, ?, ?, ?, 'submitted', ?)",
-            (coid, resp.get("id"), resp["symbol"], resp["side"],
-             int(resp["qty"]), now))
+            (coid, order.get("id"), order["symbol"], order["side"],
+             int(order["qty"]), now))
         conn.commit()
         try_transition(conn, "tickets", {"id": coid}, "open", "consumed", now)
-        if resp.get("status") == "filled":
+        # A market order acks 'accepted' first; the fill (and thus the fill
+        # event + decision->executed) only lands once status is 'filled' —
+        # async fills reconcile on a later turn (Phase 2). Recording the order
+        # row + consuming the ticket above is unconditional and idempotent.
+        if order.get("status") == "filled":
             if try_transition(conn, "orders", {"client_order_id": coid},
                               "submitted", "filled", now):
                 conn.execute(
                     "UPDATE orders SET filled_qty = ?, filled_avg_price = ?,"
                     " closed_at = ? WHERE client_order_id = ?",
-                    (int(resp["filled_qty"]), float(resp["filled_avg_price"]),
+                    (int(order["filled_qty"]), float(order["filled_avg_price"]),
                      now, coid))
                 conn.commit()
                 append_event(conn, "fill", {
-                    "ticker": resp["symbol"], "side": resp["side"],
-                    "filled_qty": int(resp["filled_qty"]),
-                    "filled_avg_price": float(resp["filled_avg_price"]),
+                    "ticker": order["symbol"], "side": order["side"],
+                    "filled_qty": int(order["filled_qty"]),
+                    "filled_avg_price": float(order["filled_avg_price"]),
                     "ticket_id": coid}, now)
                 t = conn.execute("SELECT decision_id FROM tickets WHERE id = ?",
                                  (coid,)).fetchone()
