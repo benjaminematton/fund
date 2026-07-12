@@ -1,8 +1,16 @@
 """Acceptance P1 @live smoke (manual, never CI):
+    set -a; source .env; set +a
     .venv/bin/pytest -m live tests/test_live_smoke.py -v
-Needs .env loaded in the shell (ALPACA_API_KEY, ALPACA_SECRET_KEY,
-SLACK_BOT_TOKEN_EXEC, ANTHROPIC_API_KEY). 1-share paper order round-trips
-(submitted -> filled/canceled) and the fill/outcome lands in real Slack."""
+
+Core round-trip needs ALPACA_API_KEY, ALPACA_SECRET_KEY, ANTHROPIC_API_KEY.
+The Execution Trader runs a REAL turn through run_exec_turn (the guarded path:
+waits for the broker MCP server, then asserts the tool calls), a 1-share paper
+order round-trips, and the PostToolUse recorder writes the order row.
+
+Slack is OPTIONAL and decoupled: the projection is asserted only when a real
+bot token (xoxb-) is present. An app-level token (xapp-) cannot chat.postMessage
+— the core round-trip must not fail for lack of a Slack bot.
+"""
 
 import asyncio
 import json
@@ -34,19 +42,18 @@ def _alpaca_delete(path):
 
 
 def test_one_share_paper_round_trip(tmp_path):
-    for var in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY",
-                "SLACK_BOT_TOKEN_EXEC", "ANTHROPIC_API_KEY"):
+    # Core requirements only — Slack is optional (asserted separately below).
+    for var in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ANTHROPIC_API_KEY"):
         if not os.environ.get(var):
             pytest.skip(f"{var} not set — load .env first")
 
     from datetime import timedelta
 
+    from agents.exec_turn import run_exec_turn
     from agents.trader import build_trader_options, load_seat_config
     from agents.wallclock import WallClock
     from gate.tickets import create_ticket
     from orchestrator.clock import iso
-    from slackkit.outbox import drain
-    from slackkit.real import RealSlack
     from state.db import connect
 
     clock = WallClock()
@@ -71,17 +78,22 @@ def test_one_share_paper_round_trip(tmp_path):
         opts = build_trader_options(
             load_seat_config("agents/config/exec.yaml"), db_path, clock)
         async with ClaudeSDKClient(options=opts) as client:
-            await client.query(
-                "Execution stage: execute all open tickets per your charter.")
-            async for _ in client.receive_response():
-                pass
+            # guarded path: (c) wait for alpaca+fund before querying, then
+            # (a)/(b) assert the calls the seat actually made.
+            return await run_exec_turn(
+                client,
+                "Execution stage: execute all open tickets per your charter.",
+                {"alpaca", "fund"})
 
-    asyncio.run(run_turn())
+    tool_calls = asyncio.run(run_turn())
+    # the seat must have exercised its tools within the two globs
+    assert any(t.startswith("mcp__alpaca__place_") for t in tool_calls), tool_calls
 
-    # round-trip: poll until filled; cancel if the market is closed
+    # round-trip: poll until terminal; cancel if the market is closed
     status = None
     for _ in range(30):
-        o = _alpaca_get(f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
+        o = _alpaca_get(
+            f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
         status = o["status"]
         if status in ("filled", "canceled", "rejected", "expired"):
             break
@@ -91,13 +103,25 @@ def test_one_share_paper_round_trip(tmp_path):
         status = "canceled"
     assert status in ("filled", "canceled")
 
-    # the DB saw the order (PostToolUse recorder), and Slack gets the outcome
+    # primary success signal (market-hours-independent): the PostToolUse
+    # recorder mirrored the order into SQLite. A fill event only exists if the
+    # order actually filled, so we assert the row, not the fill.
     row = conn.execute("SELECT * FROM orders WHERE client_order_id = ?",
                        (ticket_id,)).fetchone()
-    assert row is not None
-    slack = RealSlack(os.environ["SLACK_BOT_TOKEN_EXEC"])
+    assert row is not None, "recorder did not write the order row"
+
+    # Slack projection: only when a real BOT token is configured. xapp- app
+    # tokens can't post — skip that leg rather than fail the round-trip.
+    slack_token = os.environ.get("SLACK_BOT_TOKEN_EXEC", "")
+    if not slack_token.startswith("xoxb-"):
+        pytest.skip("SLACK_BOT_TOKEN_EXEC is not a bot token (xoxb-) —"
+                    " core round-trip passed; Slack projection not exercised")
+
+    from slackkit.outbox import drain
+    from slackkit.real import RealSlack
+
+    slack = RealSlack(slack_token)
     posted = drain(conn, slack, iso(clock.now()))
     if posted == 0:  # not filled (market closed) — still prove Slack works
-        ts = slack.post("#trade-log",
-                        f"live-smoke: order {ticket_id[:8]} status {status}")
-        assert ts
+        assert slack.post("#trade-log",
+                          f"live-smoke: order {ticket_id[:8]} status {status}")

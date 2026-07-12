@@ -12,6 +12,9 @@ call, the shell already ran. Defense in depth, downstream of the real gate.
 
 from __future__ import annotations
 
+import asyncio
+from typing import Awaitable, Callable
+
 ALLOWED_TOOL_PREFIXES = ("mcp__fund__", "mcp__alpaca__")
 
 
@@ -19,20 +22,82 @@ class ExecTurnViolation(Exception):
     """A hard failure in an exec turn: never resolves to a silent success."""
 
 
-def check_required_servers(init_data: dict, required: set[str]) -> None:
-    """(c) Raise if any required MCP server is not 'connected' at turn start.
+def _server_statuses(source) -> dict:
+    """Normalize a server-status container to {name: status}. Accepts the init
+    message data (``mcp_servers``), a get_mcp_status response (``mcpServers``),
+    or a bare list of {name,status}."""
+    if isinstance(source, dict):
+        servers = source.get("mcp_servers") or source.get("mcpServers") or []
+    else:
+        servers = source
+    return {s.get("name"): s.get("status") for s in servers}
+
+
+def unconnected_servers(source, required: set[str]) -> dict:
+    """Required servers whose status is not 'connected' (empty => all ready)."""
+    status = _server_statuses(source)
+    return {name: status.get(name) for name in required
+            if status.get(name) != "connected"}
+
+
+def check_required_servers(source, required: set[str]) -> None:
+    """(c) Raise if any required MCP server is not 'connected'.
 
     Closes the uvx cold-start race: an agent whose broker server is still
     'pending' has no place tool and improvises (the observed Bash detour).
     The turn must not run until every required server is connected."""
-    status = {s.get("name"): s.get("status")
-              for s in init_data.get("mcp_servers", [])}
-    bad = {name: status.get(name) for name in required
-           if status.get(name) != "connected"}
+    bad = unconnected_servers(source, required)
     if bad:
         raise ExecTurnViolation(
-            f"required MCP server(s) not connected at turn start: {bad}; "
-            "turn must not run")
+            f"required MCP server(s) not connected: {bad}; turn must not run")
+
+
+async def await_servers_connected(
+        client, required: set[str], *, timeout_s: float = 30.0,
+        poll_s: float = 0.5,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+    """(c) live gate: poll client.get_mcp_status() until every required server
+    is 'connected', or raise ExecTurnViolation once timeout_s elapses. `sleep`
+    is injected so the wait is deterministic in tests (no wall clock)."""
+    elapsed = 0.0
+    while True:
+        bad = unconnected_servers(await client.get_mcp_status(), required)
+        if not bad:
+            return
+        if elapsed >= timeout_s:
+            raise ExecTurnViolation(
+                f"required MCP server(s) not connected after {timeout_s}s: "
+                f"{bad}; turn does not run")
+        await sleep(poll_s)
+        elapsed += poll_s
+
+
+async def run_exec_turn(client, prompt: str, required: set[str], *,
+                        wait_timeout_s: float = 30.0, poll_s: float = 0.5,
+                        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+                        ) -> list[str]:
+    """Production exec turn wrapping a connected ClaudeSDKClient with the three
+    safety assertions. (c) pre: wait for required servers before querying — a
+    broker that never connects fails the turn instead of letting the agent run
+    tool-starved. (a)/(b) post: check the tool calls actually attempted.
+
+    Returns the tool-call names made this turn. Raises ExecTurnViolation on any
+    violation. NOTE: (a)/(b) are DETECTORS — they see calls after they ran; the
+    PREVENTER is the seat's `tools=[...]` allow-array (no Bash to reach for)."""
+    await await_servers_connected(client, required, timeout_s=wait_timeout_s,
+                                  poll_s=poll_s, sleep=sleep)
+    await client.query(prompt)
+    tool_names: list[str] = []
+    async for msg in client.receive_response():
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if type(block).__name__ == "ToolUseBlock":
+                    name = getattr(block, "name", None)
+                    if name:
+                        tool_names.append(name)
+    check_tool_calls(tool_names)
+    return tool_names
 
 
 def check_tool_calls(tool_names: list[str]) -> None:
