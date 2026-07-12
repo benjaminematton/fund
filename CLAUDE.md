@@ -31,7 +31,7 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 - Time comes from an injected `Clock` protocol. Never call `datetime.now()` or `time.sleep()` in business logic — this is what makes `sim-day` possible.
 - Never put per-run values (timestamps, uuids, tmp paths) into prompts; pass them to tools out-of-band. Baked-in values break replay tests.
 - All hooks (`PreToolUse` order gate, cost recording) are defined in `agents/runtime.py` only.
-- Set `setting_sources=["project"]` in `ClaudeAgentOptions` so this file is loaded for every seat.
+- Set `setting_sources=["project"]` in `ClaudeAgentOptions` so this file is loaded for coding/dev seats. **EXCEPTION — order-placing seats (the Execution Trader, and any future seat with `mcp__alpaca__place_*` in its `tools`): `setting_sources=[]` and an explicit `tools=[...]` allow-array (MCP globs only), never the default preset.** A headless trading seat with `.env` + network in scope must not inherit `Bash`/`Write`/`Task` (it can `Read(.env)` + shell around the gate) nor a settings file whose allow-list accumulates dev approvals. `tools` governs availability (the real lock); `allowed_tools`/`disallowed_tools` only govern approval and fail open. Pinned by `tests/test_exec_seat_tool_surface.py` — do not relax.
 - `ResultMessage.total_cost_usd` is a client-side estimate — label it "est." in digests.
 
 ## Specs — read before implementing; schemas there are canonical

@@ -30,7 +30,15 @@ def build_trader_options(cfg: dict, db_path: str | Path,
         max_budget_usd=cfg["max_budget_usd"],
         max_turns=cfg["max_turns"],
         permission_mode="dontAsk",
-        setting_sources=["project"],          # CLAUDE.md for every seat
+        # PREVENTER: `tools` restricts AVAILABILITY (unlike allowed_tools, which
+        # only pre-approves). Unset => the claude_code preset (Bash/Write/Task/…)
+        # leaks onto a seat that places orders and can route around the gate.
+        # Driven from cfg so each seat declares its own surface (default: none).
+        tools=cfg["tools"],
+        # No settings source: no CLAUDE.md, no project/local settings.json feed
+        # this seat's context or permission surface. Invariants live in the
+        # charter. Per-seat via cfg; default [] never loads a dev file.
+        setting_sources=cfg.get("setting_sources", []),
         mcp_servers={
             "alpaca": {"command": "uvx", "args": ["alpaca-mcp-server"],
                        "env": {"ALPACA_PAPER_TRADE": "true",     # invariant 1

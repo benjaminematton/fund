@@ -24,6 +24,10 @@ def test_build_trader_options_is_paper_only_with_hooks(tmp_path):
     opts = build_trader_options(cfg, tmp_path / "fund.sqlite", clock)
     alpaca = opts.mcp_servers["alpaca"]
     assert alpaca["env"]["ALPACA_PAPER_TRADE"] == "true"   # invariant 1
-    assert opts.setting_sources == ["project"]             # CLAUDE.md loads per seat
+    # Contract change (not test-fixing): the exec seat loads NO settings source.
+    # CLAUDE.md is a coding-agent file; the seat's invariants live in its charter.
+    # See tests/test_exec_seat_tool_surface.py for the full surface guard.
+    assert opts.setting_sources == []
+    assert opts.tools == ["mcp__fund__*", "mcp__alpaca__*"]  # locked surface
     assert "Execution Trader" in opts.system_prompt        # charter is the prompt
     assert opts.hooks and "PreToolUse" in opts.hooks       # order gate attached

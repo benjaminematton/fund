@@ -27,3 +27,8 @@ recordings/*
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code local approvals — personal, never shared. A committed allow-list
+# would grant one dev's Bash approvals to everyone's seats. Project-shared
+# settings (if ever needed) go in .claude/settings.json, reviewed like code.
+.claude/settings.local.json

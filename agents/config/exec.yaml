@@ -5,6 +5,13 @@ fallback_model: claude-sonnet-5
 max_budget_usd: 1.00        # BUDGET_FAST_SEAT
 max_turns: 12
 alpaca_toolsets: "account,trading,stock-data"   # ONLY seat with trading (invariant 2)
+# Capability surface (PREVENTER — see agents/exec_turn.py). `tools` is
+# availability, not approval: it is the ONLY thing that keeps Bash/Write/Edit/
+# Task off a headless seat with .env + network in scope. Never widen it.
+tools: ["mcp__fund__*", "mcp__alpaca__*"]
+# No CLAUDE.md / project / local settings feed this seat. Its invariants live
+# in charters/exec.md, not a dev file. Empty => the CLI loads no settings source.
+setting_sources: []
 channels:
   trade_log: "#trade-log"
   risk: "#risk"
