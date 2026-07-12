@@ -69,6 +69,18 @@ def test_validate_happy_path_bracket(fund_db):
     assert ok, reason
 
 
+def test_validate_happy_real_tool_shape(fund_db):
+    """The real alpaca-mcp-server place tool sends qty as a STRING and omits
+    type/time_in_force (captured live 2026-07-12). The gate must accept it —
+    BUG C: it used to deny "qty must be a positive integer", blocking every
+    real order once the hook actually fired."""
+    _seed(fund_db)
+    real_input = {"client_order_id": TID, "symbol": "NVDA", "side": "buy",
+                  "qty": "67"}
+    ok, reason = validate_order(fund_db, real_input, NOW)
+    assert ok, reason
+
+
 # the five acceptance deny cases (acceptance.md Phase 1, "Hook")
 def test_deny_no_ticket(fund_db):
     ok, reason = validate_order(fund_db, order(client_order_id="tkt-none"), NOW)
@@ -113,9 +125,12 @@ def test_deny_missing_stop_leg_when_ticket_has_stop(fund_db):
     assert not ok and "stop" in reason
 
 
+# A digit-string qty ("67") is VALID (real tool shape). But floats, negatives,
+# and non-numeric strings are never whole shares — deny (invariant 4).
 @pytest.mark.parametrize("bad", [
-    {"client_order_id": None}, {"qty": "67"}, {"qty": 67.5}, {"qty": 0},
-    {"qty": -3}, {"side": "sell"}, {"side": None},
+    {"client_order_id": None}, {"qty": 67.5}, {"qty": 0}, {"qty": -3},
+    {"qty": "67.5"}, {"qty": "-3"}, {"qty": "abc"}, {"qty": ""},
+    {"side": "sell"}, {"side": None},
 ])
 def test_deny_malformed_or_mismatched_input(fund_db, bad):
     _seed(fund_db)

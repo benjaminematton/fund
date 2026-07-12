@@ -62,6 +62,20 @@ def expire_open_tickets(conn: sqlite3.Connection, now_iso: str) -> list[str]:
     return expired
 
 
+def _as_share_count(qty):
+    """Whole-share count from an int or a digit-string; None otherwise. The
+    Alpaca MCP place tool sends qty as a STRING ("1"); tickets store max_qty as
+    an int. Accept the string form of a whole number; reject bool, float, and
+    non-digit strings — no fractional shares, no guessing (invariant 4)."""
+    if isinstance(qty, bool):
+        return None
+    if isinstance(qty, int):
+        return qty
+    if isinstance(qty, str) and qty.isdigit():
+        return int(qty)
+    return None
+
+
 def validate_order(conn: sqlite3.Connection, tool_input,
                    now_iso: str) -> tuple[bool, str]:
     """The five acceptance checks + malformed-input denial (invariant 4)."""
@@ -82,9 +96,10 @@ def validate_order(conn: sqlite3.Connection, tool_input,
                        f"symbol {t['ticker']!r}")
     if tool_input.get("side") != t["side"]:
         return False, f"side {tool_input.get('side')!r} != ticket side {t['side']!r}"
-    qty = tool_input.get("qty")
-    if not isinstance(qty, int) or isinstance(qty, bool) or qty < 1:
-        return False, f"qty must be a positive integer, got {qty!r}"
+    qty = _as_share_count(tool_input.get("qty"))
+    if qty is None or qty < 1:
+        return False, ("qty must be a positive whole number, got "
+                       f"{tool_input.get('qty')!r}")
     if qty > t["max_qty"]:
         return False, f"qty {qty} exceeds ticket max_qty {t['max_qty']}"
     stop_leg = tool_input.get("stop_loss")
