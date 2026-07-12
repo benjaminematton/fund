@@ -31,3 +31,8 @@ def test_build_trader_options_is_paper_only_with_hooks(tmp_path):
     assert opts.tools == ["mcp__fund__*", "mcp__alpaca__*"]  # locked surface
     assert "Execution Trader" in opts.system_prompt        # charter is the prompt
     assert opts.hooks and "PreToolUse" in opts.hooks       # order gate attached
+    # matcher MUST be None (fire-for-all; hooks self-filter by PLACE_PREFIX).
+    # A prefix/tool-name matcher does NOT match mcp__alpaca__place_stock_order
+    # under the CLI's full-match semantics -> the gate would never fire live.
+    assert opts.hooks["PreToolUse"][0].matcher is None
+    assert opts.hooks["PostToolUse"][0].matcher is None

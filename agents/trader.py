@@ -46,12 +46,19 @@ def build_trader_options(cfg: dict, db_path: str | Path,
             "fund": build_fund_server(conn_factory, clock, cfg["seat"]),
         },
         allowed_tools=["mcp__alpaca__*", "mcp__fund__*"],
+        # matcher=None => the hook fires for EVERY tool call. The CLI matches
+        # `matcher` against the full tool name (anchored/full match), so a prefix
+        # like "mcp__alpaca__place_" NEVER matches "mcp__alpaca__place_stock_order"
+        # and the hook silently never runs — verified live: with a prefix matcher
+        # the order gate did NOT fire and orders reached the broker un-gated.
+        # make_order_gate / make_order_recorder already self-filter by
+        # PLACE_PREFIX internally, so fire-for-all is correct and robust.
         hooks={
             "PreToolUse": [HookMatcher(
-                matcher="mcp__alpaca__place_",
+                matcher=None,
                 hooks=[make_order_gate(conn_factory, clock)])],
             "PostToolUse": [HookMatcher(
-                matcher="mcp__alpaca__place_",
+                matcher=None,
                 hooks=[make_order_recorder(conn_factory, clock)])],
         },
     )
