@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from agents.replay import replay_turn
 from agents.runtime import make_order_gate, make_order_recorder
@@ -24,7 +25,8 @@ def test_replay_happy_turn_executes_real_tools(fund_db, sim_clock):
          "args": order()},
     ])
     assert outcomes[0]["result"][0]["id"] == TID       # real DB read
-    assert outcomes[1]["result"]["status"] == "filled"  # real broker execution
+    # place result is the real MCP wire shape: JSON string, order under `data`
+    assert json.loads(outcomes[1]["result"])["data"]["status"] == "filled"
     assert fund_db.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"] == 1
     assert broker.place_attempts and broker.place_attempts[0]["qty"] == 67
 

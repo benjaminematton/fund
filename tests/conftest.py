@@ -25,9 +25,13 @@ def make_executor(conn_factory, clock, broker):
     the in-memory broker; fund tools hit the real temp DB."""
     from gate.tickets import open_tickets
 
+    from tests.fake_alpaca import mcp_envelope
+
     def execute(tool: str, args: dict):
         if tool.startswith("mcp__alpaca__place_"):
-            return broker.place_order(args)
+            # Wrap the broker response the way the real alpaca-mcp-server does,
+            # so the recorder sees the true wire shape (JSON string + `data`).
+            return mcp_envelope(broker.place_order(args))
         if tool == "mcp__fund__list_open_tickets":
             return open_tickets(conn_factory(), iso(clock.now()))
         raise ValueError(f"no executor for tool {tool!r}")

@@ -3,6 +3,7 @@ the REAL PreToolUse gate -> deny in all five violation cases, zero order
 rows; bracket leg follows the ticket's stop_price exactly."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -52,7 +53,7 @@ def test_bracket_ticket_yields_bracket_order(fund_db, sim_clock):
     _seed(fund_db, stop_price=168.0)
     broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
     outcomes = _replay(fund_db, sim_clock, broker, "bracket.jsonl")
-    assert outcomes[-1]["result"]["status"] == "filled"
+    assert json.loads(outcomes[-1]["result"])["data"]["status"] == "filled"
     placed = broker.place_attempts[0]
     assert placed["order_class"] == "bracket"
     assert placed["stop_loss"] == {"stop_price": 168.0}
@@ -62,6 +63,6 @@ def test_stopless_ticket_yields_plain_order(fund_db, sim_clock):
     _seed(fund_db)  # stop_price NULL
     broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
     outcomes = _replay(fund_db, sim_clock, broker, "happy_market.jsonl")
-    assert outcomes[-1]["result"]["status"] == "filled"
+    assert json.loads(outcomes[-1]["result"])["data"]["status"] == "filled"
     placed = broker.place_attempts[0]
     assert "stop_loss" not in placed and placed.get("order_class") is None
