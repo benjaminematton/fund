@@ -20,8 +20,10 @@ def append_event(conn: sqlite3.Connection, kind: str, payload: dict,
 
 
 def drain(conn: sqlite3.Connection, slack, now_iso: str) -> int:
-    """Post every unposted event. A row whose render raises is dead-lettered
-    (marked posted, never retried) and a projection_error event describing
+    """Post every unposted event. Returns the count of events genuinely
+    posted to Slack (via slack.post()) — not the count of rows marked
+    drained. A row whose render raises is dead-lettered (marked posted,
+    never retried, not counted) and a projection_error event describing
     it is appended and drained in the same call, so a bad event dead-letters
     itself instead of jamming the queue (MVF review C2)."""
     posted = 0
@@ -43,7 +45,6 @@ def drain(conn: sqlite3.Connection, slack, now_iso: str) -> int:
                     append_event(conn, "projection_error",
                                  {"event_id": row["id"], "kind": row["kind"]},
                                  now_iso)
-                posted += 1
                 continue
             conn.execute("UPDATE events SET posted_at = ? WHERE id = ?",
                          (now_iso, row["id"]))

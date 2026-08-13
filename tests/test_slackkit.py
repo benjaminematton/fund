@@ -69,7 +69,7 @@ def test_drain_dead_letters_bad_event_and_continues(fund_db, sim_clock):
     append_event(fund_db, "bogus_kind", {"x": 1}, now)
     append_event(fund_db, "alert", {"text": "after"}, now)
     slack = FakeSlack()
-    drain(fund_db, slack, now)
+    posted = drain(fund_db, slack, now)
     # queue is not jammed: the good event posted, the bad one dead-lettered
     assert [p["text"] for p in slack.posts["#risk"] if "after" in p["text"]]
     assert fund_db.execute(
@@ -77,6 +77,12 @@ def test_drain_dead_letters_bad_event_and_continues(fund_db, sim_clock):
     # and a projection_error event was appended AND posted
     assert any("projection_error" in p["text"] or "bogus_kind" in p["text"]
                for p in slack.posts["#risk"])
+    # returned count reflects only events genuinely posted to Slack: the
+    # "after" alert plus the projection_error itself (both posted) — the
+    # bogus_kind row is dead-lettered and must NOT be counted
+    actual_posts = sum(len(v) for v in slack.posts.values())
+    assert actual_posts == 2
+    assert posted == actual_posts
 
 def test_every_written_kind_has_a_renderer():
     """Static guard: every append_event kind literal in the codebase renders."""
