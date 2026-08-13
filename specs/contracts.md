@@ -181,6 +181,8 @@ class GateResult(BaseModel):
 
 All schemas declare `"strict": true`. Handlers validate with the pydantic models above, UPSERT to SQLite, append a projection event, and return a one-line confirmation. **These tools are the only path from agent output to workflow state.**
 
+> **Note (🔏 ruling 2026-08-13).** `strict=True` is not available on the pinned claude-agent-sdk (0.2.116); the JSON schemas here are advisory to the model, and the pydantic handler validation is the enforcement layer — every safety-relevant constraint (enums, ranges, hold-iff-zero, stop-only-on-buy) MUST exist in the handler, not only the schema. Type coercion (e.g. confidence `'72'` -> `72`) is accepted. Additionally: `submit_decision` refuses once the decision has left `submitted` (see ruling 2026-08-13).
+
 ```python
 @tool("submit_signal",
       "Record your final daily signal for one ticker. Call exactly once per ticker.",
