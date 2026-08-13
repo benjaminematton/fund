@@ -13,8 +13,7 @@ MAX_POSITIONS = 8
 CIRCUIT_BREAKER = -0.03
 
 class GateInputs(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True,
-                               validate_assignment=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
     ticker: str
     side: Literal["buy", "sell"]
     equity: float
@@ -59,19 +58,22 @@ def _corr_mult(corr: float) -> float:
     return 1.10
 
 def size(inputs, mode: Mode):
-    """inputs: GateInputs OR anything else (dict, garbage). A raw GateInputs
-    instance was already validated at construction (model is frozen with
-    validate_assignment=True, so it cannot be mutated back into an invalid
-    state); anything else is validated here via model_validate. NOTE: an
-    instance built via GateInputs.model_construct(...) skips all validation
-    and is NOT re-validated by this function — that is a documented caller
-    contract, not a gap this function closes.
+    """inputs: GateInputs OR anything else (dict, garbage). frozen=True blocks
+    plain attribute assignment, but pydantic v2's model_copy(update=...) and
+    model_construct(...) both skip field validators and can still produce an
+    isinstance-valid GateInputs carrying NaN. So size() does not trust
+    isinstance() to mean "already validated" — it re-checks finiteness on
+    every call, on any GateInputs it receives, regardless of how it was
+    built. Anything that isn't already a GateInputs is validated here via
+    model_validate.
     Advisory and enforce run the IDENTICAL computation (invariant §3.9)."""
     try:
         i = inputs if isinstance(inputs, GateInputs) else GateInputs.model_validate(inputs)
         if (i.price <= 0 or i.equity <= 0 or i.cash < 0 or i.held_qty < 0
                 or i.vol_60d < 0 or i.sector_value < 0 or i.position_count < 0
-                or i.avg_corr < -1.0 or i.avg_corr > 1.0):
+                or i.avg_corr < -1.0 or i.avg_corr > 1.0
+                or not all(math.isfinite(v) for v in (i.equity, i.cash, i.price, i.vol_60d,
+                                                      i.avg_corr, i.sector_value, i.daily_pnl_pct))):
             return Rejected("gate_error")
         if i.side == "sell":
             return (Approved(max_qty=i.held_qty, pre_sector_qty=i.held_qty,

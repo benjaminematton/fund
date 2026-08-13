@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import pytest
+from pydantic import ValidationError
 from gate.risk import GateInputs, size, Approved, Rejected
 
 FIX = json.loads((Path(__file__).resolve().parents[1]
@@ -31,15 +32,16 @@ def test_advisory_equals_enforcement_on_identical_inputs():
 
 @pytest.mark.parametrize("field", ["daily_pnl_pct", "cash", "avg_corr"])
 def test_post_construction_nan_mutation_is_refused(field):
-    """A GateInputs is frozen with validate_assignment=True, so mutating a
-    live instance to NaN after construction must raise rather than silently
-    bypassing the field validator and later reaching Approved. This is the
-    point: the mutation itself is refused, so the gate cannot be tricked
-    post-construction the way it could when validation only guarded
-    __init__."""
+    """A GateInputs is frozen=True, so mutating a live instance to NaN after
+    construction must raise a pydantic frozen_instance error — not merely
+    "some Exception" (which could pass even for a misspelled field name) —
+    and the field's value must be unchanged afterward."""
     g = golden_inputs()
-    with pytest.raises(Exception):
+    original = getattr(g, field)
+    with pytest.raises(ValidationError) as exc_info:
         setattr(g, field, float("nan"))
+    assert exc_info.value.errors()[0]["type"] == "frozen_instance"
+    assert getattr(g, field) == original
 
 @pytest.mark.parametrize("field,value", [
     ("vol_60d", -1.0),
@@ -58,3 +60,15 @@ def test_avg_corr_boundary_still_accepted(value):
     input — the out-of-range guard must not reject them."""
     r = size(golden_inputs(avg_corr=value), mode="enforce")
     assert isinstance(r, Approved)
+
+
+@pytest.mark.parametrize("field", ["avg_corr", "daily_pnl_pct", "cash"])
+def test_model_copy_nan_bypass_is_rejected(field):
+    """model_copy(update=...) skips field validators in pydantic v2, so it
+    can still produce a frozen, isinstance-valid GateInputs carrying NaN
+    even though direct mutation and __init__ are guarded. size() must
+    re-check finiteness itself on every call rather than trusting
+    isinstance(inputs, GateInputs) to mean "already validated"."""
+    g = golden_inputs()
+    bad = g.model_copy(update={field: float("nan")})
+    assert size(bad, "enforce") == Rejected("gate_error")
