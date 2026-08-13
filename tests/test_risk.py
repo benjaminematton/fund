@@ -72,3 +72,78 @@ def test_model_copy_nan_bypass_is_rejected(field):
     g = golden_inputs()
     bad = g.model_copy(update={field: float("nan")})
     assert size(bad, "enforce") == Rejected("gate_error")
+
+
+def test_model_copy_nan_held_qty_with_position_count_bypass_is_rejected():
+    """held_qty=NaN via model_copy makes `i.held_qty == 0` False, bypassing
+    the MAX_POSITIONS check even though position_count=8 alone would reject
+    with a valid held_qty=0."""
+    g = golden_inputs()
+    bad = g.model_copy(update={"held_qty": float("nan"), "position_count": 8})
+    assert size(bad, "enforce") == Rejected("gate_error")
+
+
+def test_valid_held_qty_zero_with_position_count_at_limit_still_rejected():
+    """Sanity check for the case above: with a legitimate held_qty=0, the
+    same position_count=8 must still be rejected on MAX_POSITIONS."""
+    r = size(golden_inputs(held_qty=0, position_count=8), mode="enforce")
+    assert r == Rejected("position_count")
+
+
+def test_model_copy_nan_position_count_bypass_is_rejected():
+    """position_count=NaN via model_copy makes `NaN >= MAX_POSITIONS` False,
+    bypassing the MAX_POSITIONS check."""
+    g = golden_inputs()
+    bad = g.model_copy(update={"position_count": float("nan")})
+    assert size(bad, "enforce") == Rejected("gate_error")
+
+
+def test_model_construct_nan_held_qty_bypass_is_rejected():
+    """model_construct(...) skips field validators entirely (not just
+    model_copy's update path), so held_qty=NaN must still be caught."""
+    base = dict(
+        ticker="NVDA", side="buy", equity=FIX["equity"], cash=FIX["cash"],
+        price=FIX["prices"]["NVDA"], vol_60d=FIX["vol_60d"]["NVDA"],
+        avg_corr=FIX["avg_corr"]["NVDA"], sector="tech",
+        sector_value=120 * 232.0 + 40 * 505.0,
+        daily_pnl_pct=FIX["daily_pnl_pct"])
+    bad = GateInputs.model_construct(**base, held_qty=float("nan"), position_count=8)
+    assert size(bad, "enforce") == Rejected("gate_error")
+
+
+def test_model_copy_inf_held_qty_sell_bypass_is_rejected():
+    """held_qty=+inf via model_copy on a sell must not reach Approved with a
+    non-integer, unbounded max_qty — the worst-case bypass."""
+    g = golden_inputs()
+    bad = g.model_copy(update={"held_qty": float("inf"), "side": "sell"})
+    assert size(bad, "enforce") == Rejected("gate_error")
+
+
+def test_position_count_positive_inf_still_rejected():
+    """Confirm the already-correctly-handled neighbour keeps working:
+    position_count=+inf must still be Rejected (not Approved) — reached via
+    model_copy since strict=True forbids a float in this int field via the
+    normal constructor."""
+    g = golden_inputs()
+    bad = g.model_copy(update={"position_count": float("inf")})
+    r = size(bad, "enforce")
+    assert isinstance(r, Rejected)
+
+
+def test_held_qty_negative_inf_still_rejected():
+    """Confirm the already-correctly-handled neighbour keeps working:
+    held_qty=-inf is caught by the held_qty < 0 comparison."""
+    g = golden_inputs()
+    bad = g.model_copy(update={"held_qty": float("-inf")})
+    assert size(bad, "enforce") == Rejected("gate_error")
+
+
+def test_legitimate_sell_still_approved():
+    r = size(golden_inputs(side="sell", held_qty=40), mode="enforce")
+    assert r == Approved(max_qty=40, pre_sector_qty=40, side="sell")
+
+
+def test_boundary_zero_and_edge_inputs_still_approved():
+    r = size(golden_inputs(held_qty=0, position_count=0, sector_value=0.0,
+                            vol_60d=0.0, daily_pnl_pct=-0.0299), mode="enforce")
+    assert isinstance(r, Approved)

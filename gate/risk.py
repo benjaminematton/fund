@@ -73,7 +73,8 @@ def size(inputs, mode: Mode):
                 or i.vol_60d < 0 or i.sector_value < 0 or i.position_count < 0
                 or i.avg_corr < -1.0 or i.avg_corr > 1.0
                 or not all(math.isfinite(v) for v in (i.equity, i.cash, i.price, i.vol_60d,
-                                                      i.avg_corr, i.sector_value, i.daily_pnl_pct))):
+                                                      i.avg_corr, i.sector_value, i.daily_pnl_pct,
+                                                      i.held_qty, i.position_count))):
             return Rejected("gate_error")
         if i.side == "sell":
             return (Approved(max_qty=i.held_qty, pre_sector_qty=i.held_qty,
