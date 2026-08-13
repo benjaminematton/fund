@@ -28,3 +28,24 @@ def test_advisory_equals_enforcement_on_identical_inputs():
     a = size(golden_inputs(), mode="advisory")
     e = size(golden_inputs(), mode="enforce")
     assert a.max_qty == e.max_qty == GOLDEN_MAX_QTY
+
+@pytest.mark.parametrize("field", ["daily_pnl_pct", "cash", "avg_corr"])
+def test_post_construction_nan_mutation_is_refused(field):
+    """A GateInputs is frozen with validate_assignment=True, so mutating a
+    live instance to NaN after construction must raise rather than silently
+    bypassing the field validator and later reaching Approved. This is the
+    point: the mutation itself is refused, so the gate cannot be tricked
+    post-construction the way it could when validation only guarded
+    __init__."""
+    g = golden_inputs()
+    with pytest.raises(Exception):
+        setattr(g, field, float("nan"))
+
+@pytest.mark.parametrize("field,value", [
+    ("vol_60d", -1.0),
+    ("sector_value", -1e9),
+    ("position_count", -5),
+])
+def test_negative_nonsensical_inputs_rejected(field, value):
+    r = size(golden_inputs(**{field: value}), mode="enforce")
+    assert r == Rejected("gate_error")

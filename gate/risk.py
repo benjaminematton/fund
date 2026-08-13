@@ -13,7 +13,8 @@ MAX_POSITIONS = 8
 CIRCUIT_BREAKER = -0.03
 
 class GateInputs(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid")
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True,
+                               validate_assignment=True)
     ticker: str
     side: Literal["buy", "sell"]
     equity: float
@@ -58,11 +59,18 @@ def _corr_mult(corr: float) -> float:
     return 1.10
 
 def size(inputs, mode: Mode):
-    """inputs: GateInputs OR anything else (dict, garbage) -> validated here.
+    """inputs: GateInputs OR anything else (dict, garbage). A raw GateInputs
+    instance was already validated at construction (model is frozen with
+    validate_assignment=True, so it cannot be mutated back into an invalid
+    state); anything else is validated here via model_validate. NOTE: an
+    instance built via GateInputs.model_construct(...) skips all validation
+    and is NOT re-validated by this function — that is a documented caller
+    contract, not a gap this function closes.
     Advisory and enforce run the IDENTICAL computation (invariant §3.9)."""
     try:
         i = inputs if isinstance(inputs, GateInputs) else GateInputs.model_validate(inputs)
-        if i.price <= 0 or i.equity <= 0 or i.cash < 0 or i.held_qty < 0:
+        if (i.price <= 0 or i.equity <= 0 or i.cash < 0 or i.held_qty < 0
+                or i.vol_60d < 0 or i.sector_value < 0 or i.position_count < 0):
             return Rejected("gate_error")
         if i.side == "sell":
             return (Approved(max_qty=i.held_qty, pre_sector_qty=i.held_qty,
