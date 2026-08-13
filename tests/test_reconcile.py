@@ -150,6 +150,65 @@ def test_apply_returns_false_on_cas_noop_already_filled(fund_db, sim_clock):
         "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"]
     assert after == before
 
+def test_malformed_fill_non_positive_qty_and_price_fails_closed(fund_db, sim_clock):
+    """Fix 2: {"status":"filled","filled_qty":"0","filled_avg_price":"0"} is a
+    malformed payload, not a real 0@0 fill — must not terminalize the order."""
+    _seed(fund_db)
+    now = iso(sim_clock.now())
+    fund_db.execute("UPDATE tickets SET status='consumed'"); fund_db.commit()
+    _submitted_order(fund_db, now)
+    class ZeroFillBroker:
+        def get_order_by_client_order_id(self, coid):
+            return {"status": "filled", "filled_qty": "0", "filled_avg_price": "0"}
+    reconcile_orders(fund_db, clock=sim_clock, broker=ZeroFillBroker(),
+                     sleep=lambda s: None, poll_s=3.0, max_wait_s=3.0)
+    assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "submitted"
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"] == 0
+    alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
+    assert alert is not None and "ValueError" in alert["payload"]
+
+
+def test_partial_fill_records_filled_numbers(fund_db, sim_clock):
+    """Fix 3: the partial-fill branch must record filled_qty/filled_avg_price
+    — the books must not read zero shares while the broker holds some."""
+    _seed(fund_db)
+    now = iso(sim_clock.now())
+    fund_db.execute("UPDATE tickets SET status='consumed'"); fund_db.commit()
+    _submitted_order(fund_db, now, qty=10)
+    broker = FakeAlpaca({"NVDA": 180.0}, mode="partial")
+    broker.place_order({"client_order_id": TID, "symbol": "NVDA",
+                        "side": "buy", "qty": 10})
+    def one_tick(s): broker.tick()
+    reconcile_orders(fund_db, clock=sim_clock, broker=broker, sleep=one_tick,
+                     poll_s=3.0, max_wait_s=3.0)   # one poll then stop
+    o = fund_db.execute("SELECT * FROM orders").fetchone()
+    assert o["status"] == "partially_filled"
+    assert o["filled_qty"] == 5
+    assert o["filled_avg_price"] == 180.0
+
+
+def test_fill_with_decision_not_approved_alerts_and_does_not_transition(fund_db, sim_clock):
+    """Fix 4: the order fills but the decision isn't in 'approved' anymore
+    (e.g. it already expired) — must alert, not silently strand it."""
+    _seed(fund_db)
+    now = iso(sim_clock.now())
+    fund_db.execute("UPDATE tickets SET status='consumed'"); fund_db.commit()
+    fund_db.execute("UPDATE decisions SET status='expired'"); fund_db.commit()
+    _submitted_order(fund_db, now)
+    broker = FakeAlpaca({"NVDA": 180.0}, {"NVDA": 180.14}, mode="instant")
+    broker.place_order({"client_order_id": TID, "symbol": "NVDA",
+                        "side": "buy", "qty": 67})
+    reconcile_orders(fund_db, clock=sim_clock, broker=broker,
+                     sleep=lambda s: None, poll_s=3.0, max_wait_s=3.0)
+    assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "filled"
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "expired"
+    alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
+    assert alert is not None
+    assert "expired" in alert["payload"] and "not" in alert["payload"]
+
+
 def test_idempotent_second_run_no_double_event(fund_db, sim_clock):
     _seed(fund_db)
     now = iso(sim_clock.now())

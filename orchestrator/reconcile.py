@@ -15,26 +15,47 @@ def _statuses(conn):
     return conn.execute("SELECT client_order_id, symbol, side FROM orders"
                         " WHERE status IN ('submitted','partially_filled')").fetchall()
 
+def _parse_fill(o) -> tuple[int, float]:
+    """Coerce filled_qty/filled_avg_price into locals. Raises ValueError (or
+    lets a TypeError/KeyError through) on anything malformed: missing, null,
+    non-positive, or a fractional qty (this fund is whole-share only —
+    orders.filled_qty is INTEGER, so a fractional fill is an anomaly to
+    reject, not floor silently). Callers must call this BEFORE any
+    transition, so a malformed payload raises before anything commits."""
+    raw_qty = float(o["filled_qty"])
+    filled_avg_price = float(o["filled_avg_price"])
+    if raw_qty != int(raw_qty):
+        raise ValueError(f"fractional filled_qty: {o['filled_qty']!r}")
+    filled_qty = int(raw_qty)
+    if filled_qty <= 0 or filled_avg_price <= 0:
+        raise ValueError(
+            f"non-positive fill: qty={filled_qty} price={filled_avg_price}")
+    return filled_qty, filled_avg_price
+
 def _apply(conn, row, o, now) -> bool:
     """Mirror one broker order dict into the DB. Returns True iff THIS call's
     CAS actually moved the order to 'filled' (False on a no-op re-run, so the
     caller's fill counter can't over-count). Fill numbers are parsed into
     locals before any transition — a malformed payload must raise before
-    anything commits, never after."""
+    anything commits, never after. The numbers are written before the status
+    CAS: while the row is still 'submitted'/'partially_filled' that write is
+    inert (nothing reads filled_qty/filled_avg_price off a non-terminal
+    order), and the CAS still gates the fill event + decision transition —
+    so a crash between the two leaves the row pending for the next poll to
+    repair, instead of stuck 'filled' with garbage numbers."""
     coid = row["client_order_id"]
     st = o.get("status")
     if st == "filled":
-        filled_qty = int(float(o["filled_qty"]))
-        filled_avg_price = float(o["filled_avg_price"])
+        filled_qty, filled_avg_price = _parse_fill(o)
+        conn.execute("UPDATE orders SET filled_qty=?, filled_avg_price=?,"
+                     " closed_at=? WHERE client_order_id=?",
+                     (filled_qty, filled_avg_price, now, coid))
+        conn.commit()
         moved = (try_transition(conn, "orders", {"client_order_id": coid},
                                 "submitted", "filled", now)
                  or try_transition(conn, "orders", {"client_order_id": coid},
                                    "partially_filled", "filled", now))
         if moved:
-            conn.execute("UPDATE orders SET filled_qty=?, filled_avg_price=?,"
-                         " closed_at=? WHERE client_order_id=?",
-                         (filled_qty, filled_avg_price, now, coid))
-            conn.commit()
             append_event(conn, "fill", {
                 "ticker": row["symbol"], "side": row["side"],
                 "filled_qty": filled_qty,
@@ -43,10 +64,24 @@ def _apply(conn, row, o, now) -> bool:
             t = conn.execute("SELECT decision_id FROM tickets WHERE id=?",
                              (coid,)).fetchone()
             if t is not None:
-                try_transition(conn, "decisions", {"id": t["decision_id"]},
-                               "approved", "executed", now)
+                decision_moved = try_transition(
+                    conn, "decisions", {"id": t["decision_id"]},
+                    "approved", "executed", now)
+                if not decision_moved:
+                    dec = conn.execute("SELECT status FROM decisions WHERE id=?",
+                                       (t["decision_id"],)).fetchone()
+                    dec_status = dec["status"] if dec is not None else "missing"
+                    append_event(conn, "alert", {"text":
+                        f"order {coid[:8]} filled but decision "
+                        f"{t['decision_id']} was '{dec_status}', not "
+                        "'approved' — left as-is, manual review"}, now)
         return moved
     if st == "partially_filled":
+        filled_qty, filled_avg_price = _parse_fill(o)
+        conn.execute("UPDATE orders SET filled_qty=?, filled_avg_price=?"
+                     " WHERE client_order_id=?",
+                     (filled_qty, filled_avg_price, coid))
+        conn.commit()
         if try_transition(conn, "orders", {"client_order_id": coid},
                           "submitted", "partially_filled", now):
             append_event(conn, "alert", {"text":
@@ -108,7 +143,10 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
                 f"order {coid[:8]} unfilled after {int(max_wait_s)}s — "
                 f"canceled, {suffix}"}, now)
     for coid, reason in problem.items():           # fail-closed path: loud, not silent
+        cur = conn.execute("SELECT status FROM orders WHERE client_order_id=?",
+                           (coid,)).fetchone()
+        cur_status = cur["status"] if cur is not None else "submitted"
         append_event(conn, "alert", {"text":
             f"order {coid[:8]} unresolved — broker unreachable or response "
-            f"unparseable ({reason}) at cap, left submitted for retry"}, now)
+            f"unparseable ({reason}) at cap, left {cur_status} for retry"}, now)
     return filled
