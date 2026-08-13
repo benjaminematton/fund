@@ -69,3 +69,19 @@ def test_et_run_date_across_dst_transition():
 def test_et_run_date_rejects_naive_datetime():
     with pytest.raises(ValueError):
         et_run_date(datetime(2026, 7, 6, 23, 30))
+
+
+def test_et_hhmm_formats_hour_minute_edt():
+    from orchestrator.clock import et_hhmm
+    assert et_hhmm(datetime(2026, 7, 6, 20, 15, tzinfo=UTC)) == "16:15"  # EDT UTC-4
+
+
+def test_et_hhmm_across_dst_offset_est():
+    from orchestrator.clock import et_hhmm
+    assert et_hhmm(datetime(2026, 1, 15, 20, 15, tzinfo=UTC)) == "15:15"  # EST UTC-5
+
+
+def test_et_hhmm_rejects_naive_datetime():
+    from orchestrator.clock import et_hhmm
+    with pytest.raises(ValueError):
+        et_hhmm(datetime(2026, 7, 6, 20, 15))

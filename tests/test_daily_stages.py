@@ -1,11 +1,15 @@
 """Stage bodies in isolation (MVF P4). Full-day sims are Task 15."""
 
+import json
 from datetime import timedelta
+
+import pytest
 
 from orchestrator.clock import iso
 from orchestrator.daily import (StageCtx, run_close, run_day, run_decision,
                                 run_gate, run_pre_gate, run_research)
 from slackkit.fake import FakeSlack
+from slackkit.outbox import append_event
 
 RUN = "2026-07-06"
 TID = "a3f90000-0000-0000-0000-000000000000"
@@ -211,6 +215,158 @@ def test_gate_resumes_after_a_crash_between_ticket_and_cas(fund_db, sim_clock):
     assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
     assert fund_db.execute("SELECT COUNT(*) c FROM events WHERE"
                            " kind='gate_approved'").fetchone()["c"] == 1
+
+
+def test_gate_resume_rejects_and_closes_the_stale_open_ticket(fund_db, sim_clock):
+    """Crash between create_ticket and the decision CAS; on resume the
+    rebuilt snapshot now REJECTS (NaN feed / circuit breaker / dropped
+    ticker). The stale open ticket must not survive a decision the gate now
+    rejects (review Critical 1) — otherwise validate_order still authorizes
+    an order against it."""
+    from gate.tickets import create_ticket, open_tickets
+    _seed_decision(fund_db, sim_clock, "NVDA", "buy", 80)
+    did = fund_db.execute("SELECT id FROM decisions").fetchone()["id"]
+    create_ticket(fund_db, id="b7c00000-0000-0000-0000-000000000000",
+                  decision_id=did, ticker="NVDA", side="buy", max_qty=66,
+                  stop_price=None,
+                  expires_at_iso=iso(sim_clock.now() + timedelta(minutes=45)),
+                  now_iso=iso(sim_clock.now()))
+    run_gate(_ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs(vol_60d=float("nan"))}))
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "rejected"
+    assert open_tickets(fund_db, iso(sim_clock.now())) == []
+
+
+def test_gate_resume_rejects_when_ticker_dropped_from_snapshot(fund_db, sim_clock):
+    """Same crash window, but the resumed snapshot no longer has the ticker
+    at all (contract change / delisting mid-crash). Must reject and close
+    the stale ticket, never raise a KeyError."""
+    from gate.tickets import create_ticket, open_tickets
+    _seed_decision(fund_db, sim_clock, "TSLA", "buy", 5)
+    did = fund_db.execute("SELECT id FROM decisions").fetchone()["id"]
+    create_ticket(fund_db, id="c8d00000-0000-0000-0000-000000000000",
+                  decision_id=did, ticker="TSLA", side="buy", max_qty=5,
+                  stop_price=None,
+                  expires_at_iso=iso(sim_clock.now() + timedelta(minutes=45)),
+                  now_iso=iso(sim_clock.now()))
+    run_gate(_ctx(fund_db, sim_clock, {}))
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "rejected"
+    assert open_tickets(fund_db, iso(sim_clock.now())) == []
+
+
+def test_gate_resume_reconciles_existing_ticket_to_a_smaller_cap(fund_db, sim_clock):
+    """Same crash window, tightened risk instead of a reject: the rebuilt
+    snapshot now approves a SMALLER cap. The existing ticket (same id —
+    invariant 5, it's the client_order_id) must be updated IN PLACE to the
+    new cap, and the gate_approved event must match what's actually
+    enforced (review Critical 2)."""
+    from gate.tickets import create_ticket
+    _seed_decision(fund_db, sim_clock, "NVDA", "buy", 80)
+    did = fund_db.execute("SELECT id FROM decisions").fetchone()["id"]
+    create_ticket(fund_db, id="b7c00000-0000-0000-0000-000000000000",
+                  decision_id=did, ticker="NVDA", side="buy", max_qty=66,
+                  stop_price=None,
+                  expires_at_iso=iso(sim_clock.now() + timedelta(minutes=45)),
+                  now_iso=iso(sim_clock.now()))
+    # sector now much closer to cap -> headroom shrinks the recomputed max_qty to 11
+    run_gate(_ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs(sector_value=58020.0)}))
+    assert fund_db.execute("SELECT COUNT(*) c FROM tickets").fetchone()["c"] == 1
+    t = fund_db.execute("SELECT * FROM tickets").fetchone()
+    assert t["id"] == "b7c00000-0000-0000-0000-000000000000"   # unchanged: idempotency
+    assert t["max_qty"] == 11
+    ev = fund_db.execute(
+        "SELECT payload FROM events WHERE kind='gate_approved'").fetchone()
+    assert json.loads(ev["payload"])["max_qty"] == 11
+
+
+def test_gate_isolates_a_per_decision_failure(fund_db, sim_clock, monkeypatch):
+    """A raise handling one decision must not abort the whole stage (review
+    Important 4) — matches the fail-closed posture size() already has."""
+    import orchestrator.daily as daily
+    real_create_ticket = daily.create_ticket
+
+    def boom(*a, **k):
+        if k.get("ticker") == "MSFT":
+            raise RuntimeError("boom")
+        return real_create_ticket(*a, **k)
+
+    monkeypatch.setattr(daily, "create_ticket", boom)
+    _seed_decision(fund_db, sim_clock, "MSFT", "buy", 10)
+    _seed_decision(fund_db, sim_clock, "NVDA", "buy", 80)
+    ctx = _ctx(fund_db, sim_clock, {"MSFT": _nvda_inputs(ticker="MSFT"),
+                                    "NVDA": _nvda_inputs()})
+    run_gate(ctx)
+    assert fund_db.execute(
+        "SELECT status FROM decisions WHERE ticker='MSFT'").fetchone()["status"] == "rejected"
+    assert fund_db.execute(
+        "SELECT status FROM decisions WHERE ticker='NVDA'").fetchone()["status"] == "approved"
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='gate_rejected'"
+        " AND payload LIKE '%gate_error%'").fetchone()["c"] == 1
+
+
+def test_gate_approved_expiry_is_et_no_z_suffix(fund_db, sim_clock):
+    """#risk reads every other time in ET (review Important 3); a bare
+    UTC HH:MM with a 'Z' suffix reads as a much longer TTL than it is."""
+    _seed_decision(fund_db, sim_clock, "NVDA", "buy", 80)
+    run_gate(_ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()}))
+    ev = fund_db.execute(
+        "SELECT payload FROM events WHERE kind='gate_approved'").fetchone()
+    payload = json.loads(ev["payload"])
+    assert "Z" not in payload["expires_hhmm"]
+    from orchestrator.clock import et_hhmm
+    expected = et_hhmm(sim_clock.now() + timedelta(minutes=45))
+    assert payload["expires_hhmm"] == expected
+
+
+def test_pre_gate_alerts_on_gate_error_but_stays_silent_on_no_headroom(fund_db, sim_clock):
+    """A malformed feed must not be a silent no-trade day (review Important
+    5): alert on gate_error, but the legitimate no_headroom/nothing_held
+    skip must stay silent — that's the normal cost optimization."""
+    market = {"NVDA": _nvda_inputs(vol_60d=float("nan")),          # gate_error both shapes
+              "AAPL": _nvda_inputs(ticker="AAPL", cash=0.0, held_qty=0)}  # legit skip
+    ctx = _ctx(fund_db, sim_clock, market)
+    run_day(ctx, execution_turn=None, broker=None, sleep=lambda s: None)
+    alerts = fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert'").fetchall()
+    texts = [json.loads(r["payload"])["text"] for r in alerts]
+    assert any("gate_error" in t and "NVDA" in t for t in texts)
+    assert not any("AAPL" in t for t in texts)
+
+
+def test_close_journals_survive_a_crash_after_the_digest_commits(fund_db, sim_clock, tmp_path):
+    """Digest-exists guard used to short-circuit the whole body, so a kill
+    between the digest commit and the journal writes lost the journals
+    forever (review Minor 6)."""
+    _seed_decision(fund_db, sim_clock, "NVDA", "hold", 0)
+    root = tmp_path / "journals"
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()}, journals_root=root)
+    run_research(ctx, active=["NVDA"])
+    now = iso(sim_clock.now())
+    # Simulate the crash: digest event already committed, journals never written.
+    append_event(fund_db, "digest", {"text": "stub", "run_date": RUN}, now)
+    run_close(ctx)
+    assert (root / "pm.md").exists() and (root / "analyst.md").exists()
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='digest'").fetchone()["c"] == 1
+
+
+def test_decision_pm_timeout_alert_ordered_before_the_row_commit(
+        fund_db, sim_clock, monkeypatch):
+    """review Minor 7: the row commit used to precede append_event, so a
+    kill in between plus the SELECT 1 resume-guard silently dropped the
+    pm_timeout alert forever. If append_event raises/crashes, the decision
+    row must not already be committed — otherwise the resume guard skips
+    the ticker forever and the alert is lost for good."""
+    import orchestrator.daily as daily
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(daily, "append_event", boom)
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    with pytest.raises(RuntimeError):
+        run_decision(ctx, active=["NVDA"])
+    assert fund_db.execute("SELECT COUNT(*) c FROM decisions").fetchone()["c"] == 0
 
 
 def test_gate_sell_is_capped_by_held_qty(fund_db, sim_clock):

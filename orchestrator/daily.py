@@ -13,12 +13,13 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Callable
 
-from gate.risk import Approved, size
+from gate.risk import Approved, Rejected, size
 from gate.tickets import create_ticket, expire_open_tickets, open_tickets
-from orchestrator.clock import Clock, iso
+from orchestrator.clock import Clock, et_hhmm, iso
 from orchestrator.reconcile import reconcile_orders
 from slackkit.outbox import append_event, drain
 from state.critiques import insert_default_critiques
@@ -92,6 +93,28 @@ def run_pre_gate(ctx: StageCtx) -> list[str]:
                    for side in ("buy", "sell"))]
 
 
+def _pre_gate_stage(ctx: StageCtx) -> list[str]:
+    """The pre_gate stage BODY: run_pre_gate's pure computation, plus one
+    alert per ticker dropped because BOTH shapes came back gate_error — a
+    malformed/NaN feed, not the legitimate no_headroom/nothing_held skip,
+    which must stay silent (review Important 5). Only called from inside
+    run_stage, never from run_day's pure recompute-on-done branch, so a
+    resumed day never re-posts these alerts."""
+    active: list[str] = []
+    now = None
+    for ticker, inputs in ctx.market_inputs.items():
+        results = [_sized(inputs, side, "advisory") for side in ("buy", "sell")]
+        if any(isinstance(r, Approved) for r in results):
+            active.append(ticker)
+        elif all(isinstance(r, Rejected) and r.reason == "gate_error" for r in results):
+            if now is None:
+                now = iso(ctx.clock.now())
+            append_event(ctx.conn, "alert",
+                         {"text": f"gate_error {ticker} — dropped from"
+                                  " today's universe (malformed feed)"}, now)
+    return active
+
+
 def run_research(ctx: StageCtx, active: list[str]) -> None:
     """Analyst turn, then the default for anything it missed: neutral/0/
     "no report" (contracts §6). Idempotent: a ticker that already has a
@@ -130,6 +153,14 @@ def run_decision(ctx: StageCtx, active: list[str]) -> None:
             (ctx.run_date, ticker)).fetchone()
         if decided is not None:
             continue
+        # Event BEFORE the row commit (review Minor 7): if a crash lands
+        # between the two, the resume guard above only ever sees the
+        # decisions table, so once that INSERT commits the ticker is
+        # skipped forever. Committing the alert first means the only
+        # crash window left re-runs both (a harmless duplicate alert),
+        # never loses the alert outright.
+        append_event(ctx.conn, "alert",
+                     {"text": f"pm_timeout {ticker} — defaulted to hold"}, now)
         ctx.conn.execute(
             "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
             " invalidation, status, created_at)"
@@ -137,53 +168,96 @@ def run_decision(ctx: StageCtx, active: list[str]) -> None:
             (ctx.run_date, ticker, "no decision by the deadline (pm_timeout)",
              now))
         ctx.conn.commit()
-        append_event(ctx.conn, "alert",
-                     {"text": f"pm_timeout {ticker} — defaulted to hold"}, now)
+
+
+def _gate_reject(ctx: StageCtx, d: sqlite3.Row, reason: str, now: str) -> None:
+    """Reject path (review Critical 1): CAS any existing OPEN ticket for
+    this decision closed FIRST, so a crash-resumed snapshot that now
+    rejects can never leave a live ticket behind for validate_order to
+    still authorize. Looked up fresh (not reused from the caller) so this
+    is also the recovery path for Important 4's per-decision except."""
+    existing = ctx.conn.execute(
+        "SELECT id FROM tickets WHERE decision_id = ? AND status = 'open'",
+        (d["id"],)).fetchone()
+    if existing is not None:
+        try_transition(ctx.conn, "tickets", {"id": existing["id"]},
+                       "open", "expired", now)
+    if try_transition(ctx.conn, "decisions", {"id": d["id"]},
+                      "submitted", "rejected", now):
+        append_event(ctx.conn, "gate_rejected",
+                     {"ticker": d["ticker"], "side": d["action"],
+                      "reason": reason}, now)
+
+
+def _gate_handle(ctx: StageCtx, d: sqlite3.Row, now: str, expires_at: str,
+                 expires_dt: datetime) -> None:
+    if d["action"] == "hold":
+        try_transition(ctx.conn, "decisions", {"id": d["id"]},
+                       "submitted", "held", now)
+        return
+    # Existing-ticket lookup BEFORE sizing settles reject vs. approve (review
+    # Criticals 1 & 2): a crash-resumed decision must reconcile whatever
+    # ticket is already there, not just mint-or-skip on the approve branch.
+    existing = ctx.conn.execute("SELECT * FROM tickets WHERE decision_id = ?",
+                                (d["id"],)).fetchone()
+    result = _sized(ctx.market_inputs.get(d["ticker"]) or {}, d["action"],
+                    "enforce")
+    # The gate CAPS the PM's ask; it never sizes UP a smaller one
+    # (golden day: min(80, 66) = 66).
+    max_qty = min(d["qty"], result.max_qty) if isinstance(result, Approved) else 0
+    if max_qty < 1:
+        reason = result.reason if not isinstance(result, Approved) else "zero_qty"
+        _gate_reject(ctx, d, reason, now)
+        return
+    ticket_id = existing["id"] if existing is not None else ctx.id_factory()
+    if existing is None:
+        create_ticket(ctx.conn, id=ticket_id, decision_id=d["id"],
+                      ticker=d["ticker"], side=d["action"], max_qty=max_qty,
+                      stop_price=d["stop_price"], expires_at_iso=expires_at,
+                      now_iso=now)
+    else:
+        # Reused ticket, reconciled to the freshly computed cap (review
+        # Critical 2) — UPDATE in place, never expire-and-remint: the
+        # ticket id IS the client_order_id (invariant 5), so a new id would
+        # break order idempotency. If the trader already placed an order
+        # against the old cap, that order is untouched — a lower max_qty
+        # here cannot unplace it, it only stops a NEW order from being
+        # authorized above the current cap. Guarded to 'open' so a ticket
+        # some other path already closed is left alone.
+        ctx.conn.execute(
+            "UPDATE tickets SET max_qty = ?, expires_at = ? WHERE id = ?"
+            " AND status = 'open'", (max_qty, expires_at, ticket_id))
+        ctx.conn.commit()
+    if try_transition(ctx.conn, "decisions", {"id": d["id"]},
+                      "submitted", "approved", now):
+        append_event(ctx.conn, "gate_approved",
+                     {"ticket_id": ticket_id, "ticker": d["ticker"],
+                      "side": d["action"], "max_qty": max_qty,
+                      "expires_hhmm": et_hhmm(expires_dt)}, now)
 
 
 def run_gate(ctx: StageCtx) -> None:
     """Enforcement pass (design §3, 11:15). Every submitted decision settles
     today: hold -> held; buy/sell -> a ticket capped at the gate's max_qty, or
     rejected with a reason. Re-runnable: only 'submitted' rows are touched and
-    an already-minted ticket is reused rather than duplicated."""
+    an already-minted ticket is reused (and reconciled) rather than
+    duplicated. Each decision is isolated (review Important 4): a raise
+    handling one ticker rejects only that ticker with 'gate_error' and the
+    rest of the stage still runs — matching the fail-closed posture size()
+    already has, so one bad row can never sink the whole day's execution,
+    reconciliation, and digest."""
     now_dt = ctx.clock.now()
     now = iso(now_dt)
-    expires_at = iso(now_dt + timedelta(minutes=TICKET_TTL_MIN))
+    expires_dt = now_dt + timedelta(minutes=TICKET_TTL_MIN)
+    expires_at = iso(expires_dt)
     rows = ctx.conn.execute(
         "SELECT * FROM decisions WHERE run_date = ? AND status = 'submitted'"
         " ORDER BY id", (ctx.run_date,)).fetchall()
     for d in rows:
-        if d["action"] == "hold":
-            try_transition(ctx.conn, "decisions", {"id": d["id"]},
-                           "submitted", "held", now)
-            continue
-        result = _sized(ctx.market_inputs.get(d["ticker"]) or {}, d["action"],
-                        "enforce")
-        # The gate CAPS the PM's ask; it never sizes UP a smaller one
-        # (golden day: min(80, 66) = 66).
-        max_qty = min(d["qty"], result.max_qty) if isinstance(result, Approved) else 0
-        if max_qty < 1:
-            reason = result.reason if not isinstance(result, Approved) else "zero_qty"
-            if try_transition(ctx.conn, "decisions", {"id": d["id"]},
-                              "submitted", "rejected", now):
-                append_event(ctx.conn, "gate_rejected",
-                             {"ticker": d["ticker"], "side": d["action"],
-                              "reason": reason}, now)
-            continue
-        existing = ctx.conn.execute("SELECT id FROM tickets WHERE decision_id = ?",
-                                    (d["id"],)).fetchone()
-        ticket_id = existing["id"] if existing is not None else ctx.id_factory()
-        if existing is None:
-            create_ticket(ctx.conn, id=ticket_id, decision_id=d["id"],
-                          ticker=d["ticker"], side=d["action"], max_qty=max_qty,
-                          stop_price=d["stop_price"], expires_at_iso=expires_at,
-                          now_iso=now)
-        if try_transition(ctx.conn, "decisions", {"id": d["id"]},
-                          "submitted", "approved", now):
-            append_event(ctx.conn, "gate_approved",
-                         {"ticket_id": ticket_id, "ticker": d["ticker"],
-                          "side": d["action"], "max_qty": max_qty,
-                          "expires_hhmm": expires_at[11:16] + "Z"}, now)
+        try:
+            _gate_handle(ctx, d, now, expires_at, expires_dt)
+        except Exception:
+            _gate_reject(ctx, d, "gate_error", now)
 
 
 def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> str:
@@ -237,35 +311,49 @@ def _signal_line(conn: sqlite3.Connection, run_date: str, agent: str) -> str:
         or "none")
 
 
+def _append_entry_once(root, seat: str, run_date: str, text: str) -> None:
+    """append_entry is append-only, not idempotent by itself; this makes it
+    so by checking the run_date header is not already in the file (review
+    Minor 6)."""
+    path = Path(root) / f"{seat}.md"
+    header = f"## {run_date}\n"
+    if path.exists() and header in path.read_text():
+        return
+    append_entry(root, seat, run_date, text)
+
+
 def run_close(ctx: StageCtx) -> None:
     """EOD digest to #pnl + one journal line per participating seat. Posts
-    even on a full-HOLD day. Idempotent: a digest already written for this
-    run_date short-circuits the whole body (no second digest, no second
-    journal entry)."""
+    even on a full-HOLD day. Idempotent per-piece (review Minor 6): the
+    digest-exists check only guards the digest post, and each journal write
+    is independently guarded by _append_entry_once, so a kill between the
+    digest commit and the journal writes still gets the journals written on
+    resume instead of losing them forever."""
     conn, run_date = ctx.conn, ctx.run_date
     marker = f'"run_date": "{run_date}"'
-    if conn.execute("SELECT 1 FROM events WHERE kind = 'digest' AND payload LIKE ?",
-                    (f"%{marker}%",)).fetchone() is not None:
-        return
+    digest_posted = conn.execute(
+        "SELECT 1 FROM events WHERE kind = 'digest' AND payload LIKE ?",
+        (f"%{marker}%",)).fetchone() is not None
     now = iso(ctx.clock.now())
     decisions, fills = _decision_line(conn, run_date), _fill_line(conn, run_date)
-    cost = conn.execute(
-        "SELECT COALESCE(SUM(usd_estimate), 0) s FROM costs WHERE run_date = ?",
-        (run_date,)).fetchone()["s"]
-    # total_cost_usd is a client-side estimate — always labeled "est." (CLAUDE.md)
-    text = (f"{run_date} close\n{decisions}\n{fills}\n"
-            f"est. inference cost ${cost:.2f}")
-    append_event(conn, "digest", {"text": text, "run_date": run_date}, now)
+    if not digest_posted:
+        cost = conn.execute(
+            "SELECT COALESCE(SUM(usd_estimate), 0) s FROM costs WHERE run_date = ?",
+            (run_date,)).fetchone()["s"]
+        # total_cost_usd is a client-side estimate — always labeled "est." (CLAUDE.md)
+        text = (f"{run_date} close\n{decisions}\n{fills}\n"
+                f"est. inference cost ${cost:.2f}")
+        append_event(conn, "digest", {"text": text, "run_date": run_date}, now)
     if ctx.journals_root is None:
         return
     for agent in conn.execute("SELECT DISTINCT agent FROM signals"
                               " WHERE run_date = ? ORDER BY agent",
                               (run_date,)).fetchall():
-        append_entry(ctx.journals_root, agent["agent"], run_date,
-                     _signal_line(conn, run_date, agent["agent"]))
-    append_entry(ctx.journals_root, "pm", run_date, decisions)
+        _append_entry_once(ctx.journals_root, agent["agent"], run_date,
+                           _signal_line(conn, run_date, agent["agent"]))
+    _append_entry_once(ctx.journals_root, "pm", run_date, decisions)
     if not fills.endswith("none"):
-        append_entry(ctx.journals_root, "exec", run_date, fills)
+        _append_entry_once(ctx.journals_root, "exec", run_date, fills)
 
 
 def run_day(ctx: StageCtx, *, execution_turn: Callable[[], None] | None = None,
@@ -273,7 +361,7 @@ def run_day(ctx: StageCtx, *, execution_turn: Callable[[], None] | None = None,
     """One trading day, sequential (design §3, compressed for MVF). Each stage
     is wrapped in its own checkpoint, so a re-fire resumes rather than
     repeats."""
-    active = run_stage(ctx, "pre_gate", lambda: run_pre_gate(ctx))
+    active = run_stage(ctx, "pre_gate", lambda: _pre_gate_stage(ctx))
     if active is None:               # stage already done: recompute (pure, no writes)
         active = run_pre_gate(ctx)
     run_stage(ctx, "research", lambda: run_research(ctx, active))

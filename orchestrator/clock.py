@@ -33,6 +33,16 @@ def et_run_date(now: datetime) -> str:
     return now.astimezone(_ET).date().isoformat()
 
 
+def et_hhmm(now: datetime) -> str:
+    """HH:MM in America/New_York — the twin of et_run_date for a gate
+    ticket's expiry. Every other time posted to #risk is ET; a bare UTC
+    HH:MM there misreads as a much longer TTL than it is. Pure and naive-
+    datetime-rejecting for the same reasons as et_run_date above."""
+    if now.tzinfo is None:
+        raise ValueError("naive datetime — all fund datetimes are tz-aware")
+    return now.astimezone(_ET).strftime("%H:%M")
+
+
 class SimClock:
     """Settable, acceleratable clock for tests and sim-day (acceptance §0)."""
 
