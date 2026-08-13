@@ -43,7 +43,6 @@ def test_outbox_drain_posts_once_and_marks(fund_db):
     assert row["posted_at"] == NOW
 
 
-import re
 from pathlib import Path
 from slackkit.render import RENDERERS
 
@@ -85,13 +84,42 @@ def test_drain_dead_letters_bad_event_and_continues(fund_db, sim_clock):
     assert posted == actual_posts
 
 def test_every_written_kind_has_a_renderer():
-    """Static guard: every append_event kind literal in the codebase renders."""
+    """Static guard: every append_event kind literal in the codebase renders.
+
+    AST-based (not regex): finds every append_event call, requires its kind
+    argument to be a string literal (2nd positional or kind= kwarg), and
+    fails loudly on anything else — a variable, f-string, etc. would
+    silently escape a regex-based scan and defeat the guard.
+    """
+    import ast
+
     root = Path(__file__).resolve().parents[1]
     kinds = set()
     for py in root.rglob("*.py"):
         if ".venv" in py.parts or "tests" in py.parts:
             continue
-        for m in re.finditer(r"append_event\([^,]+,\s*['\"](\w+)['\"]", py.read_text()):
-            kinds.add(m.group(1))
+        tree = ast.parse(py.read_text(), filename=str(py))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else (
+                func.attr if isinstance(func, ast.Attribute) else None)
+            if name != "append_event":
+                continue
+            kind_arg = None
+            if len(node.args) >= 2:
+                kind_arg = node.args[1]
+            else:
+                for kw in node.keywords:
+                    if kw.arg == "kind":
+                        kind_arg = kw.value
+            loc = f"{py.relative_to(root)}:{node.lineno}"
+            assert kind_arg is not None, (
+                f"{loc}: append_event call has no kind (2nd positional or"
+                f" kind=) argument")
+            assert isinstance(kind_arg, ast.Constant) and isinstance(kind_arg.value, str), (
+                f"{loc}: append_event kinds must be string literals")
+            kinds.add(kind_arg.value)
     missing = kinds - set(RENDERERS)
     assert not missing, f"event kinds without renderer: {missing}"
