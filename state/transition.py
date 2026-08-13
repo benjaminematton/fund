@@ -7,6 +7,7 @@ import sqlite3
 
 EDGES: dict[str, set[tuple[str, str]]] = {
     "decisions": {("submitted", "approved"), ("submitted", "rejected"),
+                  ("submitted", "held"),
                   ("approved", "executed"), ("approved", "failed"),
                   ("approved", "expired")},
     "tickets": {("open", "consumed"), ("open", "expired")},

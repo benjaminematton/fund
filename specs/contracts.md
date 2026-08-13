@@ -6,7 +6,7 @@ Everything downstream (code, tests, fixtures) conforms to this file. Change here
 
 Apply transitions only via `state.transition(table, id, from_status, to_status)` — it asserts the edge is legal and the row is currently in `from_status` (compare-and-swap), making handlers idempotent under retry.
 
-**decision**: `submitted → approved | rejected` (by gate) · `approved → executed | failed | expired` (by trader/clock)
+**decision**: submitted → approved | rejected | held (held: gate-settled hold, terminal) · approved → executed | failed | expired
 **ticket**: `open → consumed | expired`
 **order**: `submitted → filled | partially_filled | canceled | rejected`; `partially_filled → filled | canceled`
 **checkpoint stage**: `pending → running → done | failed`

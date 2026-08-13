@@ -27,6 +27,8 @@ CREATE TABLE critiques (                       -- Critic's advisory review of th
 -- nothing downstream branches on it. Joined by (run_date, ticker) for the
 -- scoreboard's objection hit-rate and for weekly reviews.
 
+-- decision: submitted -> approved | rejected | held (held: gate-settled hold,
+-- terminal) . approved -> executed | failed | expired (contracts.md §1)
 CREATE TABLE decisions (
   id            INTEGER PRIMARY KEY,
   run_date      TEXT NOT NULL,

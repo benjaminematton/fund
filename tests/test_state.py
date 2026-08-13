@@ -1,5 +1,6 @@
 import pytest
 
+from orchestrator.clock import iso
 from state.db import connect
 from state.transition import (EDGES, IllegalTransition, StaleTransition,
                               transition, try_transition)
@@ -10,7 +11,7 @@ TABLES = {"signals", "critiques", "decisions", "tickets", "orders",
           "resolutions", "checkpoints", "events", "costs"}
 
 STATUSES = {
-    "decisions": ["submitted", "approved", "rejected", "executed", "failed", "expired"],
+    "decisions": ["submitted", "approved", "rejected", "held", "executed", "failed", "expired"],
     "tickets": ["open", "consumed", "expired"],
     "orders": ["submitted", "filled", "partially_filled", "canceled", "rejected"],
     "checkpoints": ["pending", "running", "done", "failed"],
@@ -148,6 +149,25 @@ def test_unknown_table_or_bad_key_raises(fund_db):
         transition(fund_db, "signals", {"id": 1}, "a", "b", NOW)
     with pytest.raises(ValueError):
         transition(fund_db, "decisions", {"wrong_col": 1}, "submitted", "approved", NOW)
+
+
+def test_submitted_to_held_is_legal(fund_db, sim_clock):
+    now = iso(sim_clock.now())
+    fund_db.execute(
+        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+        " invalidation, status, created_at) VALUES"
+        " ('2026-07-06','AAPL','hold',0,'t','i','submitted',?)", (now,))
+    fund_db.commit()
+    did = fund_db.execute("SELECT id FROM decisions WHERE ticker='AAPL'").fetchone()["id"]
+    transition(fund_db, "decisions", {"id": did}, "submitted", "held", now)
+    assert fund_db.execute("SELECT status FROM decisions WHERE id=?",
+                           (did,)).fetchone()["status"] == "held"
+
+def test_held_is_terminal(fund_db, sim_clock):
+    # no edge out of held: held -> approved (and every other target) raises
+    with pytest.raises(IllegalTransition):
+        transition(fund_db, "decisions", {"id": 1}, "held", "approved",
+                   iso(sim_clock.now()))
 
 
 def test_ticket_and_gateresult_models_validate():
