@@ -39,7 +39,7 @@ def test_sim_ticket_to_order_to_fill_message(fund_db, sim_clock):
     """Acceptance P1: seed open ticket -> fire stage -> exactly one orders
     row, client_order_id == ticket.id, one #trade-log fill message."""
     _seed(fund_db)
-    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
+    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
     slack = FakeSlack()
     assert _fire(fund_db, sim_clock, broker, slack) == "done"
     rows = fund_db.execute("SELECT * FROM orders").fetchall()
@@ -59,7 +59,7 @@ def test_idempotency_fire_twice_same_ticket(fund_db, sim_clock):
     """Acceptance P1: fire the execution stage twice with the same ticket ->
     still exactly one order row, one Slack message."""
     _seed(fund_db)
-    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
+    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
     slack = FakeSlack()
     _fire(fund_db, sim_clock, broker, slack)
     _fire(fund_db, sim_clock, broker, slack)
@@ -72,7 +72,7 @@ def test_crash_after_consumption_then_restart(fund_db, sim_clock):
     """Acceptance P1: kill the stage after ticket consumption, restart ->
     checkpoint + consumed ticket prevent re-execution (one attempt total)."""
     _seed(fund_db)
-    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
+    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
     slack = FakeSlack()
 
     class Kill(Exception):

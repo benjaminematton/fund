@@ -1,6 +1,10 @@
 """In-memory paper broker for offline tests: enforces client_order_id
-uniqueness exactly like Alpaca (422 on duplicates — contracts §5.1) and
-fills market orders instantly at frozen fixture prices.
+uniqueness exactly like Alpaca (422 on duplicates — contracts §5.1). By
+default `place_order` acks "accepted" (real Alpaca fills market orders
+asynchronously); orders advance to filled/partially_filled/never only on
+`tick()`, per the broker's `mode`. Pass `mode="instant"` for the old
+synchronous-fill fiction still used by hook-level tests that never call
+`tick()`.
 
 FakeAlpaca models the BROKER (a clean dict, like the REST order object).
 `mcp_envelope` models the alpaca-mcp-server layer that sits between the agent
@@ -43,9 +47,11 @@ def mcp_envelope(resp: dict) -> str:
 
 class FakeAlpaca:
     def __init__(self, prices: dict[str, float],
-                 fill_prices: dict[str, float] | None = None) -> None:
+                 fill_prices: dict[str, float] | None = None,
+                 mode: str = "fill") -> None:
         self.prices = dict(prices)
         self.fill_prices = dict(fill_prices or {})
+        self.mode = mode
         self.orders: dict[str, dict] = {}
         self.place_attempts: list[dict] = []
 
@@ -62,6 +68,7 @@ class FakeAlpaca:
             return {"error": "bracket orders require take_profit.limit_price",
                     "status_code": 422}
         symbol = args["symbol"]
+        instant = self.mode == "instant"
         px = self.fill_prices.get(symbol, self.prices[symbol])
         order = {
             "id": f"alp-{len(self.orders) + 1:04d}",
@@ -69,15 +76,47 @@ class FakeAlpaca:
             "symbol": symbol,
             "side": args["side"],
             "qty": args["qty"],
-            "status": "filled",
-            "filled_qty": args["qty"],
-            "filled_avg_price": px,
+            "status": "filled" if instant else "accepted",
+            "filled_qty": args["qty"] if instant else 0,
+            "filled_avg_price": px if instant else None,
             "order_class": args.get("order_class", ""),
             "stop_loss": args.get("stop_loss"),
         }
         self.orders[coid] = order
         return dict(order)
 
+    def tick(self) -> None:
+        """Advance accepted orders one step, per `mode`. No-op for `instant`
+        (orders are already terminal) and `never_fill` (orders never
+        advance). Already-terminal orders (filled) are left untouched."""
+        if self.mode in ("instant", "never_fill"):
+            return
+        for order in self.orders.values():
+            px = self.fill_prices.get(order["symbol"], self.prices[order["symbol"]])
+            if self.mode == "fill" and order["status"] == "accepted":
+                order["status"] = "filled"
+                order["filled_qty"] = order["qty"]
+                order["filled_avg_price"] = px
+            elif self.mode == "partial":
+                if order["status"] == "accepted":
+                    order["status"] = "partially_filled"
+                    order["filled_qty"] = order["qty"] // 2
+                    order["filled_avg_price"] = px
+                elif order["status"] == "partially_filled":
+                    order["status"] = "filled"
+                    order["filled_qty"] = order["qty"]
+                    order["filled_avg_price"] = px
+
     def get_order_by_client_order_id(self, coid: str) -> dict | None:
+        """Mirrors AlpacaSource.get_order_by_client_order_id (market/
+        source_alpaca.py): qty/filled_qty/filled_avg_price come back as
+        strings on the real wire (alpaca-py 0.44 Order fields are
+        Optional[str]); `status` and a `None` filled_avg_price stay as-is."""
         o = self.orders.get(coid)
-        return dict(o) if o else None
+        if o is None:
+            return None
+        out = dict(o)
+        for k in ("qty", "filled_qty", "filled_avg_price"):
+            if out.get(k) is not None:
+                out[k] = str(out[k])
+        return out

@@ -18,7 +18,7 @@ def _turn(fund_db, sim_clock, broker, decisions):
 
 def test_replay_happy_turn_executes_real_tools(fund_db, sim_clock):
     _seed(fund_db)
-    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
+    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
     outcomes = _turn(fund_db, sim_clock, broker, [
         {"seat": "exec", "tool": "mcp__fund__list_open_tickets", "args": {}},
         {"seat": "exec", "tool": "mcp__alpaca__place_stock_order",

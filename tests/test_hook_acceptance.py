@@ -51,7 +51,7 @@ def test_replayed_place_order_denied(fund_db, sim_clock, recording,
 
 def test_stop_ticket_yields_oto_order(fund_db, sim_clock):
     _seed(fund_db, stop_price=168.0)
-    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
+    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
     outcomes = _replay(fund_db, sim_clock, broker, "oto.jsonl")
     assert json.loads(outcomes[-1]["result"])["data"]["status"] == "filled"
     placed = broker.place_attempts[0]
@@ -61,7 +61,7 @@ def test_stop_ticket_yields_oto_order(fund_db, sim_clock):
 
 def test_stopless_ticket_yields_plain_order(fund_db, sim_clock):
     _seed(fund_db)  # stop_price NULL
-    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14})
+    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
     outcomes = _replay(fund_db, sim_clock, broker, "happy_market.jsonl")
     assert json.loads(outcomes[-1]["result"])["data"]["status"] == "filled"
     placed = broker.place_attempts[0]

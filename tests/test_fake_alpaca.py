@@ -8,8 +8,8 @@ MARKET = json.loads(
      "golden-day-market.json").read_text())
 
 
-def _broker():
-    return FakeAlpaca(MARKET["prices"], MARKET["fill_prices"])
+def _broker(mode="fill"):
+    return FakeAlpaca(MARKET["prices"], MARKET["fill_prices"], mode=mode)
 
 
 def order(**over):
@@ -27,7 +27,7 @@ def test_market_fixture_matches_golden_day():
 
 
 def test_instant_fill_at_fixture_price():
-    b = _broker()
+    b = _broker(mode="instant")
     resp = b.place_order(order())
     assert resp["status"] == "filled"
     assert resp["filled_qty"] == 67 and resp["filled_avg_price"] == 180.14
@@ -35,13 +35,16 @@ def test_instant_fill_at_fixture_price():
 
 
 def test_duplicate_client_order_id_422_and_original_untouched():
-    b = _broker()
+    b = _broker(mode="instant")
     first = b.place_order(order())
     dup = b.place_order(order(qty=1))
     assert dup == {"error": "client_order_id must be unique", "status_code": 422}
     assert len(b.place_attempts) == 2
     got = b.get_order_by_client_order_id(order()["client_order_id"])
-    assert got["filled_qty"] == first["filled_qty"] == 67  # reconcile path, §5.1
+    # place_order's direct return stays native (67); get_order_by_client_order_id
+    # returns the live string shape ("67") — authorized change, see ruling.
+    assert first["filled_qty"] == 67
+    assert got["filled_qty"] == "67"  # reconcile path, §5.1
 
 
 def test_oto_stop_leg_shape_recorded():
@@ -67,3 +70,31 @@ def test_bracket_without_take_profit_is_422():
 
 def test_get_unknown_coid_is_none():
     assert _broker().get_order_by_client_order_id("nope") is None
+
+
+def test_market_order_acks_accepted_then_fills_on_tick():
+    b = FakeAlpaca({"NVDA": 180.0}, {"NVDA": 180.14})
+    ack = b.place_order({"client_order_id": "c1", "symbol": "NVDA",
+                         "side": "buy", "qty": 67})
+    assert ack["status"] == "accepted"
+    assert ack["filled_qty"] == 0 and ack["filled_avg_price"] is None
+    b.tick()
+    o = b.get_order_by_client_order_id("c1")
+    # authorized change: get_order_by_client_order_id reproduces the LIVE
+    # STRING shape (alpaca-py 0.44 Order.filled_qty/filled_avg_price are
+    # Optional[str]) — was `o["filled_qty"] == 67` / `180.14`.
+    assert o["status"] == "filled" and o["filled_qty"] == "67"
+    assert o["filled_avg_price"] == "180.14"
+
+
+def test_never_fill_and_partial_modes():
+    b = FakeAlpaca({"NVDA": 180.0}, mode="never_fill")
+    b.place_order({"client_order_id": "c1", "symbol": "NVDA", "side": "buy", "qty": 5})
+    for _ in range(10): b.tick()
+    assert b.get_order_by_client_order_id("c1")["status"] == "accepted"
+    p = FakeAlpaca({"NVDA": 180.0}, mode="partial")
+    p.place_order({"client_order_id": "c2", "symbol": "NVDA", "side": "buy", "qty": 10})
+    p.tick()
+    o = p.get_order_by_client_order_id("c2")
+    # authorized change: filled_qty is the live numeric string shape.
+    assert o["status"] == "partially_filled" and 0 < int(o["filled_qty"]) < 10
