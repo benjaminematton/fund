@@ -1,0 +1,294 @@
+"""Day-shape simulations (MVF T3). Four full trading days driven end-to-end
+through the REAL gate, tools, hooks, DB, outbox and fill-poll, against
+RECORDED LLM decisions — the LLM is the only thing replaced (acceptance §0).
+No network, no API keys, no LLM cost.
+
+Everything downstream of the recording is production code: the PreToolUse
+order gate, the PostToolUse order recorder, the fund MCP tool handlers, the
+risk math, the ticket store, orchestrator/daily.py's stage machine and
+orchestrator/reconcile.py's fill-poll. Market state and the fill price are
+fixtures/golden-day.md's own numbers.
+
+Time is injected (SimClock) and so is the poll sleep: `_sleep` advances the
+clock and ticks the broker, which is how an order placed as 'accepted'
+becomes 'filled' during the reconciliation stage rather than by fiat."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from agents.replay import load_recording, replay_turn
+from agents.runtime import make_order_gate, make_order_recorder, record_cost
+from orchestrator.clock import SimClock, et_run_date, iso
+from orchestrator.daily import StageCtx, run_day
+from slackkit.fake import FakeSlack
+from state.db import connect
+from tests.conftest import make_executor
+from tests.fake_alpaca import FakeAlpaca
+
+RECORDINGS = Path(__file__).with_name("recordings")
+
+# 11:30 ET on the golden day. run_date is the ET calendar date (schema.sql),
+# derived here via et_run_date — never hardcoded into a stage.
+START = datetime(2026, 7, 6, 15, 30, tzinfo=timezone.utc)
+
+# The exec recording's client_order_id; invariant 5 makes it the ticket id too,
+# so the sim's id_factory must mint exactly this.
+TID = "a3f90000-0000-4000-8000-000000000001"
+
+PRICES = {"NVDA": 180.00, "MSFT": 505.00}      # fixtures/golden-day.md
+FILL_PRICES = {"NVDA": 180.14}                 # fixture fill
+
+# Stands in for ResultMessage.total_cost_usd, which replay has no source for.
+# One row per turn, exactly as the live runtime records it (agents/runtime.py).
+SIM_TURN_COST_USD = 0.01
+
+STAGES = {"pre_gate", "research", "decision", "gate", "execution",
+          "reconciliation", "close"}
+
+
+def _nvda(**over) -> dict:
+    """fixtures/golden-day.md's market state: equity 100k, cash 30k, NVDA 180,
+    vol 42%, corr 0.55, tech book 27,840 (AAPL) + 20,200 (MSFT) = 48,040,
+    2 positions, day −0.4%. Sizes to the golden 66."""
+    d = dict(ticker="NVDA", side="buy", equity=100000.0, cash=30000.0,
+             price=180.0, vol_60d=0.42, avg_corr=0.55, held_qty=0,
+             position_count=2, sector="tech", sector_value=48040.0,
+             daily_pnl_pct=-0.004)
+    d.update(over)
+    return d
+
+
+def _msft(**over) -> dict:
+    """Same book, the held MSFT line (40 sh @ 505) — sell-able, so it survives
+    pre-gate and reaches the PM."""
+    return _nvda(ticker="MSFT", price=505.0, held_qty=40, **over)
+
+
+@dataclass
+class SimResult:
+    conn: sqlite3.Connection
+    slack: FakeSlack
+    broker: FakeAlpaca
+    clock: SimClock
+    run_date: str
+    turns: dict[str, int]
+    journals: Path
+
+
+def sim_day(tmp_path, *, market: dict,
+            analyst_recs=("mvf_analyst.jsonl",),
+            pm_recs=("mvf_pm.jsonl",),
+            exec_recs=("mvf_exec.jsonl",),
+            feed_break: dict | None = None) -> SimResult:
+    """One simulated trading day. `feed_break` applies market-input overrides
+    AFTER the decision turn — a feed that goes bad between the PM's submit and
+    the gate's enforcement pass, which is the only way a ticker can be live at
+    pre-gate and garbage at the gate."""
+    conn = connect(tmp_path / "fund.sqlite")
+    clock = SimClock(START)
+    run_date = et_run_date(clock.now())
+    broker = FakeAlpaca(PRICES, FILL_PRICES, mode="fill")
+    slack = FakeSlack()
+    turns = {"research": 0, "decision": 0, "execution": 0}
+
+    def _sleep(seconds: float) -> None:
+        """The fill-poll's injected wait: time passes and the broker works."""
+        clock.advance(seconds=int(seconds))
+        broker.tick()
+
+    def _turn(stage: str, seat: str, files, after=None):
+        decisions = [d for f in files for d in load_recording(RECORDINGS / f)]
+
+        def run() -> None:
+            turns[stage] += 1
+            asyncio.run(replay_turn(
+                decisions,
+                pre_hooks=[make_order_gate(lambda: conn, clock)],
+                executor=make_executor(lambda: conn, clock, broker, seat=seat),
+                post_hooks=[make_order_recorder(lambda: conn, clock)]))
+            record_cost(conn, run_date, seat, f"sim-{seat}", SIM_TURN_COST_USD,
+                        iso(clock.now()))
+            if after is not None:
+                after()
+
+        return run
+
+    def break_feed() -> None:
+        for ticker, over in (feed_break or {}).items():
+            market[ticker].update(over)
+
+    journals = tmp_path / "journals"
+    ctx = StageCtx(
+        conn=conn, run_date=run_date, clock=clock, slack=slack,
+        market_inputs=market,
+        run_turn={"research": _turn("research", "analyst", analyst_recs),
+                  "decision": _turn("decision", "pm", pm_recs, after=break_feed)},
+        id_factory=lambda: TID, journals_root=journals)
+    run_day(ctx, execution_turn=_turn("execution", "exec", exec_recs),
+            broker=broker, sleep=_sleep)
+    return SimResult(conn=conn, slack=slack, broker=broker, clock=clock,
+                     run_date=run_date, turns=turns, journals=journals)
+
+
+def golden_day(tmp_path) -> SimResult:
+    """The golden-day sim, shared with tests/test_audit_day.py."""
+    return sim_day(tmp_path, market={"NVDA": _nvda()})
+
+
+# --- helpers ----------------------------------------------------------------
+
+def _checkpoints(sim: SimResult) -> dict:
+    return dict(sim.conn.execute(
+        "SELECT stage, status FROM checkpoints WHERE run_date = ?",
+        (sim.run_date,)).fetchall())
+
+
+def _count(sim: SimResult, table: str) -> int:
+    return sim.conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+
+
+def _decision(sim: SimResult, ticker: str) -> sqlite3.Row:
+    return sim.conn.execute(
+        "SELECT * FROM decisions WHERE run_date = ? AND ticker = ?",
+        (sim.run_date, ticker)).fetchone()
+
+
+def _event_payloads(sim: SimResult, kind: str) -> list[dict]:
+    return [json.loads(r["payload"]) for r in sim.conn.execute(
+        "SELECT payload FROM events WHERE kind = ? ORDER BY id", (kind,))]
+
+
+def _assert_day_completed(sim: SimResult) -> None:
+    """Every stage done, the outbox fully drained, the digest posted — true on
+    EVERY day shape, including the ones that trade nothing (invariant 4)."""
+    assert _checkpoints(sim) == {s: "done" for s in STAGES}
+    assert _count(sim, "events WHERE posted_at IS NULL") == 0
+    assert len(sim.slack.posts["#pnl"]) == 1
+
+
+# --- 1. golden day ----------------------------------------------------------
+
+def test_golden_day(tmp_path):
+    """NVDA active, analyst bullish/72, PM buys 80, gate caps at the golden 66,
+    order fills at 180.14 through the real fill-poll."""
+    sim = golden_day(tmp_path)
+
+    # the analyst's OWN signal, not run_research's neutral/0 default
+    sig = sim.conn.execute("SELECT * FROM signals").fetchone()
+    assert (sig["agent"], sig["ticker"], sig["direction"], sig["confidence"]) \
+        == ("analyst", "NVDA", "bullish", 72)
+
+    # the PM's ask survives on the decision; the gate's cap lives on the ticket
+    d = _decision(sim, "NVDA")
+    assert (d["action"], d["qty"], d["status"]) == ("buy", 80, "executed")
+    ticket = sim.conn.execute("SELECT * FROM tickets").fetchone()
+    assert ticket["id"] == TID                       # id == client_order_id
+    assert ticket["max_qty"] == 66                   # min(80, gate 66)
+    assert ticket["status"] == "consumed"
+    assert _count(sim, "tickets") == 1
+
+    # the order really went to the broker, sized to the ticket, once
+    assert len(sim.broker.place_attempts) == 1
+    attempt = sim.broker.place_attempts[0]
+    assert (attempt["client_order_id"], attempt["symbol"], attempt["side"],
+            attempt["qty"]) == (TID, "NVDA", "buy", "66")
+
+    o = sim.conn.execute("SELECT * FROM orders").fetchone()
+    assert _count(sim, "orders") == 1
+    assert (o["client_order_id"], o["status"]) == (TID, "filled")
+    assert (o["filled_qty"], o["filled_avg_price"]) == (66, 180.14)
+
+    assert sim.slack.posts["#trade-log"] == [
+        {"ts": sim.slack.posts["#trade-log"][0]["ts"],
+         "text": "🧾 NVDA buy 66@180.14 (ticket a3f90000)", "thread_ts": None}]
+    assert [p["max_qty"] for p in _event_payloads(sim, "gate_approved")] == [66]
+
+    # every turn that ran recorded its cost, and the digest reports the sum
+    assert sim.turns == {"research": 1, "decision": 1, "execution": 1}
+    assert _count(sim, "costs") == 3
+    digest = _event_payloads(sim, "digest")[0]["text"]
+    assert "decisions: NVDA buy 80 (executed)" in digest
+    assert "fills: NVDA buy 66@180.14" in digest
+    assert "est. inference cost $0.03" in digest
+
+    assert (sim.journals / "exec.md").read_text().count("NVDA buy 66@180.14") == 1
+    _assert_day_completed(sim)
+
+
+# --- 2. all-hold day --------------------------------------------------------
+
+def test_all_hold_day(tmp_path):
+    """PM holds: nothing is ticketed, the exec seat is never woken (no LLM
+    spend on a hold day), and the day still completes and still posts."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  pm_recs=("mvf_pm_hold.jsonl",))
+
+    d = _decision(sim, "NVDA")
+    assert (d["action"], d["qty"], d["status"]) == ("hold", 0, "held")
+    assert _count(sim, "tickets") == 0
+    assert _count(sim, "orders") == 0
+    assert sim.broker.place_attempts == []           # zero broker attempts
+    assert sim.turns["execution"] == 0               # counted, not inferred
+    assert sim.turns == {"research": 1, "decision": 1, "execution": 0}
+    assert _count(sim, "costs") == 2                 # analyst + pm only
+    assert "#trade-log" not in sim.slack.posts
+    assert _event_payloads(sim, "digest")[0]["text"].endswith(
+        "decisions: NVDA hold 0 (held)\nfills: none\nest. inference cost $0.02")
+    _assert_day_completed(sim)
+
+
+# --- 3. mixed day -----------------------------------------------------------
+
+def test_mixed_day(tmp_path):
+    """Two tickers, one traded and one held, in the same day."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda(), "MSFT": _msft()},
+                  pm_recs=("mvf_pm.jsonl", "mvf_pm_msft_hold.jsonl"))
+
+    nvda, msft = _decision(sim, "NVDA"), _decision(sim, "MSFT")
+    assert (nvda["action"], nvda["status"]) == ("buy", "executed")
+    assert (msft["action"], msft["qty"], msft["status"]) == ("hold", 0, "held")
+
+    # MSFT had no analyst coverage -> run_research's neutral/0 default
+    msft_sig = sim.conn.execute(
+        "SELECT * FROM signals WHERE ticker = 'MSFT'").fetchone()
+    assert (msft_sig["direction"], msft_sig["confidence"], msft_sig["summary"]) \
+        == ("neutral", 0, "no report")
+
+    assert _count(sim, "tickets") == 1
+    assert sim.conn.execute("SELECT ticker FROM tickets").fetchone()["ticker"] == "NVDA"
+    assert _count(sim, "orders") == 1
+    assert [a["symbol"] for a in sim.broker.place_attempts] == ["NVDA"]
+    o = sim.conn.execute("SELECT * FROM orders").fetchone()
+    assert (o["symbol"], o["status"], o["filled_qty"]) == ("NVDA", "filled", 66)
+    assert len(sim.slack.posts["#trade-log"]) == 1
+    assert sim.turns["execution"] == 1
+    _assert_day_completed(sim)
+
+
+# --- 4. gate-reject day -----------------------------------------------------
+
+def test_gate_reject_day(tmp_path):
+    """The vol feed goes NaN between the PM's submit and the gate's enforce
+    pass. The decision is rejected, nothing is ticketed, nothing is placed,
+    the reject is announced, and the day still completes (invariant 4)."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  feed_break={"NVDA": {"vol_60d": float("nan")}})
+
+    d = _decision(sim, "NVDA")
+    assert (d["action"], d["qty"], d["status"]) == ("buy", 80, "rejected")
+    assert _count(sim, "tickets") == 0
+    assert _count(sim, "orders") == 0
+    assert sim.broker.place_attempts == []
+    assert sim.turns["execution"] == 0                # no ticket -> no exec turn
+
+    assert _event_payloads(sim, "gate_rejected") == [
+        {"ticker": "NVDA", "side": "buy", "reason": "gate_error"}]
+    assert "⛔ NVDA buy — gate_error" in [p["text"] for p in sim.slack.posts["#risk"]]
+    assert _event_payloads(sim, "gate_approved") == []
+    _assert_day_completed(sim)

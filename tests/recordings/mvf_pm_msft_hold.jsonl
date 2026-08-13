@@ -1,0 +1,1 @@
+{"seat": "pm", "tool": "mcp__fund__submit_decision", "args": {"ticker": "MSFT", "action": "hold", "qty": 0, "thesis": "Existing 40 shares at 505 are already at target weight; nothing new today.", "invalidation": "Close below the 480 cost basis, or a guide-down on cloud growth."}}
