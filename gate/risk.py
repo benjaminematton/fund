@@ -70,7 +70,8 @@ def size(inputs, mode: Mode):
     try:
         i = inputs if isinstance(inputs, GateInputs) else GateInputs.model_validate(inputs)
         if (i.price <= 0 or i.equity <= 0 or i.cash < 0 or i.held_qty < 0
-                or i.vol_60d < 0 or i.sector_value < 0 or i.position_count < 0):
+                or i.vol_60d < 0 or i.sector_value < 0 or i.position_count < 0
+                or i.avg_corr < -1.0 or i.avg_corr > 1.0):
             return Rejected("gate_error")
         if i.side == "sell":
             return (Approved(max_qty=i.held_qty, pre_sector_qty=i.held_qty,

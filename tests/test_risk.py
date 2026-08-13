@@ -45,7 +45,16 @@ def test_post_construction_nan_mutation_is_refused(field):
     ("vol_60d", -1.0),
     ("sector_value", -1e9),
     ("position_count", -5),
+    ("avg_corr", -99.0),
+    ("avg_corr", 1.5),
 ])
 def test_negative_nonsensical_inputs_rejected(field, value):
     r = size(golden_inputs(**{field: value}), mode="enforce")
     assert r == Rejected("gate_error")
+
+@pytest.mark.parametrize("value", [-1.0, 1.0])
+def test_avg_corr_boundary_still_accepted(value):
+    """-1.0 and 1.0 are legitimate perfect correlations, not malformed
+    input — the out-of-range guard must not reject them."""
+    r = size(golden_inputs(avg_corr=value), mode="enforce")
+    assert isinstance(r, Approved)
