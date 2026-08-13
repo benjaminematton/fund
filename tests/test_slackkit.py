@@ -41,3 +41,51 @@ def test_outbox_drain_posts_once_and_marks(fund_db):
     assert len(slack.posts["#trade-log"]) == 1
     row = fund_db.execute("SELECT posted_at FROM events").fetchone()
     assert row["posted_at"] == NOW
+
+
+import re
+from pathlib import Path
+from slackkit.render import RENDERERS
+
+
+def test_new_event_kinds_render():
+    assert render("signal", {"agent": "analyst", "ticker": "NVDA",
+        "direction": "bullish", "confidence": 72, "summary": "s"})[0] == "#research"
+    assert render("decision", {"ticker": "NVDA", "action": "buy", "qty": 80,
+        "thesis": "t"})[0] == "#trading-floor"
+    assert render("gate_approved", {"ticket_id": "a3f90000-x", "side": "buy",
+        "ticker": "NVDA", "max_qty": 67, "expires_hhmm": "16:00"}) == (
+        "#risk", "✅ TICKET a3f90000 buy NVDA ≤67 expires 16:00")
+    assert render("gate_rejected", {"ticker": "NVDA", "side": "buy",
+        "reason": "gate_error"}) == ("#risk", "⛔ NVDA buy — gate_error")
+    assert render("alert", {"text": "x"})[0] == "#risk"
+    assert render("digest", {"text": "x"})[0] == "#pnl"
+    assert render("projection_error", {"event_id": 3, "kind": "bogus"})[0] == "#risk"
+
+def test_drain_dead_letters_bad_event_and_continues(fund_db, sim_clock):
+    from orchestrator.clock import iso
+    from slackkit.fake import FakeSlack
+    now = iso(sim_clock.now())
+    append_event(fund_db, "bogus_kind", {"x": 1}, now)
+    append_event(fund_db, "alert", {"text": "after"}, now)
+    slack = FakeSlack()
+    drain(fund_db, slack, now)
+    # queue is not jammed: the good event posted, the bad one dead-lettered
+    assert [p["text"] for p in slack.posts["#risk"] if "after" in p["text"]]
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"] == 0
+    # and a projection_error event was appended AND posted
+    assert any("projection_error" in p["text"] or "bogus_kind" in p["text"]
+               for p in slack.posts["#risk"])
+
+def test_every_written_kind_has_a_renderer():
+    """Static guard: every append_event kind literal in the codebase renders."""
+    root = Path(__file__).resolve().parents[1]
+    kinds = set()
+    for py in root.rglob("*.py"):
+        if ".venv" in py.parts or "tests" in py.parts:
+            continue
+        for m in re.finditer(r"append_event\([^,]+,\s*['\"](\w+)['\"]", py.read_text()):
+            kinds.add(m.group(1))
+    missing = kinds - set(RENDERERS)
+    assert not missing, f"event kinds without renderer: {missing}"
