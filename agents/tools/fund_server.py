@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from gate.tickets import open_tickets
 from orchestrator.clock import Clock, et_run_date, iso
 from slackkit.outbox import append_event
+from state.critiques import insert_default_critiques  # noqa: F401 (re-export)
 from state.models import Decision, Signal
 
 SIGNAL_SEATS = ("analyst",)
@@ -108,21 +109,6 @@ def handle_submit_decision(conn: sqlite3.Connection, *, seat: str, args: dict,
                 {"ticker": dec.ticker, "action": dec.action, "qty": dec.qty,
                  "thesis": dec.thesis}, now_iso)
     return {"ok": True}
-
-
-def insert_default_critiques(conn: sqlite3.Connection, run_date: str,
-                             tickers: list[str], note: str,
-                             now_iso: str) -> None:
-    """MVF has no Critic seat: the orchestrator calls this at decision-stage
-    start so submit_decision's critique-row guard never blocks. Idempotent —
-    INSERT OR IGNORE makes a re-run a no-op."""
-    for ticker in tickers:
-        conn.execute(
-            "INSERT OR IGNORE INTO critiques (run_date, ticker, verdict,"
-            " objections, note, created_at)"
-            " VALUES (?, ?, 'clear', '[]', ?, ?)",
-            (run_date, ticker, note, now_iso))
-    conn.commit()
 
 
 def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
