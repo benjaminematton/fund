@@ -19,6 +19,22 @@ def golden_inputs(**over):
     base.update(over)
     return GateInputs(**base)
 
+def golden_dict(**over):
+    """Same golden vector as golden_inputs(), but returns a plain dict
+    instead of a constructed GateInputs -- the shape build_gate_inputs()
+    (plans/mvf.md:473) actually hands to size(), so garbage can flow
+    through to the gate's own validator instead of being rejected early
+    by test code."""
+    base = dict(
+        ticker="NVDA", side="buy", equity=FIX["equity"], cash=FIX["cash"],
+        price=FIX["prices"]["NVDA"], vol_60d=FIX["vol_60d"]["NVDA"],
+        avg_corr=FIX["avg_corr"]["NVDA"], held_qty=0,
+        position_count=FIX["position_count"], sector="tech",
+        sector_value=120 * 232.0 + 40 * 505.0,
+        daily_pnl_pct=FIX["daily_pnl_pct"])
+    base.update(over)
+    return base
+
 def test_golden_day_vector_both_step_values():
     r = size(golden_inputs(), mode="enforce")
     assert isinstance(r, Approved)
@@ -62,7 +78,8 @@ def test_avg_corr_boundary_still_accepted(value):
     assert isinstance(r, Approved)
 
 
-@pytest.mark.parametrize("field", ["avg_corr", "daily_pnl_pct", "cash"])
+@pytest.mark.parametrize("field", ["avg_corr", "daily_pnl_pct", "cash",
+                                   "vol_60d", "equity", "sector_value"])
 def test_model_copy_nan_bypass_is_rejected(field):
     """model_copy(update=...) skips field validators in pydantic v2, so it
     can still produce a frozen, isinstance-valid GateInputs carrying NaN
@@ -168,7 +185,8 @@ def test_cash_cap_binds():
 def test_position_count_hard_reject_new_position_only():
     assert size(golden_inputs(position_count=8), "enforce") == Rejected("position_count")
     r = size(golden_inputs(position_count=8, held_qty=5), "enforce")
-    assert isinstance(r, Approved)               # adding to an existing position is not a new slot
+    # adding to an existing position is not a new slot
+    assert r == Approved(max_qty=GOLDEN_MAX_QTY, pre_sector_qty=105, side="buy")
 
 def test_circuit_breaker_rejects_buys():
     assert size(golden_inputs(daily_pnl_pct=-0.03), "enforce") == Rejected("circuit_breaker")
@@ -178,30 +196,49 @@ def test_sell_is_capped_at_held():
     assert r.max_qty == 40
     assert size(golden_inputs(side="sell", held_qty=0), "enforce") == Rejected("nothing_held")
 
-@pytest.mark.parametrize("field,val", [
+MALFORMED_FIELDS = [
     ("vol_60d", float("nan")), ("vol_60d", float("inf")), ("avg_corr", float("nan")),
     ("price", 0.0), ("price", -1.0), ("equity", float("nan")), ("cash", -5.0),
-    ("daily_pnl_pct", float("nan")), ("sector_value", float("inf"))])
+    ("daily_pnl_pct", float("nan")), ("sector_value", float("inf"))]
+
+# Of the 9 cases above, these 6 are non-finite values on fields covered by
+# GateInputs' own field_validator, so they raise ValidationError at
+# construction rather than reaching size()'s runtime re-check.
+MALFORMED_NONFINITE_FIELDS = [
+    ("vol_60d", float("nan")), ("vol_60d", float("inf")), ("avg_corr", float("nan")),
+    ("equity", float("nan")), ("daily_pnl_pct", float("nan")), ("sector_value", float("inf"))]
+
+@pytest.mark.parametrize("field,val", MALFORMED_FIELDS)
 def test_fail_closed_on_malformed(field, val):
-    """Fail-closed on malformed input, whichever layer catches it first.
-    GateInputs' own field_validator (equity/cash/price/vol_60d/avg_corr/
-    sector_value/daily_pnl_pct) rejects non-finite values at construction
-    with a ValidationError -- a stronger guarantee than size()'s runtime
-    re-check, which is what price<=0 and cash<0 (both finite, so they pass
-    construction) fall through to instead. Either way, malformed input must
-    never reach Approved."""
-    try:
-        g = golden_inputs(**{field: val})
-    except ValidationError:
-        return
-    assert size(g, "enforce") == Rejected("gate_error")
+    """Fail-closed on malformed input via the PRODUCTION caller shape:
+    build_gate_inputs() (plans/mvf.md:473) hands size() a plain dict, NOT a
+    GateInputs, so garbage flows to the gate's own validator (review
+    decision C3: gate/risk.py owns ALL fail-closed validation). Malformed
+    input must never reach Approved, regardless of which layer inside
+    size() catches it."""
+    base = golden_dict(**{field: val})
+    assert size(base, "enforce") == Rejected("gate_error")
+
+@pytest.mark.parametrize("field,val", MALFORMED_NONFINITE_FIELDS)
+def test_fail_closed_on_malformed_rejected_at_construction(field, val):
+    """Companion to test_fail_closed_on_malformed: for the 6 (of 9) cases
+    that are non-finite values on validated fields, pin the stronger
+    construction-time guarantee directly -- GateInputs(**bad) itself must
+    raise ValidationError, not just size() returning Rejected."""
+    with pytest.raises(ValidationError):
+        GateInputs(**golden_dict(**{field: val}))
 
 def test_fail_closed_on_garbage_types():
     assert size({"ticker": "NVDA"}, "enforce") == Rejected("gate_error")
     assert size(None, "enforce") == Rejected("gate_error")
 
 def test_hold_skip_shape():
-    """{buy:0, sell:0} shape the pre-gate uses: no cash, nothing held."""
-    buy = size(golden_inputs(cash=0.0), "enforce")
+    """{buy:0, sell:0} shape the pre-gate uses: no cash, nothing held.
+    Pins the exact reason codes -- a normal no_headroom/nothing_held skip
+    is semantically different from a gate_error malfunction and drives a
+    different downstream event. The buy branch runs in advisory mode to
+    pin the advisory==enforce invariant (spec §3.9) on a reject path too."""
+    buy = size(golden_inputs(cash=0.0), "advisory")
     sell = size(golden_inputs(side="sell", held_qty=0), "enforce")
-    assert isinstance(buy, Rejected) and isinstance(sell, Rejected)
+    assert buy == Rejected("no_headroom")
+    assert sell == Rejected("nothing_held")
