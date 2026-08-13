@@ -17,21 +17,25 @@ def annualized_vol(series: pd.Series) -> float:
 
 def avg_corr_vs_book(close_df: pd.DataFrame, ticker: str, book_tickers: list[str]) -> float:
     """Mean pairwise return-correlation of `ticker` vs each ticker in the book.
-    Empty book -> 0.0 (most permissive multiplier tier)."""
+    Empty book -> 0.0 (most permissive multiplier tier). A book ticker missing
+    from close_df -> NaN (gate rejects; never silently drop and understate corr)."""
     if not book_tickers:
         return 0.0
+    if ticker not in close_df.columns or any(t not in close_df.columns for t in book_tickers):
+        return float("nan")
     rets = close_df[ticker].pct_change()
     corrs = [rets.corr(close_df[t].pct_change()) for t in book_tickers]
     return float(np.mean(corrs))
 
 
 def sector_book_value(positions: dict, prices: dict, sectors: dict, sector: str) -> float:
-    """Sum of qty * current price for held positions whose sector matches."""
-    return sum(
-        qty * prices[t]
-        for t, qty in positions.items()
-        if sectors.get(t) == sector
-    )
+    """Sum of qty * current price for held positions whose sector matches.
+    A position with no entry in prices -> NaN (gate rejects; never silently
+    drop and understate sector book value)."""
+    matching = [t for t, qty in positions.items() if sectors.get(t) == sector]
+    if any(t not in prices for t in matching):
+        return float("nan")
+    return sum(positions[t] * prices[t] for t in matching)
 
 
 def build_gate_inputs(
