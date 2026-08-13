@@ -15,3 +15,17 @@ def test_append_only_no_rewrites(tmp_path):
     before = (root / "pm.md").read_text()
     append_entry(root, "pm", "2026-07-06", "second")
     assert (root / "pm.md").read_text().startswith(before)
+
+def test_recent_entries_zero_limit(tmp_path):
+    root = tmp_path / "journals"
+    append_entry(root, "pm", "2026-07-06", "NVDA buy 67 — capex thesis.")
+    append_entry(root, "pm", "2026-07-07", "Held; thesis intact.")
+    text = recent_entries(root, "pm", limit=0)
+    assert text == ""
+
+def test_recent_entries_negative_limit(tmp_path):
+    root = tmp_path / "journals"
+    append_entry(root, "pm", "2026-07-06", "NVDA buy 67 — capex thesis.")
+    append_entry(root, "pm", "2026-07-07", "Held; thesis intact.")
+    text = recent_entries(root, "pm", limit=-1)
+    assert text == ""

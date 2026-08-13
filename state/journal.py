@@ -25,5 +25,7 @@ def recent_entries(root: Path | str, seat: str, limit: int = 5) -> str:
     path = Path(root) / f"{seat}.md"
     if not path.exists():
         return ""
+    if limit <= 0:
+        return ""
     sections = [s for s in path.read_text().split("\n## ") if s.strip()]
     return "".join(f"\n## {s}" for s in sections[-limit:])
