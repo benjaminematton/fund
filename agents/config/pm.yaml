@@ -1,0 +1,9 @@
+seat: pm
+model: claude-sonnet-5
+fallback_model: claude-sonnet-5
+max_budget_usd: 0.75
+max_turns: 10
+alpaca_toolsets: "account,stock-data"   # READ-ONLY (invariant 2)
+tools: ["mcp__fund__*", "mcp__alpaca__*"]
+disallowed_tools: ["mcp__alpaca__place_*"]   # belt over the toolset braces
+setting_sources: []

@@ -1,0 +1,9 @@
+seat: analyst
+model: claude-haiku-4-5-20251001
+fallback_model: claude-sonnet-5
+max_budget_usd: 0.50
+max_turns: 12                     # P1 cost bound
+alpaca_toolsets: "stock-data,news,account"   # READ-ONLY (invariant 2)
+tools: ["mcp__fund__*", "mcp__alpaca__*"]
+disallowed_tools: ["mcp__alpaca__place_*"]   # belt over the toolset braces
+setting_sources: []
