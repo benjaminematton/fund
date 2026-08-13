@@ -56,7 +56,7 @@ def build_seat_options(cfg: dict, db_path: str | Path,
     # Order gate + recorder hooks belong ONLY to the seat that carries the
     # `trading` toolset (invariant 2; CLAUDE.md: hooks live in agents/runtime.py
     # only, attached only to a seat that trades).
-    if "trading" in cfg["alpaca_toolsets"]:
+    if "trading" in [t.strip() for t in cfg["alpaca_toolsets"].split(",")]:
         options["hooks"] = {
             # matcher=None => the hook fires for EVERY tool call. The CLI matches
             # `matcher` against the full tool name (anchored/full match), so a

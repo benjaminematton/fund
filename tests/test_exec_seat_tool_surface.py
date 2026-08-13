@@ -81,7 +81,29 @@ def test_read_only_seats_cannot_trade(seat, tmp_path):
     opts = _opts(seat, tmp_path)
     assert "trading" not in _cfg(seat)["alpaca_toolsets"]
     assert "mcp__alpaca__place_*" in (opts.disallowed_tools or [])
+    # The yaml value is inert unless it's actually threaded into the built
+    # options — this is what the alpaca-mcp-server subprocess reads to decide
+    # which tools to REGISTER at all (the only load-bearing lock for this
+    # seat's `mcp__alpaca__*` glob).
+    env = opts.mcp_servers["alpaca"]["env"]
+    assert env["ALPACA_TOOLSETS"] == _cfg(seat)["alpaca_toolsets"]
+    assert "trading" not in env["ALPACA_TOOLSETS"]
 
 
 def test_only_exec_has_trading_toolset(tmp_path):
     assert "trading" in _cfg("exec")["alpaca_toolsets"]
+    env = _opts("exec", tmp_path).mcp_servers["alpaca"]["env"]
+    assert env["ALPACA_TOOLSETS"] == _cfg("exec")["alpaca_toolsets"]
+    assert "trading" in env["ALPACA_TOOLSETS"]
+
+
+@pytest.mark.parametrize("seat", ["analyst", "pm"])
+def test_read_only_seats_carry_no_order_hooks(seat, tmp_path):
+    # Only the trading seat may carry the PreToolUse order gate / PostToolUse
+    # recorder (CLAUDE.md: hooks attach only to a seat that trades).
+    assert _opts(seat, tmp_path).hooks in (None, {})
+
+
+def test_exec_carries_both_order_hooks(tmp_path):
+    hooks = _opts("exec", tmp_path).hooks
+    assert hooks and "PreToolUse" in hooks and "PostToolUse" in hooks
