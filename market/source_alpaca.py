@@ -1,6 +1,7 @@
 """Alpaca I/O (live only). Implements BrokerPort + market/account reads.
 Env: ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_PAPER_TRADE=true (always)."""
 from __future__ import annotations
+import math
 import os
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -11,6 +12,35 @@ def _paper_guard() -> bool:
     if os.environ.get("ALPACA_PAPER_TRADE", "").lower() != "true":
         raise RuntimeError("ALPACA_PAPER_TRADE must be 'true' (invariant 1)")
     return True
+
+def _safe_float(v) -> float:
+    """float(v), or NaN if v is None/unparseable (gate rejects NaN -> HOLD)."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+
+def _pnl_pct(equity, last_equity) -> float:
+    """(equity - last_equity) / last_equity, or NaN if either side is
+    missing/unparseable or last_equity is zero. NaN, not 0.0: a fresh paper
+    account's last_equity == "0" must fail the gate closed, not read as a
+    flat day and let the daily-loss circuit breaker pass (invariant 4)."""
+    e, le = _safe_float(equity), _safe_float(last_equity)
+    if le == 0 or math.isnan(e) or math.isnan(le):
+        return float("nan")
+    return (e - le) / le
+
+def _reshape_close_frame(bars_df, tickers: list[str], days: int):
+    """Reshape raw StockBarsRequest bars.df into one close-price column per
+    requested ticker, tail-limited to `days` rows. A ticker with zero bars in
+    the window, or a completely empty response, becomes a NaN column instead
+    of raising -- downstream features.py already treats NaN as
+    gate-rejects-> HOLD (invariant 4)."""
+    import pandas as pd
+    if "close" not in bars_df.columns:
+        return pd.DataFrame(columns=tickers, dtype=float)
+    close = bars_df["close"].unstack(level=0).reindex(columns=tickers)
+    return close.tail(days)
 
 class AlpacaSource:
     def __init__(self) -> None:
@@ -33,15 +63,14 @@ class AlpacaSource:
         bars = self._data.get_stock_bars(StockBarsRequest(
             symbol_or_symbols=tickers, timeframe=TimeFrame.Day,
             start=end - pd.Timedelta(days=days * 2), end=end)).df
-        return bars["close"].unstack(level=0)[tickers].tail(days)
+        return _reshape_close_frame(bars, tickers, days)
 
     def account_state(self) -> dict:
         a = self._trading.get_account()
         pos = self._trading.get_all_positions()
         return {
-            "equity": float(a.equity), "cash": float(a.cash),
-            "daily_pnl_pct": (float(a.equity) - float(a.last_equity))
-                             / float(a.last_equity),
+            "equity": _safe_float(a.equity), "cash": _safe_float(a.cash),
+            "daily_pnl_pct": _pnl_pct(a.equity, a.last_equity),
             "positions": {p.symbol: int(float(p.qty)) for p in pos},
             "prices": {p.symbol: float(p.current_price) for p in pos},
         }
