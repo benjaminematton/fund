@@ -14,7 +14,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from pydantic import ValidationError
 
 from gate.tickets import open_tickets
-from orchestrator.clock import Clock, iso
+from orchestrator.clock import Clock, et_run_date, iso
 from slackkit.outbox import append_event
 from state.models import Decision, Signal
 
@@ -23,14 +23,10 @@ DECISION_SEATS = ("pm",)
 
 
 def run_date_from_clock(clock: Clock) -> str:
-    """YYYY-MM-DD of the bound clock. Business logic never reads the wall
-    clock directly; this is the one place a tool call turns the injected
-    Clock into the run_date DB key.
-
-    Uses the clock's own date, not ET (schema.sql documents run_date as ET).
-    These diverge only for a stage scheduled after 19:00 ET (next UTC day);
-    the MVF schedule (09:35-16:15 ET) never reaches that boundary."""
-    return clock.now().date().isoformat()
+    """YYYY-MM-DD (ET) of the bound clock. Business logic never reads the
+    wall clock directly; this is the one place a tool call turns the injected
+    Clock into the run_date DB key — matches schema.sql's run_date comment."""
+    return et_run_date(clock.now())
 
 
 def handle_submit_signal(conn: sqlite3.Connection, *, seat: str, args: dict,

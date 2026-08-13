@@ -6,6 +6,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
 
 
 class Clock(Protocol):
@@ -17,6 +20,17 @@ def iso(dt: datetime) -> str:
     if dt.tzinfo is None:
         raise ValueError("naive datetime — all fund datetimes are tz-aware")
     return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def et_run_date(now: datetime) -> str:
+    """YYYY-MM-DD in America/New_York — schema.sql documents run_date as ET,
+    not UTC. Pure: takes a datetime, never reads the clock itself, so callers
+    keep the injected-Clock discipline and this stays purity-lint clean.
+    Naive datetimes are rejected (all fund datetimes are tz-aware, see iso()
+    above) rather than silently assumed to be UTC."""
+    if now.tzinfo is None:
+        raise ValueError("naive datetime — all fund datetimes are tz-aware")
+    return now.astimezone(_ET).date().isoformat()
 
 
 class SimClock:

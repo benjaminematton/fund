@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from orchestrator.clock import SimClock, iso
+from orchestrator.clock import SimClock, et_run_date, iso
 
 
 UTC = timezone.utc
@@ -45,3 +45,27 @@ def test_wallclock_is_aware_utc():
 
     now = WallClock().now()
     assert now.tzinfo is not None and now.utcoffset().total_seconds() == 0
+
+
+def test_et_run_date_same_calendar_date():
+    # 23:30 UTC -> 19:30 ET, same date (schema.sql's run_date is ET, not UTC)
+    assert et_run_date(datetime(2026, 7, 6, 23, 30, tzinfo=UTC)) == "2026-07-06"
+
+
+def test_et_run_date_previous_calendar_date():
+    # 00:30 UTC -> 20:30 ET the prior day
+    assert et_run_date(datetime(2026, 7, 7, 0, 30, tzinfo=UTC)) == "2026-07-06"
+
+
+def test_et_run_date_across_dst_transition():
+    # 04:30 UTC is the run_date rollover instant year-round, but which side of
+    # midnight it lands on depends on the ET offset: EST (winter, UTC-5) puts
+    # it just before midnight the previous day; EDT (summer, UTC-4) puts it
+    # just after midnight the same day.
+    assert et_run_date(datetime(2026, 1, 15, 4, 30, tzinfo=UTC)) == "2026-01-14"
+    assert et_run_date(datetime(2026, 7, 15, 4, 30, tzinfo=UTC)) == "2026-07-15"
+
+
+def test_et_run_date_rejects_naive_datetime():
+    with pytest.raises(ValueError):
+        et_run_date(datetime(2026, 7, 6, 23, 30))
