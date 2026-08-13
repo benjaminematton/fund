@@ -27,3 +27,5 @@ addopts = "-m 'not live' -q"
 markers = [
     "live: hits real APIs (Alpaca paper, Slack, Anthropic) — excluded from make test; run manually with: pytest -m live <file> -v",
 ]
+filterwarnings = ["error::DeprecationWarning:fund.*",
+  "ignore::DeprecationWarning:websockets.legacy.*"]
