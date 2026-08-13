@@ -125,3 +125,30 @@ def test_one_share_paper_round_trip(tmp_path):
     if posted == 0:  # not filled (market closed) — still prove Slack works
         assert slack.post("#trade-log",
                           f"live-smoke: order {ticket_id[:8]} status {status}")
+
+
+def test_alpaca_source_account_state_and_close_frame():
+    # AlpacaSource is the ONLY module that imports alpaca-py (review A1).
+    # This proves its two read paths against the real paper API: account
+    # reads (equity/cash finite) and market data (close_frame has enough
+    # history with no NaNs at the tail).
+    for var in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"):
+        if not os.environ.get(var):
+            pytest.skip(f"{var} not set — load .env first")
+    os.environ.setdefault("ALPACA_PAPER_TRADE", "true")
+
+    import math
+
+    import pandas as pd
+
+    from market.source_alpaca import AlpacaSource
+
+    src = AlpacaSource()
+
+    acct = src.account_state()
+    assert math.isfinite(acct["equity"])
+    assert math.isfinite(acct["cash"])
+
+    frame = src.close_frame(["NVDA", "SPY"], end=pd.Timestamp.now(tz="UTC"))
+    assert len(frame) >= 60
+    assert not frame.tail(5).isna().any().any()
