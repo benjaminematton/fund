@@ -153,12 +153,7 @@ def test_unknown_table_or_bad_key_raises(fund_db):
 
 def test_submitted_to_held_is_legal(fund_db, sim_clock):
     now = iso(sim_clock.now())
-    fund_db.execute(
-        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
-        " invalidation, status, created_at) VALUES"
-        " ('2026-07-06','AAPL','hold',0,'t','i','submitted',?)", (now,))
-    fund_db.commit()
-    did = fund_db.execute("SELECT id FROM decisions WHERE ticker='AAPL'").fetchone()["id"]
+    did = _seed_decision(fund_db)
     transition(fund_db, "decisions", {"id": did}, "submitted", "held", now)
     assert fund_db.execute("SELECT status FROM decisions WHERE id=?",
                            (did,)).fetchone()["status"] == "held"
