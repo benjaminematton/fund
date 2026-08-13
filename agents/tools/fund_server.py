@@ -25,7 +25,11 @@ DECISION_SEATS = ("pm",)
 def run_date_from_clock(clock: Clock) -> str:
     """YYYY-MM-DD of the bound clock. Business logic never reads the wall
     clock directly; this is the one place a tool call turns the injected
-    Clock into the run_date DB key."""
+    Clock into the run_date DB key.
+
+    Uses the clock's own date, not ET (schema.sql documents run_date as ET).
+    These diverge only for a stage scheduled after 19:00 ET (next UTC day);
+    the MVF schedule (09:35-16:15 ET) never reaches that boundary."""
     return clock.now().date().isoformat()
 
 
@@ -50,7 +54,6 @@ def handle_submit_signal(conn: sqlite3.Connection, *, seat: str, args: dict,
         " summary = excluded.summary, created_at = excluded.created_at",
         (str(sig.run_date), sig.agent, sig.ticker, sig.direction,
          sig.confidence, sig.summary, now_iso))
-    conn.commit()
     append_event(conn, "signal",
                 {"agent": sig.agent, "ticker": sig.ticker,
                  "direction": sig.direction, "confidence": sig.confidence,
@@ -88,11 +91,10 @@ def handle_submit_decision(conn: sqlite3.Connection, *, seat: str, args: dict,
         " ON CONFLICT(run_date, ticker) DO UPDATE SET"
         " action = excluded.action, qty = excluded.qty,"
         " thesis = excluded.thesis, invalidation = excluded.invalidation,"
-        " stop_price = excluded.stop_price, status = 'submitted',"
+        " stop_price = excluded.stop_price,"
         " created_at = excluded.created_at",
         (str(dec.run_date), dec.ticker, dec.action, dec.qty, dec.thesis,
          dec.invalidation, dec.stop_price, now_iso))
-    conn.commit()
     append_event(conn, "decision",
                 {"ticker": dec.ticker, "action": dec.action, "qty": dec.qty,
                  "thesis": dec.thesis}, now_iso)
@@ -124,7 +126,7 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
         if seat != "exec":
             return {"content": [{"type": "text",
                                  "text": "error: list_open_tickets is exec-seat-only"}],
-                    "isError": True}
+                    "is_error": True}
         rows = open_tickets(conn_factory(), iso(clock.now()))
         return {"content": [{"type": "text", "text": json.dumps(rows)}]}
 
@@ -147,7 +149,7 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
         if not result["ok"]:
             return {"content": [{"type": "text",
                                  "text": f"error: {result['error']}"}],
-                    "isError": True}
+                    "is_error": True}
         return {"content": [{"type": "text",
                              "text": f"signal recorded: {args['ticker']}"}]}
 
@@ -173,7 +175,7 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
         if not result["ok"]:
             return {"content": [{"type": "text",
                                  "text": f"error: {result['error']}"}],
-                    "isError": True}
+                    "is_error": True}
         return {"content": [{"type": "text",
                              "text": f"decision recorded: {args['ticker']}"}]}
 
@@ -182,5 +184,10 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
         "pm": [submit_decision],
         "exec": [list_open_tickets],
     }
+    if seat not in tools_by_seat:
+        raise ValueError(
+            f"build_fund_server: unrecognized seat {seat!r} — expected one of"
+            f" {sorted(tools_by_seat)} (an unknown seat would silently get no"
+            " tools, e.g. the analyst never recording a signal all day)")
     return create_sdk_mcp_server(name="fund", version="1.0.0",
-                                 tools=tools_by_seat.get(seat, []))
+                                 tools=tools_by_seat[seat])
