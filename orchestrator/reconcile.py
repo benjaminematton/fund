@@ -1,7 +1,8 @@
 """Fill-poll: drive submitted orders to a terminal state (MVF review A3/T2).
 Deterministic; broker + sleep are injected. Bounded: poll_s cadence, max_wait_s
 cap, then the timeout path (order canceled*, decision failed, alert). Errors
-fail closed — the order stays 'submitted' and the next run retries.
+and unparseable broker payloads fail closed — the order stays 'submitted' and
+the next run retries; both are surfaced as loud alerts, never silent.
 *cancel is issued agent-side next cycle if needed; DB reflects intent."""
 from __future__ import annotations
 import sqlite3
@@ -15,10 +16,16 @@ def _statuses(conn):
                         " WHERE status IN ('submitted','partially_filled')").fetchall()
 
 def _apply(conn, row, o, now) -> bool:
-    """Mirror one broker order dict into the DB. True iff terminal fill landed."""
+    """Mirror one broker order dict into the DB. Returns True iff THIS call's
+    CAS actually moved the order to 'filled' (False on a no-op re-run, so the
+    caller's fill counter can't over-count). Fill numbers are parsed into
+    locals before any transition — a malformed payload must raise before
+    anything commits, never after."""
     coid = row["client_order_id"]
     st = o.get("status")
     if st == "filled":
+        filled_qty = int(float(o["filled_qty"]))
+        filled_avg_price = float(o["filled_avg_price"])
         moved = (try_transition(conn, "orders", {"client_order_id": coid},
                                 "submitted", "filled", now)
                  or try_transition(conn, "orders", {"client_order_id": coid},
@@ -26,20 +33,19 @@ def _apply(conn, row, o, now) -> bool:
         if moved:
             conn.execute("UPDATE orders SET filled_qty=?, filled_avg_price=?,"
                          " closed_at=? WHERE client_order_id=?",
-                         (int(float(o["filled_qty"])),
-                          float(o["filled_avg_price"]), now, coid))
+                         (filled_qty, filled_avg_price, now, coid))
             conn.commit()
             append_event(conn, "fill", {
                 "ticker": row["symbol"], "side": row["side"],
-                "filled_qty": int(float(o["filled_qty"])),
-                "filled_avg_price": float(o["filled_avg_price"]),
+                "filled_qty": filled_qty,
+                "filled_avg_price": filled_avg_price,
                 "ticket_id": coid}, now)
             t = conn.execute("SELECT decision_id FROM tickets WHERE id=?",
                              (coid,)).fetchone()
             if t is not None:
                 try_transition(conn, "decisions", {"id": t["decision_id"]},
                                "approved", "executed", now)
-        return True
+        return moved
     if st == "partially_filled":
         if try_transition(conn, "orders", {"client_order_id": coid},
                           "submitted", "partially_filled", now):
@@ -51,8 +57,13 @@ def _apply(conn, row, o, now) -> bool:
 def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
                      sleep: Callable[[float], None],
                      poll_s: float = 3.0, max_wait_s: float = 90.0) -> int:
+    if poll_s <= 0:
+        raise ValueError(f"poll_s must be positive, got {poll_s!r}")
     filled, waited = 0, 0.0
-    unreachable: set[str] = set()   # coids whose most recent poll errored
+    # Positive framing (MVF review Fix 4): what we KNOW from the most recent
+    # poll of each still-pending order, not what we failed to rule out.
+    confirmed_open: set[str] = set()   # broker confirmed non-terminal, non-partial
+    problem: dict[str, str] = {}       # broker unreachable or payload unparseable -> exception type
     while True:
         pending = _statuses(conn)
         if not pending:
@@ -62,29 +73,42 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
             coid = row["client_order_id"]
             try:
                 o = broker.get_order_by_client_order_id(coid)
-                unreachable.discard(coid)
-            except Exception:
-                o = None                          # fail closed, retry next poll
-                unreachable.add(coid)
-            if o and _apply(conn, row, o, now):
-                filled += 1
+                if o and _apply(conn, row, o, now):
+                    filled += 1
+            except Exception as e:
+                # Fail closed: broker unreachable, or a payload we couldn't
+                # parse (e.g. _apply's coercion raised). Either way leave the
+                # order 'submitted' for the next poll and surface it loudly.
+                problem[coid] = type(e).__name__
+                confirmed_open.discard(coid)
+                continue
+            problem.pop(coid, None)
+            status = o.get("status") if o else None
+            if status in ("filled", "partially_filled"):
+                confirmed_open.discard(coid)   # terminal or partial — never cap-canceled
+            else:
+                confirmed_open.add(coid)
         if waited >= max_wait_s:
             break
         sleep(poll_s)
         waited += poll_s
     now = iso(clock.now())
-    for row in _statuses(conn):                   # timeout path
-        coid = row["client_order_id"]
-        if coid in unreachable:
-            continue    # broker never confirmed this order — leave submitted, next run retries
+    for coid in confirmed_open:                   # timeout path: broker confirmed still open
         if try_transition(conn, "orders", {"client_order_id": coid},
                           "submitted", "canceled", now):
             t = conn.execute("SELECT decision_id FROM tickets WHERE id=?",
                              (coid,)).fetchone()
+            decision_failed = False
             if t is not None:
-                try_transition(conn, "decisions", {"id": t["decision_id"]},
-                               "approved", "failed", now)
+                decision_failed = try_transition(conn, "decisions",
+                                                 {"id": t["decision_id"]},
+                                                 "approved", "failed", now)
+            suffix = "decision failed" if decision_failed else "decision unchanged"
             append_event(conn, "alert", {"text":
                 f"order {coid[:8]} unfilled after {int(max_wait_s)}s — "
-                "canceled, decision failed"}, now)
+                f"canceled, {suffix}"}, now)
+    for coid, reason in problem.items():           # fail-closed path: loud, not silent
+        append_event(conn, "alert", {"text":
+            f"order {coid[:8]} unresolved — broker unreachable or response "
+            f"unparseable ({reason}) at cap, left submitted for retry"}, now)
     return filled
