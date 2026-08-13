@@ -80,6 +80,22 @@ def _extract_order(tool_response):
     return obj
 
 
+def _parse_fill(order: dict) -> tuple[int | None, float | None]:
+    """Coerce filled_qty/filled_avg_price into locals, never raising: returns
+    (None, None) for anything malformed (missing, null, non-positive, or a
+    fractional qty — this fund is whole-share only; orders.filled_qty is
+    INTEGER, so a fractional fill is an anomaly, not something to floor
+    silently). Callers must check for None before transitioning anything."""
+    try:
+        raw_qty = float(order["filled_qty"])
+        avg_price = float(order["filled_avg_price"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    if raw_qty != int(raw_qty) or raw_qty <= 0 or avg_price <= 0:
+        return None, None
+    return int(raw_qty), avg_price
+
+
 def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
                         clock: Clock):
     """PostToolUse on place_*: mirror the broker's answer into SQLite.
@@ -110,18 +126,25 @@ def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
         # async fills reconcile on a later turn (Phase 2). Recording the order
         # row + consuming the ticket above is unconditional and idempotent.
         if order.get("status") == "filled":
+            filled_qty, filled_avg_price = _parse_fill(order)
+            if filled_qty is None:
+                # Malformed fill payload (missing/null/non-positive/fractional
+                # qty): take NO action at all — no transition, no event. Leave
+                # the row 'submitted' so orchestrator/reconcile.py's next poll
+                # can repair it (invariant 4: default is HOLD, never a guess).
+                # This hook must never raise into the SDK.
+                return {}
             if try_transition(conn, "orders", {"client_order_id": coid},
                               "submitted", "filled", now):
                 conn.execute(
                     "UPDATE orders SET filled_qty = ?, filled_avg_price = ?,"
                     " closed_at = ? WHERE client_order_id = ?",
-                    (int(order["filled_qty"]), float(order["filled_avg_price"]),
-                     now, coid))
+                    (filled_qty, filled_avg_price, now, coid))
                 conn.commit()
                 append_event(conn, "fill", {
                     "ticker": order["symbol"], "side": order["side"],
-                    "filled_qty": int(order["filled_qty"]),
-                    "filled_avg_price": float(order["filled_avg_price"]),
+                    "filled_qty": filled_qty,
+                    "filled_avg_price": filled_avg_price,
                     "ticket_id": coid}, now)
                 t = conn.execute("SELECT decision_id FROM tickets WHERE id = ?",
                                  (coid,)).fetchone()

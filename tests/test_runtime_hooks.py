@@ -73,6 +73,43 @@ def test_order_recorder_writes_once_and_projects(fund_db, sim_clock):
     assert json.loads(fills[0]["payload"])["filled_avg_price"] == 180.14
 
 
+def test_order_recorder_malformed_fill_null_price_leaves_submitted(fund_db, sim_clock):
+    """CRITICAL regression (MVF T9 review): same parse-after-CAS bug already
+    fixed in orchestrator/reconcile.py's _apply. A 'filled' ack with a null
+    filled_avg_price must not commit status='filled' before the coercion is
+    known to succeed — must not raise into the SDK, must leave the order
+    'submitted' for reconcile to repair."""
+    _seed(fund_db)
+    rec = make_order_recorder(lambda: fund_db, sim_clock)
+    resp = {"id": "alp-0001", "client_order_id": TID, "symbol": "NVDA",
+            "side": "buy", "qty": 67, "status": "filled", "filled_qty": 67,
+            "filled_avg_price": None}
+    call = {"tool_name": "mcp__alpaca__place_stock_order",
+            "tool_input": order(), "tool_response": resp}
+    _run(rec(call, "t1", None))  # must not raise
+    row = fund_db.execute("SELECT * FROM orders").fetchone()
+    assert row["status"] == "submitted"
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"] == 0
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
+
+
+def test_order_recorder_malformed_fill_missing_price_leaves_submitted(fund_db, sim_clock):
+    """Same CRITICAL regression, but the broker omits filled_avg_price entirely."""
+    _seed(fund_db)
+    rec = make_order_recorder(lambda: fund_db, sim_clock)
+    resp = {"id": "alp-0001", "client_order_id": TID, "symbol": "NVDA",
+            "side": "buy", "qty": 67, "status": "filled", "filled_qty": 67}
+    call = {"tool_name": "mcp__alpaca__place_stock_order",
+            "tool_input": order(), "tool_response": resp}
+    _run(rec(call, "t1", None))  # must not raise
+    row = fund_db.execute("SELECT * FROM orders").fetchone()
+    assert row["status"] == "submitted"
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"] == 0
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
+
+
 def test_order_recorder_skips_errors_and_foreign_tools(fund_db, sim_clock):
     _seed(fund_db)
     rec = make_order_recorder(lambda: fund_db, sim_clock)
