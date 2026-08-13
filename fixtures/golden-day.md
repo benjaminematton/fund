@@ -52,24 +52,24 @@ PM acknowledges in-thread ("Accepted — resizing to 80, ~half of draft intent o
 ## 11:15 Gate — worked math (test vector)
 
 ```
-step 1  vol 42% ∈ [15%, 50%) → baseline limit 20% of equity = $20,000
+step 1  vol 42% ∈ [15%, 50%] → baseline limit 20% of equity = $20,000
 step 2  avg corr 0.55 ∈ [0.4, 0.6) → multiplier 0.95 → $19,000
 step 3  price $180 → 105 shares max; cash $30,000 ≥ $19,000 → no cash bind
         allowed: {buy: 105, sell: 0, hold: 0}
 step 4  positions 3 ≤ 8 ✓ · tech weight (52k+19k)/100k = 71%? NO —
         weight uses position value post-trade vs equity: (27.8k+20.2k+14.4k)/100k
-        = 62.4% > 60% cap → resize to cap: max tech add = $12,160 → 67 shares
-output  APPROVED ticket {id: "a3f9…", ticker: NVDA, side: buy, max_qty: 67,
+        = 62.4% > 60% cap → resize to cap: max tech add = $11,960 → 66 shares
+output  APPROVED ticket {id: "a3f9…", ticker: NVDA, side: buy, max_qty: 66,
         stop_price: null, expires_at: 12:00:00 ET}
 ```
 
-PM asked 80 > 67 → trader executes 67 (ticket is the contract). Decision `approved`.
+PM asked 80 > 66 → trader executes 66 (ticket is the contract). Decision `approved`.
 
 Note for implementers: step-4 resize is the "one resize retry" from the design doc — the gate itself computes the capped quantity; no LLM round-trip.
 
 ## 11:30 Execution
 
-Order: `client_order_id = "a3f9…"`, buy 67 NVDA, market. Fill 67 @ $180.14. `#trade-log`: `🧾 NVDA buy 67@180.14 (ticket a3f9)` threaded to the verdict. Order `filled`, ticket `consumed`, decision `executed`.
+Order: `client_order_id = "a3f9…"`, buy 66 NVDA, market. Fill 66 @ $180.14. `#trade-log`: `🧾 NVDA buy 66@180.14 (ticket a3f9)` threaded to the verdict. Order `filled`, ticket `consumed`, decision `executed`.
 
 ## 16:15 Close (digest excerpt)
 
