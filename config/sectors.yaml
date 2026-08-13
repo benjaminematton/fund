@@ -1,0 +1,6 @@
+# ticker -> sector. Human-committed only (same rule as gate thresholds).
+# A ticker missing here is REJECTED by the gate (fail-closed), never guessed.
+NVDA: tech
+AAPL: tech
+MSFT: tech
+SPY: index
