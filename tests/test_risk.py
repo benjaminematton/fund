@@ -147,3 +147,61 @@ def test_boundary_zero_and_edge_inputs_still_approved():
     r = size(golden_inputs(held_qty=0, position_count=0, sector_value=0.0,
                             vol_60d=0.0, daily_pnl_pct=-0.0299), mode="enforce")
     assert isinstance(r, Approved)
+
+
+@pytest.mark.parametrize("vol,tier", [(0.149, 0.25), (0.15, 0.20),
+                                      (0.499, 0.20), (0.50, 0.20), (0.501, 0.10)])
+def test_vol_tier_boundaries(vol, tier):
+    r = size(golden_inputs(vol_60d=vol, avg_corr=0.0, sector_value=0.0), "enforce")
+    assert r.pre_sector_qty == int((100000 * tier * 1.10) // 180)
+
+@pytest.mark.parametrize("corr,mult", [(0.19, 1.10), (0.2, 1.00), (0.39, 1.00),
+    (0.4, 0.95), (0.6, 0.85), (0.79, 0.85), (0.8, 0.70)])
+def test_corr_multiplier_boundaries(corr, mult):
+    r = size(golden_inputs(avg_corr=corr, sector_value=0.0), "enforce")
+    assert r.pre_sector_qty == int((100000 * 0.20 * mult) // 180)
+
+def test_cash_cap_binds():
+    r = size(golden_inputs(cash=1800.0, sector_value=0.0), "enforce")
+    assert r.max_qty == 10                       # floor(1800/180)
+
+def test_position_count_hard_reject_new_position_only():
+    assert size(golden_inputs(position_count=8), "enforce") == Rejected("position_count")
+    r = size(golden_inputs(position_count=8, held_qty=5), "enforce")
+    assert isinstance(r, Approved)               # adding to an existing position is not a new slot
+
+def test_circuit_breaker_rejects_buys():
+    assert size(golden_inputs(daily_pnl_pct=-0.03), "enforce") == Rejected("circuit_breaker")
+
+def test_sell_is_capped_at_held():
+    r = size(golden_inputs(side="sell", held_qty=40), "enforce")
+    assert r.max_qty == 40
+    assert size(golden_inputs(side="sell", held_qty=0), "enforce") == Rejected("nothing_held")
+
+@pytest.mark.parametrize("field,val", [
+    ("vol_60d", float("nan")), ("vol_60d", float("inf")), ("avg_corr", float("nan")),
+    ("price", 0.0), ("price", -1.0), ("equity", float("nan")), ("cash", -5.0),
+    ("daily_pnl_pct", float("nan")), ("sector_value", float("inf"))])
+def test_fail_closed_on_malformed(field, val):
+    """Fail-closed on malformed input, whichever layer catches it first.
+    GateInputs' own field_validator (equity/cash/price/vol_60d/avg_corr/
+    sector_value/daily_pnl_pct) rejects non-finite values at construction
+    with a ValidationError -- a stronger guarantee than size()'s runtime
+    re-check, which is what price<=0 and cash<0 (both finite, so they pass
+    construction) fall through to instead. Either way, malformed input must
+    never reach Approved."""
+    try:
+        g = golden_inputs(**{field: val})
+    except ValidationError:
+        return
+    assert size(g, "enforce") == Rejected("gate_error")
+
+def test_fail_closed_on_garbage_types():
+    assert size({"ticker": "NVDA"}, "enforce") == Rejected("gate_error")
+    assert size(None, "enforce") == Rejected("gate_error")
+
+def test_hold_skip_shape():
+    """{buy:0, sell:0} shape the pre-gate uses: no cash, nothing held."""
+    buy = size(golden_inputs(cash=0.0), "enforce")
+    sell = size(golden_inputs(side="sell", held_qty=0), "enforce")
+    assert isinstance(buy, Rejected) and isinstance(sell, Rejected)
