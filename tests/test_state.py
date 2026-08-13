@@ -184,3 +184,9 @@ def test_ticket_and_gateresult_models_validate():
                expires_at="2026-07-06T16:00:00+00:00")
     r = GateResult(approved=False, reason="gate_error")
     assert r.ticket is None
+
+
+def test_connect_sets_wal_and_busy_timeout(tmp_path):
+    conn = connect(tmp_path / "w.sqlite")
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

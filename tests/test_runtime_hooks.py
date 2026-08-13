@@ -105,3 +105,18 @@ def test_record_cost_inserts_row(fund_db):
     record_cost(fund_db, "2026-07-06", "exec", "sess-1", 0.0123, NOW)
     row = fund_db.execute("SELECT * FROM costs").fetchone()
     assert row["agent"] == "exec" and row["usd_estimate"] == 0.0123
+
+
+def test_hooks_reuse_one_connection_per_factory_binding(fund_db, sim_clock):
+    """C1: the hook factories must not open a fresh conn per call. Bind them
+    to a counting factory and fire twice: exactly one connect."""
+    calls = []
+    def factory():
+        calls.append(1)
+        return fund_db
+    gate = make_order_gate(factory, sim_clock)
+    asyncio.run(gate({"tool_name": "mcp__alpaca__place_stock_order",
+                      "tool_input": {}}, "t1", None))
+    asyncio.run(gate({"tool_name": "mcp__alpaca__place_stock_order",
+                      "tool_input": {}}, "t2", None))
+    assert len(calls) == 1

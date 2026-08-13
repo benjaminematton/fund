@@ -18,16 +18,29 @@ from state.transition import try_transition
 PLACE_PREFIX = "mcp__alpaca__place_"
 
 
+def _cached(conn_factory):
+    """Lazily open conn_factory() once and reuse it. Scope = the hook
+    binding (one seat's turn set) — live composition roots create fresh
+    factories per day, so this never outlives a day's connections."""
+    box = {}
+    def get():
+        if "c" not in box:
+            box["c"] = conn_factory()
+        return box["c"]
+    return get
+
+
 def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
                     clock: Clock):
     """PreToolUse: deny any order lacking a valid gate ticket (invariant 5;
     design Appendix A). Hooks run before allow rules — nothing bypasses."""
+    conn = _cached(conn_factory)
 
     async def order_gate(input_data, tool_use_id, context) -> dict:
         if not str(input_data.get("tool_name", "")).startswith(PLACE_PREFIX):
             return {}
         try:
-            ok, reason = validate_order(conn_factory(),
+            ok, reason = validate_order(conn(),
                                         input_data.get("tool_input"),
                                         iso(clock.now()))
         except Exception as exc:  # fail closed (invariant 4): never let an
@@ -73,6 +86,7 @@ def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
     Idempotent under retry: INSERT OR IGNORE + CAS transitions; the fill
     event is appended only when the order CAS submitted->filled wins.
     Parses the real MCP envelope (JSON string + `data`) via _extract_order."""
+    conn_get = _cached(conn_factory)
 
     async def record_order(input_data, tool_use_id, context) -> dict:
         if not str(input_data.get("tool_name", "")).startswith(PLACE_PREFIX):
@@ -80,7 +94,7 @@ def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
         order = _extract_order(input_data.get("tool_response"))
         if order is None:
             return {}  # nothing landed; retry/reconcile is the turn's job (§5.1)
-        conn = conn_factory()
+        conn = conn_get()
         now = iso(clock.now())
         coid = order["client_order_id"]
         conn.execute(
