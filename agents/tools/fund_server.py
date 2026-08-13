@@ -65,8 +65,12 @@ def handle_submit_decision(conn: sqlite3.Connection, *, seat: str, args: dict,
                            run_date: str, now_iso: str) -> dict:
     """Validate + UPSERT the PM's final decision, append a projection event.
     Refuses if no critique row exists yet for (run_date, ticker) — enforces
-    the draft -> critique -> final ordering (contracts §4). Wrong seat,
-    invalid payload, or missing critique: no row, no event written."""
+    the draft -> critique -> final ordering (contracts §4). Refuses outright
+    once the decision has left 'submitted' (contracts §4 ruling 2026-08-13,
+    "Irrevocable for the day"): a mutable thesis/qty behind a live ticket
+    would rewrite the audit trail the gate approved against. Wrong seat,
+    invalid payload, missing critique, or non-'submitted' status: no row, no
+    event written."""
     if seat not in DECISION_SEATS:
         return {"ok": False,
                 "error": f"submit_decision is pm-seat-only (seat={seat!r})"}
@@ -77,6 +81,15 @@ def handle_submit_decision(conn: sqlite3.Connection, *, seat: str, args: dict,
                        stop_price=args.get("stop_price"))
     except (ValidationError, KeyError, TypeError) as e:
         return {"ok": False, "error": str(e)}
+    existing = conn.execute(
+        "SELECT status FROM decisions WHERE run_date = ? AND ticker = ?",
+        (run_date, dec.ticker)).fetchone()
+    if existing is not None and existing["status"] != "submitted":
+        return {"ok": False,
+                "error": f"submit_decision refused: decision for"
+                        f" ({run_date}, {dec.ticker}) already left 'submitted'"
+                        f" (status={existing['status']!r}) — irrevocable for"
+                         " the day"}
     critiqued = conn.execute(
         "SELECT 1 FROM critiques WHERE run_date = ? AND ticker = ?",
         (run_date, dec.ticker)).fetchone()

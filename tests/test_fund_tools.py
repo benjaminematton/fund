@@ -51,9 +51,12 @@ def test_decision_seat_restricted_hold_zero_enforced(fund_db, sim_clock):
     assert fund_db.execute("SELECT COUNT(*) c FROM events WHERE kind='decision'"
                            ).fetchone()["c"] == 0
 
-def test_decision_resubmit_after_approval_keeps_status(fund_db, sim_clock):
-    """Re-submitting an already-approved decision must not revert its status
-    to 'submitted' — that would be the illegal edge approved -> submitted."""
+def test_decision_refused_once_left_submitted(fund_db, sim_clock):
+    """contracts §4 ruling 2026-08-13: submit_decision is irrevocable once the
+    decision has left 'submitted'. A retry with DIFFERENT qty/action/thesis
+    must be refused outright (is_error, message names the current status) and
+    must not partially update the row — a mutable thesis/qty behind a live
+    ticket would rewrite the audit trail the gate approved against."""
     insert_default_critiques(fund_db, RUN, ["NVDA"], "no_critic_seat",
                              iso(sim_clock.now()))
     assert _dec(fund_db, sim_clock)["ok"]
@@ -62,10 +65,21 @@ def test_decision_resubmit_after_approval_keeps_status(fund_db, sim_clock):
         (RUN, "NVDA")).fetchone()
     transition(fund_db, "decisions", {"id": row["id"]}, "submitted",
               "approved", iso(sim_clock.now()))
-    assert _dec(fund_db, sim_clock)["ok"]          # PM retries submit_decision
-    status = fund_db.execute(
-        "SELECT status FROM decisions WHERE id = ?", (row["id"],)).fetchone()["status"]
-    assert status == "approved"                    # must NOT have reverted
+    events_before = fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='decision'").fetchone()["c"]
+    result = _dec(fund_db, sim_clock, action="sell", qty=5, thesis="different")
+    assert not result["ok"]
+    assert "approved" in result["error"]
+    after = fund_db.execute(
+        "SELECT status, action, qty, thesis FROM decisions WHERE id = ?",
+        (row["id"],)).fetchone()
+    assert after["status"] == "approved"            # must NOT have reverted
+    assert after["action"] == "buy"                 # byte-identical: not overwritten
+    assert after["qty"] == 80
+    assert after["thesis"] == "t"
+    events_after = fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='decision'").fetchone()["c"]
+    assert events_after == events_before             # no new event appended
 
 
 def test_default_critiques_idempotent(fund_db, sim_clock):
