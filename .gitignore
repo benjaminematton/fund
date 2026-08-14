@@ -17,6 +17,10 @@ build/
 *.sqlite
 *.sqlite3
 *.db
+# WAL mode (state/db.py sets journal_mode=WAL) writes these alongside the db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
 data/
 journals/*
 !journals/.gitkeep
