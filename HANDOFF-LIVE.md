@@ -118,6 +118,30 @@ Then open the `#trade-log` message the test posted and **copy its permalink**
 A `canceled` status is acceptable ONLY if the market closed mid-test. During
 market hours, expect `filled`.
 
+### Then flatten it — do not skip this
+
+The smoke **buys** 1 share of AAPL and only cancels the order if it stays
+unfilled. During market hours it fills, and nothing in the test liquidates it.
+§2's universe is `watchlist ∪ positions`, so a leftover AAPL share makes the
+live day run **3 active tickers, not the 2** the reduced config specifies (§7)
+— on the exact run whose purpose is measuring per-seat turn consumption. Close
+it before §2:
+
+```bash
+curl -s -X DELETE -H "APCA-API-KEY-ID: $ALPACA_API_KEY" \
+        -H "APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY" \
+        "https://paper-api.alpaca.markets/v2/positions/AAPL" | python3 -m json.tool
+sleep 5
+curl -s -H "APCA-API-KEY-ID: $ALPACA_API_KEY" \
+        -H "APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY" \
+        "https://paper-api.alpaca.markets/v2/positions" | python3 -m json.tool
+```
+
+The second call must print `[]`. (The DELETE submits a market sell, so give it
+a moment to fill.) If you deliberately leave the share on, say so in the
+acceptance notes and expect **3** active tickers in §2 — read `num_turns` per
+seat accordingly, because the analyst's budget is per ticker.
+
 ---
 
 ## 2. The live day
@@ -146,9 +170,16 @@ Other legitimate outcomes:
 
 - `run_day: market is closed — no stages run, nothing traded (exit 0)` — you
   ran it outside market hours. Not a failure; not a completed day either.
+- `run_day: another run_day holds … — exiting 0 rather than racing it` — a
+  scheduled run is already in flight. Not a failure: two overlapping processes
+  would both re-run a stage sitting at `running`, meaning two seat turns' spend
+  and two drains' Slack posts. Wait for the first one and read its log.
 - `run_day: no active tickers — running the day with zero seat turns` — the
   pre-gate found nothing possible today (no cash headroom, nothing held). The
-  day still completes and still posts a digest. Not a failure.
+  day still completes, still posts a digest, and still prints `AUDIT CLEAN`:
+  with no active tickers no seat turn is ever scheduled, so zero `costs` rows
+  is that day's correct shape, not a violation. (A day that DID schedule turns
+  and recorded no cost still fails — see §6.2.)
 - A HOLD day. **This is a success.** The PM deciding HOLD on a boring day is
   the designed behaviour, not a broken run.
 
@@ -222,11 +253,19 @@ Stop immediately on any of:
    bug. Capture the deny reason.
 2. **Any audit violation.** Any line other than `AUDIT CLEAN`. Each names its
    own shape: a stuck checkpoint, a decision stranded at `submitted`/
-   `approved`, an order stuck `submitted`, an undrained or dead-lettered
-   outbox, an alert event, or no cost rows.
-3. **An order you did not expect** — wrong symbol, wrong side, or a quantity
+   `approved`, an order stuck `submitted`, an undrained outbox, a dead-lettered
+   event *raised today*, an alert *raised today*, or no cost rows on a day that
+   scheduled seat turns. Every count is scoped to the audited ET day, so
+   yesterday's alert never reds today — and the audit's own failure alert is
+   marked and excluded, so a re-fire cannot compound it.
+3. **`run_day_failed — …` in `#risk`.** Something raised between the DB
+   connection and the audit: a stage body, the watchlist/sectors load, or the
+   market-data fetch. The day stopped there and **the audit did not run**, so
+   the DB is mid-flight — capture it below before anything else. Note this can
+   land after a ticket was minted and an order placed.
+4. **An order you did not expect** — wrong symbol, wrong side, or a quantity
    above the ticket's `max_qty`.
-4. **The paper guard firing** (`ALPACA_PAPER_TRADE must be 'true'`). Do not
+5. **The paper guard firing** (`ALPACA_PAPER_TRADE must be 'true'`). Do not
    "just export it" — find out why it was wrong.
 
 Capture the state before touching anything:
@@ -283,9 +322,18 @@ and it gets tightened on evidence, not on a guess.
 - `ResultMessage.num_turns` — how many turns the seat actually consumed
 - `ResultMessage.total_cost_usd` — the est. spend for that turn
 
-`num_turns` is not persisted, so read it from the `make live-day` console
-output (the SDK prints the result line) or scroll the launchd log at
-`logs/run_day.out.log`. `total_cost_usd` is in the `costs` table (§4).
+`num_turns` is not persisted in the DB, so `run_day` logs it explicitly after
+every seat turn — one line per seat, independent of the SDK's own stdout
+formatting:
+
+```bash
+grep "turn done:" logs/run_day.out.log
+# run_day: analyst turn done: num_turns=11 est_cost_usd=0.0182
+# run_day: pm turn done: num_turns=6 est_cost_usd=0.0094
+```
+
+Running interactively, the same lines are on the console. `total_cost_usd` is
+also in the `costs` table (§4).
 
 Then, in a **follow-up commit**, right-size both values and drop the
 `provisional` comments:
