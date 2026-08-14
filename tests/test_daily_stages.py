@@ -6,8 +6,9 @@ from datetime import timedelta
 import pytest
 
 from orchestrator.clock import iso
-from orchestrator.daily import (StageCtx, run_close, run_day, run_decision,
-                                run_gate, run_pre_gate, run_research)
+from orchestrator.daily import (StageCtx, allowed_actions, run_close, run_day,
+                                run_decision, run_gate, run_pre_gate,
+                                run_research)
 from slackkit.fake import FakeSlack
 from slackkit.outbox import append_event
 
@@ -60,6 +61,40 @@ def test_pre_gate_drops_garbage_inputs(fund_db, sim_clock):
     """NaN vol -> gate_error on both shapes -> dropped, never a crash."""
     market = {"NVDA": _nvda_inputs(vol_60d=float("nan"))}
     assert run_pre_gate(_ctx(fund_db, sim_clock, market)) == []
+
+
+# --- allowed-actions snapshot (the PM's sizing budget) ----------------------
+
+def test_allowed_actions_is_the_golden_days_budget():
+    """fixtures/golden-day.md: the advisory pass sizes NVDA to 66 — the same
+    number the enforcement pass caps the PM's 80-share ask at. Nothing held,
+    so the sell shape is 0."""
+    assert allowed_actions({"NVDA": _nvda_inputs()}) == {
+        "NVDA": {"buy": 66, "sell": 0}}
+
+
+def test_allowed_actions_reports_a_sell_only_ticker():
+    assert allowed_actions({"AAPL": _nvda_inputs(ticker="AAPL", cash=0.0,
+                                                 held_qty=40)}) == {
+        "AAPL": {"buy": 0, "sell": 40}}
+
+
+@pytest.mark.parametrize("over", [dict(cash=0.0, held_qty=0),
+                                  dict(vol_60d=float("nan"))])
+def test_allowed_actions_omits_tickers_where_nothing_is_possible(over):
+    """{buy:0, sell:0} and garbage feeds are ABSENT, not present-and-zero: an
+    empty snapshot is what the PM reads as "HOLD everything"."""
+    assert allowed_actions({"NVDA": _nvda_inputs(**over)}) == {}
+
+
+def test_allowed_actions_key_set_is_the_active_set(fund_db, sim_clock):
+    """The snapshot the PM is shown and the tickers it is asked to decide on
+    are the same list, by construction — they cannot drift."""
+    market = {"NVDA": _nvda_inputs(),
+              "AAPL": _nvda_inputs(ticker="AAPL", cash=0.0, held_qty=0),
+              "MSFT": _nvda_inputs(ticker="MSFT", cash=0.0, held_qty=40)}
+    ctx = _ctx(fund_db, sim_clock, market)
+    assert list(allowed_actions(market)) == run_pre_gate(ctx) == ["NVDA", "MSFT"]
 
 
 # --- research ---------------------------------------------------------------

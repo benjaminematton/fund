@@ -83,14 +83,35 @@ def _sized(inputs, side: str, mode: str):
     return size({**dict(inputs), "side": side}, mode)
 
 
+def allowed_actions(market_inputs: dict) -> dict[str, dict[str, int]]:
+    """The gate's ADVISORY allowed-actions snapshot: `{ticker: {buy, sell}}` in
+    shares, the PM's sizing budget for the day (charters/pm.md Inputs).
+
+    Computed by the same size() code path the enforcement pass uses (design
+    §5, invariant §3.9), which is what makes "what the PM was shown is what
+    the gate enforces" a fact rather than a hope — an unreachable shape is 0,
+    and a ticker where BOTH shapes are 0 is absent entirely, so the key set of
+    this dict IS run_pre_gate's active set. Pure: no writes, no clock, no
+    agent input."""
+    snapshot: dict[str, dict[str, int]] = {}
+    for ticker, inputs in market_inputs.items():
+        shapes = {}
+        for side in ("buy", "sell"):
+            result = _sized(inputs, side, "advisory")
+            shapes[side] = result.max_qty if isinstance(result, Approved) else 0
+        if shapes["buy"] or shapes["sell"]:
+            snapshot[ticker] = shapes
+    return snapshot
+
+
 def run_pre_gate(ctx: StageCtx) -> list[str]:
     """Allowed-actions pass (design §3, 08:45): a ticker is active if either
     the buy shape or the sell shape is approvable. Tickers where nothing is
     possible ({buy:0, sell:0}) are dropped and never reach an LLM. Pure — no
-    writes, so run_day can recompute it on a crash resume."""
-    return [ticker for ticker, inputs in ctx.market_inputs.items()
-            if any(isinstance(_sized(inputs, side, "advisory"), Approved)
-                   for side in ("buy", "sell"))]
+    writes, so run_day can recompute it on a crash resume. Derived from
+    allowed_actions so the active set and the snapshot the PM is shown can
+    never drift apart."""
+    return list(allowed_actions(ctx.market_inputs))
 
 
 def _pre_gate_stage(ctx: StageCtx) -> list[str]:
