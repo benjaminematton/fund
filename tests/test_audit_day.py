@@ -17,6 +17,7 @@ import pytest
 from tests.test_sim_day import _nvda, golden_day, sim_day
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "audit_day.py"
+RUN_DAY_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_day.py"
 
 
 class FailingSlack:
@@ -37,7 +38,19 @@ def _load_audit():
     return module
 
 
+def _load_run_day():
+    """Same pattern as _load_audit above, and as tests/test_run_day.py's own
+    loader — scripts/run_day.py is the ONLY production writer of the
+    self-alert marker (via the real slackkit.outbox.append_event), so this is
+    what Fix 1's end-to-end test drives instead of hand-building the payload."""
+    spec = importlib.util.spec_from_file_location("run_day", RUN_DAY_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 audit_day = _load_audit()
+run_day_script = _load_run_day()
 
 
 @pytest.fixture
@@ -248,6 +261,39 @@ def test_the_audits_own_alert_does_not_red_a_rerun_of_the_same_day(day):
                           audit_day.SELF_ALERT_KEY: True},
            "2026-07-06T15:30:00+00:00")
     assert _audit(day) == []
+
+
+def test_the_real_self_alert_survives_the_real_production_writer(day):
+    """Fix 1 — the two tests above each hand-build the payload with their OWN
+    json.dumps call, so neither exercises the actual write path. The real one
+    is scripts/run_day.py's report_audit, which appends the marker through
+    the real slackkit.outbox.append_event (default json.dumps separators,
+    i.e. `"audit_report": true` WITH the space). A LIKE pattern hardcoding
+    that space would pass both hand-built tests and still silently break the
+    instant append_event's separators changed — only routing through the
+    real writer would catch that, which is the whole point of this test."""
+    sim, path = day
+
+    _doctor(day, "DELETE FROM costs")
+    assert audit_day.audit(path, sim.run_date) == ["no cost rows recorded"]
+
+    # The real production writer: posts the self-alert via the real
+    # append_event and drains it, exactly as a live run_day does after every
+    # audited day.
+    assert run_day_script.report_audit(
+        sim.conn, sim.slack, path, sim.run_date, sim.clock) == 1
+
+    # Fix the real violation so the self-alert is the only anomaly left.
+    _doctor(day, "INSERT INTO costs (run_date, agent, session_id,"
+                 " usd_estimate, recorded_at) VALUES (?, 'analyst', 's', 0.01, ?)",
+            sim.run_date, f"{sim.run_date}T15:30:00+00:00")
+    assert audit_day.audit(path, sim.run_date) == []
+
+    # A genuine alert on the same day, sitting right next to the (excluded)
+    # self-alert, must still count.
+    _event(day, "alert", {"text": "cost_unavailable pm"},
+           f"{sim.run_date}T15:31:00+00:00")
+    assert audit_day.audit(path, sim.run_date) == ["alert events raised: 1"]
 
 
 def test_a_real_alert_still_reds_the_day_it_was_raised_on(day):

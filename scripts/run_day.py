@@ -22,6 +22,17 @@ Posture (invariant 4: the default is HOLD):
     watchlist yaml, the market feed)       scheduled run, and a silent stop is
                                            the worst outcome of all
 
+    NOTE: "after connect()" is where the alert-and-drain guard (`guarded()`,
+    wired around `_trading_day` in main()) actually starts. paper_guard(),
+    require_env(), acquire_lock(), WallClock()/AlpacaSource() construction,
+    market_is_open(), RealSlack(...) construction, and
+    parse_channel_overrides(...) all run BEFORE connect() and are NOT covered
+    — a malformed SLACK_CHANNEL_OVERRIDES, for example, still exits via an
+    uncaught SystemExit with nothing posted to Slack. That is acceptable: no
+    order can have been placed by that point, and the exit is non-zero with a
+    descriptive stderr message, so it is a visible failure, just not a Slack
+    one.
+
 One fire per market day (review P4). Checkpoint CAS makes a re-fire resume
 rather than repeat, so a crashed day is recovered by running this again —
 SEQUENTIALLY. Two OVERLAPPING processes would both re-run a stage whose
@@ -339,9 +350,12 @@ def main(argv: list[str] | None = None) -> int:
         log(f"channel overrides active: {overrides}")
         slack = RemappedSlack(slack, overrides)
 
-    # From connect() onward nothing may die silently: the guard covers the
+    # From here (after connect(), RealSlack construction and channel-override
+    # parsing) onward nothing may die silently: the guard covers the
     # watchlist/sectors load, the market-data fetch, every stage body, and the
-    # audit itself.
+    # audit itself. Anything BEFORE this point (paper_guard, require_env,
+    # acquire_lock, market_is_open, RealSlack(...), parse_channel_overrides)
+    # is not covered — see the module docstring's posture note.
     return guarded(conn, slack, clock,
                    lambda: _trading_day(conn, slack, clock, source, run_date,
                                         db_path, environ))

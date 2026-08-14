@@ -292,6 +292,20 @@ stage is behind a checkpoint CAS, so `make live-day` resumes rather than
 repeats, and `client_order_id` idempotency means a re-placed order is
 422-rejected by the broker, not double-filled. When in doubt, do not.
 
+**A resumed day will NOT print `AUDIT CLEAN`, even on a clean resume, and
+that is expected — do not read it as a fresh abort.** The crash's own
+`run_day_failed` alert (raised by `guarded()`'s except path, BEFORE the audit
+ever ran) has no `audit_report` marker on it — only the audit's own
+after-the-fact failure alert carries that, and same-day scoping alone can't
+exclude a genuine alert raised earlier the same ET day. So the resumed run's
+audit will still report `alert events raised: 1` for the original crash, and
+that is correct: the crash really happened and really is a violation worth a
+human reading it. Tell it apart from a NEW failure by reading the alert text
+in `#risk` (or `events.payload`) rather than just the count: one alert whose
+text is the crash you already diagnosed is the expected shape; a second,
+different alert (or a count > 1) means something new also went wrong during
+the resume.
+
 **One known non-safety violation to recognise:** if the ONLY audit line is
 `alert events raised: 1` and the alert text starts with `cost_unavailable`,
 the SDK simply did not populate `total_cost_usd` for that turn. The fund

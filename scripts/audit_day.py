@@ -57,8 +57,17 @@ _ET = ZoneInfo("America/New_York")
 # explicit audit run) does not count the previous attempt's audit alert as a
 # fresh violation — day scoping alone cannot, because that alert is raised on
 # the very day it audits.
+#
+# Matched via json_extract, not a LIKE substring on the serialized text: a
+# LIKE pattern like '%"audit_report": true%' only matches because
+# slackkit.outbox.append_event's json.dumps happens to emit a space after the
+# colon today. An ordinary compaction change to that json.dumps call (e.g.
+# separators=(",", ":")) would silently stop matching and resurrect the
+# self-poisoning ratchet with every existing test still green, because both
+# marker tests hand-build the payload with their own json.dumps. json_extract
+# parses the JSON instead of pattern-matching its text, so it is invariant to
+# separator/whitespace choices in the writer.
 SELF_ALERT_KEY = "audit_report"
-_SELF_ALERT = f'%"{SELF_ALERT_KEY}": true%'
 
 
 def et_day_window(run_date: str) -> tuple[str, str]:
@@ -76,8 +85,12 @@ def _stamp(dt: datetime) -> str:
 
 
 def _count_today(conn, where: str, window: tuple[str, str], *args) -> int:
+    # `where` is parenthesized before the AND: both call sites today are pure
+    # conjunctions, but an unparenthesized `where` containing OR would let the
+    # appended date bound apply to only the last disjunct, silently widening
+    # the count to other days.
     return conn.execute(
-        f"SELECT COUNT(*) c FROM events WHERE {where}"
+        f"SELECT COUNT(*) c FROM events WHERE ({where})"
         " AND created_at >= ? AND created_at < ?",
         (*args, *window)).fetchone()["c"]
 
@@ -131,8 +144,9 @@ def audit(db_path: str, run_date: str) -> list[str]:
     if dead_lettered:
         bad.append(f"dead-lettered outbox events: {dead_lettered}")
 
-    alerts = _count_today(conn, "kind = 'alert' AND payload NOT LIKE ?",
-                          window, _SELF_ALERT)
+    alerts = _count_today(
+        conn, f"kind = 'alert' AND json_extract(payload, '$.{SELF_ALERT_KEY}')"
+        " IS NOT 1", window)
     if alerts:
         bad.append(f"alert events raised: {alerts}")
 
