@@ -316,6 +316,70 @@ def test_second_run_after_cancel_is_a_noop(fund_db, sim_clock):
     assert fund_db.execute("SELECT COUNT(*) c FROM events").fetchone()["c"] == before
 
 
+class _PartialThenCanceled:
+    """accepted -> partially_filled -> canceled at the broker, all inside one
+    run: 5 of 10 shares really are held and the rest is canceled away. Numbers
+    come back as strings, like the real wire (source_alpaca)."""
+
+    def __init__(self, part: int = 5, price: float = 180.0) -> None:
+        self.part, self.price, self.polls = part, price, 0
+        self.cancel_attempts: list[str] = []
+
+    def get_order_by_client_order_id(self, coid):
+        self.polls += 1
+        if self.polls == 1:
+            return {"status": "accepted", "filled_qty": "0",
+                    "filled_avg_price": None}
+        status = "partially_filled" if self.polls == 2 else "canceled"
+        return {"status": status, "filled_qty": str(self.part),
+                "filled_avg_price": str(self.price)}
+
+    def cancel_order(self, coid):
+        self.cancel_attempts.append(coid)
+
+
+def test_partial_then_canceled_records_the_shares_held(fund_db, sim_clock):
+    """The DB must tell the truth about what's held: a partial fill that was
+    then canceled leaves a REAL position, so the order goes partially_filled
+    -> canceled with the true numbers, the decision goes 'executed', a fill
+    event covers the partial qty, and the alert names it."""
+    _pending(fund_db, sim_clock, qty=10)
+    broker = _PartialThenCanceled()
+    reconcile_orders(fund_db, clock=sim_clock, broker=broker,
+                     sleep=lambda s: None, poll_s=3.0, max_wait_s=6.0)
+    assert broker.cancel_attempts == [TID]
+    o = fund_db.execute("SELECT * FROM orders").fetchone()
+    assert o["status"] == "canceled"
+    assert o["filled_qty"] == 5 and o["filled_avg_price"] == 180.0
+    assert fund_db.execute(
+        "SELECT status FROM decisions").fetchone()["status"] == "executed"
+    fills = fund_db.execute(
+        "SELECT payload FROM events WHERE kind='fill'").fetchall()
+    assert len(fills) == 1 and '"filled_qty": 5' in fills[0]["payload"]
+    alerts = [r["payload"] for r in fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert'")]
+    assert any("partial 5 of 10 then canceled" in a for a in alerts), alerts
+
+
+def test_zero_fill_cancel_fails_the_decision_and_writes_no_fill(fund_db, sim_clock):
+    """The other half: nothing was filled, so the decision is 'failed' and no
+    fill event is written (the pre-existing path, pinned)."""
+    _pending(fund_db, sim_clock)
+    broker = FakeAlpaca({"NVDA": 180.0}, mode="never_fill")
+    broker.place_order({"client_order_id": TID, "symbol": "NVDA",
+                        "side": "buy", "qty": 67})
+    _poll(fund_db, sim_clock, broker)
+    o = fund_db.execute("SELECT * FROM orders").fetchone()
+    assert o["status"] == "canceled" and o["filled_qty"] == 0
+    assert fund_db.execute(
+        "SELECT status FROM decisions").fetchone()["status"] == "failed"
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"] == 0
+    alert = fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert'").fetchone()
+    assert alert is not None and "decision failed" in alert["payload"]
+
+
 def test_idempotent_second_run_no_double_event(fund_db, sim_clock):
     _seed(fund_db)
     now = iso(sim_clock.now())

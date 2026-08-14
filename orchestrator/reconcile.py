@@ -1,8 +1,9 @@
 """Fill-poll: drive submitted orders to a terminal state (MVF review A3/T2).
 Deterministic; broker + sleep are injected. Bounded: poll_s cadence, max_wait_s
 cap, then the timeout path — which CANCELS AT THE BROKER, re-queries once, and
-records only the state the broker confirms (order canceled + decision failed,
-or the fill that won the race). Errors and unparseable broker payloads fail
+records only the state the broker confirms (order canceled, with the decision
+failed on a zero fill or executed over shares actually held, or the fill that
+won the race). Errors and unparseable broker payloads fail
 closed — the order stays 'submitted' and the next run retries; all of it is
 surfaced as loud alerts, never silent. The DB never claims a terminal state
 the broker has not confirmed (invariants 4 and 6)."""
@@ -11,7 +12,7 @@ import sqlite3
 from typing import Callable
 from orchestrator.clock import Clock, iso
 from slackkit.outbox import append_event
-from state.transition import try_transition
+from state.transition import EDGES, try_transition
 
 def _statuses(conn):
     return conn.execute("SELECT client_order_id, symbol, side FROM orders"
@@ -99,18 +100,38 @@ _CONFIRMED_DEAD = {"canceled": "canceled", "expired": "canceled",
                    "rejected": "rejected"}
 
 
+def _dead_fill(o) -> tuple[int, float] | None:
+    """Fill numbers on a broker-confirmed-dead order. None means "no shares
+    changed hands" — the plain no-fill cancel, where filled_qty is absent,
+    null or 0 and filled_avg_price is null. Anything else goes through
+    _parse_fill and raises if malformed: a dead order that claims shares must
+    say how many and at what price, or we record nothing at all."""
+    raw_qty = o.get("filled_qty")
+    if raw_qty in (None, "") or float(raw_qty) == 0:
+        return None
+    return _parse_fill(o)
+
+
 def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
     """Close out ONE order the broker last confirmed still working, past the
     cap: request the cancel, re-query ONCE, record the TRUE terminal state.
     Returns True iff the order filled in the race (keeps the caller's fill
     counter honest).
 
+    The order may be 'submitted' OR 'partially_filled' in the DB (accepted ->
+    partially_filled -> canceled happens inside one run), so the CAS starts
+    from whatever the row actually holds. The re-queried fill numbers decide
+    the decision's fate, because the DB must tell the truth about what's held:
+    filled_qty > 0 is a REAL position, so the decision is 'executed' with a
+    fill event for the partial qty; only a zero fill is 'failed'.
+
     Fail closed everywhere the broker leaves us guessing — a cancel that
     errored while the order still works, a re-query that errored or returned
-    nothing, a status that is not confirmed-dead: leave the row 'submitted'
-    for the next run and alert. Requesting a cancel twice is harmless
-    (idempotent by client_order_id); recording a cancel that did not happen
-    is not."""
+    nothing, a status that is not confirmed-dead, fill numbers that will not
+    parse, a dead status with no legal edge from the row's current status:
+    leave the row as-is for the next run and alert. Requesting a cancel twice
+    is harmless (idempotent by client_order_id); recording a cancel that did
+    not happen is not."""
     coid = row["client_order_id"]
     try:
         broker.cancel_order(coid)
@@ -140,19 +161,54 @@ def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
         append_event(conn, "alert", {"text": stale.format(
             why=f"broker still reports '{status}'{cancel_err}")}, now)
         return False
+    dead = _CONFIRMED_DEAD[status]
+    cur = conn.execute("SELECT status, qty FROM orders WHERE client_order_id=?",
+                       (coid,)).fetchone()
+    from_status = cur["status"] if cur is not None else "submitted"
+    if (from_status, dead) not in EDGES["orders"]:
+        append_event(conn, "alert", {"text": stale.format(
+            why=f"broker reports '{status}' but the order is '{from_status}'"
+                " — no legal transition")}, now)
+        return False
+    try:
+        fill = _dead_fill(o)
+    except Exception as e:
+        append_event(conn, "alert", {"text": stale.format(
+            why=f"broker reports '{status}' but the fill numbers are "
+                f"unparseable ({type(e).__name__})")}, now)
+        return False
+    if fill is not None:                 # shares really changed hands
+        conn.execute("UPDATE orders SET filled_qty=?, filled_avg_price=?,"
+                     " closed_at=? WHERE client_order_id=?",
+                     (fill[0], fill[1], now, coid))
+        conn.commit()
     if try_transition(conn, "orders", {"client_order_id": coid},
-                      "submitted", _CONFIRMED_DEAD[status], now):
+                      from_status, dead, now):
         t = conn.execute("SELECT decision_id FROM tickets WHERE id=?",
                          (coid,)).fetchone()
-        decision_failed = False
-        if t is not None:
-            decision_failed = try_transition(conn, "decisions",
-                                             {"id": t["decision_id"]},
-                                             "approved", "failed", now)
-        suffix = "decision failed" if decision_failed else "decision unchanged"
-        append_event(conn, "alert", {"text":
-            f"order {coid[:8]} unfilled after {int(max_wait_s)}s — "
-            f"{_CONFIRMED_DEAD[status]} at the broker, {suffix}"}, now)
+        if fill is None:                 # nothing held: the decision failed
+            moved = t is not None and try_transition(
+                conn, "decisions", {"id": t["decision_id"]},
+                "approved", "failed", now)
+            append_event(conn, "alert", {"text":
+                f"order {coid[:8]} unfilled after {int(max_wait_s)}s — "
+                f"{dead} at the broker, "
+                f"{'decision failed' if moved else 'decision unchanged'}"}, now)
+        else:                            # a real position exists: executed
+            filled_qty, filled_avg_price = fill
+            append_event(conn, "fill", {
+                "ticker": row["symbol"], "side": row["side"],
+                "filled_qty": filled_qty,
+                "filled_avg_price": filled_avg_price,
+                "ticket_id": coid}, now)
+            moved = t is not None and try_transition(
+                conn, "decisions", {"id": t["decision_id"]},
+                "approved", "executed", now)
+            append_event(conn, "alert", {"text":
+                f"order {coid[:8]} partial {filled_qty} of {cur['qty']} then "
+                f"{dead} at the broker after {int(max_wait_s)}s, "
+                f"{'decision executed' if moved else 'decision unchanged'}"},
+                now)
     return False
 
 
