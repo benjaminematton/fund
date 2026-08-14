@@ -30,6 +30,15 @@ def _pnl_pct(equity, last_equity) -> float:
         return float("nan")
     return (e - le) / le
 
+def _clock_dict(c) -> dict:
+    """Normalize alpaca's Clock model to a plain dict. is_open is True ONLY
+    when the broker says so explicitly -- a missing/None/truthy-string field
+    reads as CLOSED, so an odd payload skips the day instead of trading
+    against a shut market (invariant 4)."""
+    return {"is_open": getattr(c, "is_open", None) is True,
+            "next_open": str(getattr(c, "next_open", "") or ""),
+            "next_close": str(getattr(c, "next_close", "") or "")}
+
 def _reshape_close_frame(bars_df, tickers: list[str], days: int):
     """Reshape raw StockBarsRequest bars.df into one close-price column per
     requested ticker, tail-limited to `days` rows. A ticker with zero bars in
@@ -57,6 +66,11 @@ class AlpacaSource:
         d = o.model_dump() if hasattr(o, "model_dump") else dict(o)
         return {k: (str(v) if k in ("qty", "filled_qty", "filled_avg_price")
                     and v is not None else v) for k, v in d.items()}
+
+    def market_clock(self) -> dict:
+        """Broker's market clock: {is_open, next_open, next_close}. The live
+        day's skip-if-closed guard reads this."""
+        return _clock_dict(self._trading.get_clock())
 
     def close_frame(self, tickers: list[str], end, days: int = 90):
         import pandas as pd

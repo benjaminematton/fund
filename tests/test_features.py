@@ -2,7 +2,8 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
-from market.features import annualized_vol, avg_corr_vs_book, sector_book_value, build_gate_inputs
+from market.features import (annualized_vol, avg_corr_vs_book, build_gate_inputs,
+                             build_market_inputs, sector_book_value)
 from gate.risk import size, Rejected
 
 def _frame(n=90, seed=7):
@@ -93,3 +94,56 @@ def test_missing_data_nan_lands_on_gate_error_not_a_crash():
         vol_60d=0.2, avg_corr=0.1, held_qty=0, position_count=2,
         sectors={"NVDA": "tech"}, sector_value=bad_sector_value, daily_pnl_pct=-0.004)
     assert size(gi2, "enforce") == Rejected("gate_error")
+
+
+# --- build_market_inputs: the live composition root's market snapshot -------
+
+def _account(**over):
+    a = dict(equity=100000.0, cash=30000.0, daily_pnl_pct=-0.004,
+             positions={"AAPL": 40}, prices={"AAPL": 200.0})
+    a.update(over)
+    return a
+
+
+def test_build_market_inputs_covers_watchlist_and_held_positions():
+    """The pre-gate runs over watchlist AND held tickers (design §3, 08:45) —
+    a position outside today's watchlist must still be sell-able."""
+    px = _frame()
+    out = build_market_inputs(["NVDA"], _account(), px,
+                              {"NVDA": "tech", "AAPL": "tech"})
+    assert sorted(out) == ["AAPL", "NVDA"]
+    assert out["NVDA"]["held_qty"] == 0
+    assert out["AAPL"]["held_qty"] == 40
+    assert out["NVDA"]["position_count"] == 1
+
+
+def test_build_market_inputs_prices_unheld_from_the_last_close():
+    """Alpaca's account_state only carries prices for HELD positions; an
+    unheld watchlist ticker takes its last close from the frame."""
+    px = _frame()
+    out = build_market_inputs(["NVDA"], _account(), px, {"NVDA": "tech"})
+    assert out["NVDA"]["price"] == pytest.approx(px["NVDA"].iloc[-1])
+    # a held ticker keeps the broker's live mark, not the stale close
+    assert out["AAPL"]["price"] == 200.0
+
+
+def test_build_market_inputs_carries_the_gate_fields_through():
+    px = _frame()
+    out = build_market_inputs(["NVDA"], _account(), px,
+                              {"NVDA": "tech", "AAPL": "tech"})["NVDA"]
+    assert out["equity"] == 100000.0 and out["cash"] == 30000.0
+    assert out["daily_pnl_pct"] == -0.004
+    assert out["sector"] == "tech"
+    assert out["vol_60d"] == pytest.approx(annualized_vol(px["NVDA"]))
+    # correlation is measured against the BOOK, excluding the ticker itself
+    assert out["avg_corr"] == pytest.approx(avg_corr_vs_book(px, "NVDA", ["AAPL"]))
+    assert out["sector_value"] == pytest.approx(40 * 200.0)
+
+
+def test_build_market_inputs_unknown_ticker_reaches_the_gate_as_gate_error():
+    """No bars and no sector: the assembler never rejects (C3) — it passes the
+    NaNs/None through and the GATE fails closed."""
+    px = _frame()
+    out = build_market_inputs(["ZZZZ"], _account(), px, {"AAPL": "tech"})["ZZZZ"]
+    assert math.isnan(out["price"]) and out["sector"] is None
+    assert isinstance(size({**out, "side": "buy"}, "advisory"), Rejected)

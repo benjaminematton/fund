@@ -5,7 +5,7 @@ import math
 import pandas as pd
 import pytest
 
-from market.source_alpaca import _pnl_pct, _reshape_close_frame
+from market.source_alpaca import _clock_dict, _pnl_pct, _reshape_close_frame
 
 
 # ---- _pnl_pct: invariant 4, fresh/degraded account must fail closed ----
@@ -60,3 +60,24 @@ def test_reshape_close_frame_tail_limits_to_days():
     out = _reshape_close_frame(bars, ["AAPL"], days=3)
     assert len(out) == 3
     assert list(out["AAPL"]) == [7.0, 8.0, 9.0]
+
+
+# ---- _clock_dict: invariant 4, an odd clock payload must read as CLOSED ----
+
+class _Clock:
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
+
+def test_clock_dict_open():
+    c = _clock_dict(_Clock(is_open=True, next_open="a", next_close="b"))
+    assert c == {"is_open": True, "next_open": "a", "next_close": "b"}
+
+def test_clock_dict_closed():
+    assert _clock_dict(_Clock(is_open=False, next_open=None,
+                              next_close=None))["is_open"] is False
+
+def test_clock_dict_missing_or_non_bool_is_open_reads_closed():
+    """'true' as a string, or no field at all, must not be trusted as open."""
+    assert _clock_dict(_Clock())["is_open"] is False
+    assert _clock_dict(_Clock(is_open="true"))["is_open"] is False
+    assert _clock_dict(_Clock(is_open=1))["is_open"] is False
