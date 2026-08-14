@@ -13,9 +13,19 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_sim_day import golden_day
+from tests.test_sim_day import _nvda, golden_day, sim_day
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "audit_day.py"
+
+
+class FailingSlack:
+    """Slack whose post() raises unconditionally — reviewer's repro for Fix
+    1: an outage that dead-letters every event through drain()'s except
+    path, rather than a doctored DB. Records nothing, because it delivers
+    nothing."""
+
+    def post(self, channel: str, text: str, thread_ts: str | None = None) -> str:
+        raise RuntimeError("slack outage")
 
 
 def _load_audit():
@@ -51,6 +61,33 @@ def _doctor(day, sql: str, *args) -> None:
 
 def test_golden_day_audits_clean(day):
     assert _audit(day) == []
+
+
+@pytest.fixture
+def all_hold_day(tmp_path):
+    """Fix 2: the all-hold day shape — no orders, no tickets, so several
+    checks are trivially satisfied. Must still audit clean for real, not by
+    accident."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  pm_recs=("mvf_pm_hold.jsonl",))
+    return sim, str(tmp_path / "fund.sqlite")
+
+
+@pytest.fixture
+def gate_reject_day(tmp_path):
+    """Fix 2: the gate-reject day shape — a rejected decision, no ticket, no
+    order."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  feed_break={"NVDA": {"vol_60d": float("nan")}})
+    return sim, str(tmp_path / "fund.sqlite")
+
+
+def test_all_hold_day_audits_clean(all_hold_day):
+    assert _audit(all_hold_day) == []
+
+
+def test_gate_reject_day_audits_clean(gate_reject_day):
+    assert _audit(gate_reject_day) == []
 
 
 def test_stage_list_matches_the_orchestrator(day):
@@ -97,6 +134,37 @@ def test_covered_ticker_with_no_decision(day):
 def test_undrained_outbox_event(day):
     _doctor(day, "UPDATE events SET posted_at = NULL WHERE kind = 'digest'")
     assert _audit(day) == ["undrained outbox events: 1"]
+
+
+def test_dead_lettered_events_read_as_delivered(tmp_path):
+    """Fix 1 — reviewer's repro: a golden day run against a Slack whose
+    post() raises on every call. slackkit.outbox.drain() dead-letters every
+    event (marks it posted_at, never delivered) so the undrained check sees
+    zero — the day audits clean with 5 projection_error rows and zero
+    messages actually posted anywhere."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()}, slack=FailingSlack())
+    path = str(tmp_path / "fund.sqlite")
+
+    projection_errors = sim.conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind = 'projection_error'"
+        ).fetchone()["c"]
+    assert projection_errors == 5
+    undrained = sim.conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"]
+    assert undrained == 0                       # every row IS marked posted...
+
+    assert audit_day.audit(path, sim.run_date) == [
+        "dead-lettered outbox events: 5"]        # ...but none were delivered
+
+
+def test_alert_event_reported(day):
+    """An already-drained alert (posted_at set, so it does not also trip the
+    undrained check) still needs to surface: it means something needed
+    human attention."""
+    _doctor(day, "INSERT INTO events (kind, payload, created_at, posted_at)"
+                 " VALUES ('alert', '{\"text\": \"doctored\"}',"
+                 " '2026-07-06T15:30:00+00:00', '2026-07-06T15:30:00+00:00')")
+    assert _audit(day) == ["alert events raised: 1"]
 
 
 def test_no_cost_rows(day):

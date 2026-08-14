@@ -1,0 +1,1 @@
+{"seat": "pm", "tool": "mcp__fund__submit_decision", "args": {"ticker": "MSFT", "action": "sell", "qty": 40, "thesis": "Cloud growth deceleration and a stretched multiple; trim the full existing position rather than add risk.", "invalidation": "A reacceleration in Azure growth guidance, or close below 480."}}

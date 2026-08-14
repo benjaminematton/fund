@@ -1,0 +1,3 @@
+{"seat": "exec", "tool": "mcp__fund__list_open_tickets", "args": {}}
+{"seat": "exec", "tool": "mcp__alpaca__place_stock_order", "args": {"client_order_id": "a3f90000-0000-4000-8000-000000000001", "symbol": "NVDA", "side": "buy", "qty": "66", "type": "market", "time_in_force": "day"}}
+{"seat": "exec", "tool": "mcp__alpaca__place_stock_order", "args": {"client_order_id": "b4f90000-0000-4000-8000-000000000002", "symbol": "MSFT", "side": "sell", "qty": "40", "type": "market", "time_in_force": "day"}}

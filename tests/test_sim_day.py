@@ -40,6 +40,8 @@ START = datetime(2026, 7, 6, 15, 30, tzinfo=timezone.utc)
 # The exec recording's client_order_id; invariant 5 makes it the ticket id too,
 # so the sim's id_factory must mint exactly this.
 TID = "a3f90000-0000-4000-8000-000000000001"
+# Second ticket id for the two-order day (mvf_exec_two.jsonl's MSFT leg).
+TID2 = "b4f90000-0000-4000-8000-000000000002"
 
 PRICES = {"NVDA": 180.00, "MSFT": 505.00}      # fixtures/golden-day.md
 FILL_PRICES = {"NVDA": 180.14}                 # fixture fill
@@ -85,16 +87,22 @@ def sim_day(tmp_path, *, market: dict,
             analyst_recs=("mvf_analyst.jsonl",),
             pm_recs=("mvf_pm.jsonl",),
             exec_recs=("mvf_exec.jsonl",),
-            feed_break: dict | None = None) -> SimResult:
+            feed_break: dict | None = None,
+            slack=None,
+            id_factory=None) -> SimResult:
     """One simulated trading day. `feed_break` applies market-input overrides
     AFTER the decision turn — a feed that goes bad between the PM's submit and
     the gate's enforcement pass, which is the only way a ticker can be live at
-    pre-gate and garbage at the gate."""
+    pre-gate and garbage at the gate. `slack` defaults to a fresh FakeSlack;
+    pass a different port (e.g. one whose post() raises) to exercise the
+    outbox's dead-letter path. `id_factory` defaults to the fixed single-TID
+    factory every existing sim relies on; pass a multi-id factory for a day
+    with more than one ticket minted."""
     conn = connect(tmp_path / "fund.sqlite")
     clock = SimClock(START)
     run_date = et_run_date(clock.now())
     broker = FakeAlpaca(PRICES, FILL_PRICES, mode="fill")
-    slack = FakeSlack()
+    slack = slack if slack is not None else FakeSlack()
     turns = {"research": 0, "decision": 0, "execution": 0}
 
     def _sleep(seconds: float) -> None:
@@ -129,7 +137,7 @@ def sim_day(tmp_path, *, market: dict,
         market_inputs=market,
         run_turn={"research": _turn("research", "analyst", analyst_recs),
                   "decision": _turn("decision", "pm", pm_recs, after=break_feed)},
-        id_factory=lambda: TID, journals_root=journals)
+        id_factory=id_factory or (lambda: TID), journals_root=journals)
     run_day(ctx, execution_turn=_turn("execution", "exec", exec_recs),
             broker=broker, sleep=_sleep)
     return SimResult(conn=conn, slack=slack, broker=broker, clock=clock,
@@ -162,6 +170,15 @@ def _decision(sim: SimResult, ticker: str) -> sqlite3.Row:
 def _event_payloads(sim: SimResult, kind: str) -> list[dict]:
     return [json.loads(r["payload"]) for r in sim.conn.execute(
         "SELECT payload FROM events WHERE kind = ? ORDER BY id", (kind,))]
+
+
+def _id_sequence(ids):
+    """Deterministic multi-ticket id_factory (review Fix 3): yields `ids` in
+    call order. A day that mints more tickets than provided is a bug the
+    sim should crash on, not paper over with a repeated id — StopIteration
+    is the loud failure that gives us."""
+    it = iter(ids)
+    return lambda: next(it)
 
 
 def _assert_day_completed(sim: SimResult) -> None:
@@ -240,6 +257,14 @@ def test_all_hold_day(tmp_path):
     assert "#trade-log" not in sim.slack.posts
     assert _event_payloads(sim, "digest")[0]["text"].endswith(
         "decisions: NVDA hold 0 (held)\nfills: none\nest. inference cost $0.02")
+
+    # Fix 5: pin the risk channel too — a spurious gate_rejected/gate_approved/
+    # alert on a hold-only day would otherwise pass unnoticed.
+    assert _event_payloads(sim, "gate_approved") == []
+    assert _event_payloads(sim, "gate_rejected") == []
+    assert _event_payloads(sim, "alert") == []
+    assert "#risk" not in sim.slack.posts
+
     _assert_day_completed(sim)
 
 
@@ -291,4 +316,71 @@ def test_gate_reject_day(tmp_path):
         {"ticker": "NVDA", "side": "buy", "reason": "gate_error"}]
     assert "⛔ NVDA buy — gate_error" in [p["text"] for p in sim.slack.posts["#risk"]]
     assert _event_payloads(sim, "gate_approved") == []
+    _assert_day_completed(sim)
+
+
+def test_gate_reject_day_circuit_breaker(tmp_path):
+    """Fix 4: a blanket `except Exception: reject('gate_error')` can fake the
+    NaN case above by simply blowing up on anything. It cannot fake a
+    circuit-breaker rejection, which is a value the gate computes correctly
+    and returns as data, never an exception. The daily P&L feed breaches
+    CIRCUIT_BREAKER (-0.03) between the PM's submit and the gate's enforce
+    pass."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  feed_break={"NVDA": {"daily_pnl_pct": -0.05}})
+
+    d = _decision(sim, "NVDA")
+    assert (d["action"], d["qty"], d["status"]) == ("buy", 80, "rejected")
+    assert _count(sim, "tickets") == 0
+    assert _count(sim, "orders") == 0
+    assert sim.broker.place_attempts == []
+    assert sim.turns["execution"] == 0
+
+    assert _event_payloads(sim, "gate_rejected") == [
+        {"ticker": "NVDA", "side": "buy", "reason": "circuit_breaker"}]
+    assert "⛔ NVDA buy — circuit_breaker" in [p["text"] for p in sim.slack.posts["#risk"]]
+    assert _event_payloads(sim, "gate_approved") == []
+    _assert_day_completed(sim)
+
+
+# --- 5. two orders in one day ------------------------------------------------
+
+def test_two_orders_same_day(tmp_path):
+    """Fix 3: NVDA buys, MSFT sells, in the same day — two tickets, two
+    orders, both live in reconcile_orders' multi-pending poll loop and both
+    rendered in the same fill-line/trade-log pass at once, for the first
+    time at any level."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda(), "MSFT": _msft()},
+                  pm_recs=("mvf_pm.jsonl", "mvf_pm_msft_sell.jsonl"),
+                  exec_recs=("mvf_exec_two.jsonl",),
+                  id_factory=_id_sequence([TID, TID2]))
+
+    nvda, msft = _decision(sim, "NVDA"), _decision(sim, "MSFT")
+    assert (nvda["action"], nvda["qty"], nvda["status"]) == ("buy", 80, "executed")
+    assert (msft["action"], msft["qty"], msft["status"]) == ("sell", 40, "executed")
+
+    tickets = {r["ticker"]: r for r in sim.conn.execute(
+        "SELECT * FROM tickets ORDER BY ticker")}
+    assert _count(sim, "tickets") == 2
+    assert tickets["NVDA"]["id"] == TID
+    assert tickets["MSFT"]["id"] == TID2
+    assert tickets["NVDA"]["id"] != tickets["MSFT"]["id"]
+    assert {t["status"] for t in tickets.values()} == {"consumed"}
+
+    assert {a["symbol"] for a in sim.broker.place_attempts} == {"NVDA", "MSFT"}
+    assert len(sim.broker.place_attempts) == 2
+
+    orders = {r["symbol"]: r for r in sim.conn.execute(
+        "SELECT * FROM orders ORDER BY symbol")}
+    assert _count(sim, "orders") == 2
+    assert (orders["NVDA"]["status"], orders["NVDA"]["filled_qty"]) == ("filled", 66)
+    assert (orders["MSFT"]["status"], orders["MSFT"]["filled_qty"]) == ("filled", 40)
+
+    trade_log = sim.slack.posts["#trade-log"]
+    assert len(trade_log) == 2
+    texts = {p["text"] for p in trade_log}
+    assert any("NVDA buy 66@180.14" in t for t in texts)
+    assert any("MSFT sell 40@505.00" in t for t in texts)
+
+    assert sim.turns == {"research": 1, "decision": 1, "execution": 1}
     _assert_day_completed(sim)
