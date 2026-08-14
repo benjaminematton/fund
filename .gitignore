@@ -22,6 +22,8 @@ journals/*
 !journals/.gitkeep
 recordings/*
 !recordings/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # os / editor
 .DS_Store

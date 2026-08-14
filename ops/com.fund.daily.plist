@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  One fire per market day (MVF review P4): 09:35 ET, Mon-Fri. No daemon.
+  scripts/run_day.py checks the broker's clock first and exits 0 on a holiday
+  or an early close, so weekday-only scheduling is sufficient; checkpoint CAS
+  makes a re-fire resume rather than repeat.
+
+  BEFORE LOADING, replace /ABSOLUTE/PATH/TO/fund with this checkout's real
+  path (launchd does not expand ~ or relative paths), then:
+
+      cp ops/com.fund.daily.plist ~/Library/LaunchAgents/
+      launchctl load  ~/Library/LaunchAgents/com.fund.daily.plist
+      launchctl list | grep com.fund.daily        # verify it is registered
+      launchctl unload ~/Library/LaunchAgents/com.fund.daily.plist   # to stop
+
+  TIMEZONE: StartCalendarInterval fires on the machine's LOCAL time, and no
+  env var changes that. Hour 9 / Minute 35 is correct only on a Mac set to
+  America/New_York. On a machine in another zone, set the machine's timezone
+  or shift Hour accordingly — and re-check after every DST change.
+
+  SECRETS: never inline keys here (this file is committed). The job sources
+  .env, which is not.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fund.daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>set -a; . /ABSOLUTE/PATH/TO/fund/.env; set +a; exec /ABSOLUTE/PATH/TO/fund/.venv/bin/python3 /ABSOLUTE/PATH/TO/fund/scripts/run_day.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/PATH/TO/fund</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>35</integer></dict>
+  </array>
+
+  <!-- Never on load/reboot: a day starts because the market opened, never
+       because the laptop did. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/PATH/TO/fund/logs/run_day.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PATH/TO/fund/logs/run_day.err.log</string>
+</dict>
+</plist>

@@ -2,7 +2,13 @@ seat: analyst
 model: claude-haiku-4-5-20251001
 fallback_model: claude-sonnet-5
 max_budget_usd: 0.50
-max_turns: 12                     # P1 cost bound
+# P1 cost bound. provisional — right-size from first live ResultMessage:
+# the charter budgets <=4 tool calls per ticker, and how the SDK counts a
+# tool call against max_turns cannot be determined offline. Budget exhaustion
+# degrades safely to neutral/0, but demo day deserves a real signal, so this
+# leaves headroom until a live ResultMessage.num_turns says otherwise.
+# max_budget_usd above stays the hard backstop.
+max_turns: 16
 alpaca_toolsets: "stock-data,news,account"   # READ-ONLY (invariant 2)
 tools: ["mcp__fund__*", "mcp__alpaca__*"]
 disallowed_tools: ["mcp__alpaca__place_*"]   # belt over the toolset braces

@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-paper
+.PHONY: test lint sim-day replay live-day live-paper
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -30,11 +30,9 @@ lint: deps
 	$(PYTHON) scripts/check_purity.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,
-# real tool/gate/DB execution. Lands with Phase 1–2 (orchestrator + gate).
-sim-day:
-	@echo "sim-day: not implemented yet — requires orchestrator/ and gate/ (Phase 1–2," >&2
-	@echo "see specs/acceptance.md). 'make test' is the current offline check." >&2
-	@exit 2
+# real tool/gate/DB execution. No network, no API keys, no LLM cost.
+sim-day: deps
+	$(PYTHON) -m pytest tests/test_sim_day.py -v
 
 # Replay a recorded day's LLM decisions against current code.
 replay:
@@ -42,7 +40,12 @@ replay:
 	@echo "see specs/acceptance.md §0). Usage when built: make replay REC=<recording>" >&2
 	@exit 2
 
-# Real Slack + Alpaca paper + real LLM calls. Needs .env. Manual only, never CI.
-live-paper:
-	@echo "live-paper: not implemented yet — requires agents/ runtime (Phase 1–3)." >&2
-	@exit 2
+# One live trading day: real clock, real Slack, real Alpaca paper, real LLM
+# seats. Needs .env loaded (`set -a; source .env; set +a`). Manual/launchd
+# only, NEVER CI. Exits 0 without trading when the market is closed.
+# See HANDOFF-LIVE.md before the first supervised run.
+live-day: deps
+	$(PYTHON) scripts/run_day.py
+
+# Alias kept for the specs/acceptance.md name.
+live-paper: live-day

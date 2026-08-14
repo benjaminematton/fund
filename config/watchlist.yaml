@@ -1,0 +1,15 @@
+# Today's universe. Human-committed only — same rule as the gate thresholds
+# and config/sectors.yaml. NEVER written by an agent, never hardcoded in a
+# script (same rule as model ids and budgets).
+#
+# Every ticker here MUST also appear in config/sectors.yaml: a ticker with no
+# sector is rejected fail-closed by the gate and would burn a seat turn for a
+# guaranteed HOLD.
+#
+# provisional — right-size from first live ResultMessage
+# (2 tickers, not the spec-P1 cap of 3: the first supervised live day leaves
+# headroom under the analyst's turn budget rather than guessing how the SDK
+# counts turns. Widen once a real ResultMessage.num_turns is in hand.)
+tickers:
+  - NVDA
+  - MSFT
