@@ -15,9 +15,10 @@ What a clean day means:
     broker did"
   * the outbox is drained (invariant 6: Slack is a projection; an undrained
     event is a day nobody was told about) AND nothing dead-lettered TODAY — a
-    row whose render/post raised is marked posted by slackkit.outbox.drain()
-    without ever reaching Slack, so an undrained-only check reads a Slack
-    outage as a clean day
+    row whose RENDER raised is marked posted by slackkit.outbox.drain()
+    without ever reaching Slack, so an undrained-only check would read an
+    unrenderable event as delivered. (A row whose slack.post() raised is left
+    unposted and retried, so an outage surfaces on the undrained check.)
   * no alert events TODAY — an alert means something needed human review (a
     timed-out PM, a canceled order, a broker that went unreachable); a
     report of what a "clean" day looks like must not stay silent about them
@@ -138,8 +139,8 @@ def audit(db_path: str, run_date: str) -> list[str]:
 
     window = et_day_window(run_date)
 
-    # drain() marks a dead-lettered row posted_at without ever calling
-    # slack.post() successfully — invisible to the undrained check above.
+    # drain() marks a row whose render raised posted_at without ever calling
+    # slack.post() at all — invisible to the undrained check above.
     dead_lettered = _count_today(conn, "kind = 'projection_error'", window)
     if dead_lettered:
         bad.append(f"dead-lettered outbox events: {dead_lettered}")

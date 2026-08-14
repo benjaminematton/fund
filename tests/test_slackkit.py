@@ -83,6 +83,87 @@ def test_drain_dead_letters_bad_event_and_continues(fund_db, sim_clock):
     assert actual_posts == 2
     assert posted == actual_posts
 
+class _FlakySlack:
+    """Slack that fails its first `failures` post() calls, then works — a
+    token that has not been fixed yet, a 503, a network blip."""
+
+    def __init__(self, failures: int = 1):
+        self.remaining = failures
+        self.posts: list[tuple[str, str]] = []
+
+    def post(self, channel: str, text: str, thread_ts: str | None = None) -> str:
+        if self.remaining:
+            self.remaining -= 1
+            raise RuntimeError("slack outage")
+        self.posts.append((channel, text))
+        return f"ts-{len(self.posts)}"
+
+
+def _queue(conn) -> tuple[int, int]:
+    unposted = conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"]
+    dead = conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind = 'projection_error'"
+        ).fetchone()["c"]
+    return unposted, dead
+
+
+def test_a_transient_post_failure_retries_instead_of_dead_lettering(fund_db):
+    """drain() used to catch render() AND slack.post() in one handler, so a
+    Slack outage marked every event posted and discarded the day's whole
+    projection forever. A post failure is transient: the events stay
+    unposted, nothing is dead-lettered, and the next drain delivers them."""
+    slack = _FlakySlack(failures=1)
+    append_event(fund_db, "fill", FILL, NOW)
+    append_event(fund_db, "alert", {"text": "after"}, NOW)
+
+    assert drain(fund_db, slack, NOW) == 0        # stopped on the first post
+    assert slack.posts == []                      # ordering: nothing jumped it
+    assert _queue(fund_db) == (2, 0)              # both still queued, none dead
+
+    assert drain(fund_db, slack, NOW) == 2
+    assert [text for _, text in slack.posts] == [
+        render("fill", FILL)[1], render("alert", {"text": "after"})[1]]
+    assert _queue(fund_db) == (0, 0)
+
+
+def test_a_post_failure_stops_the_drain_so_ordering_is_preserved(fund_db):
+    """A later event must never be posted before an earlier one."""
+    slack = _FlakySlack(failures=1)
+    for i in range(4):
+        append_event(fund_db, "alert", {"text": f"e{i}"}, NOW)
+    assert drain(fund_db, slack, NOW) == 0
+    assert slack.posts == []
+    assert drain(fund_db, slack, NOW) == 4
+    assert [text for _, text in slack.posts] == [
+        render("alert", {"text": f"e{i}"})[1] for i in range(4)]
+
+
+def test_a_render_error_still_dead_letters_while_slack_is_healthy(fund_db):
+    """Only RENDER errors are permanent. The dead-letter path is unchanged:
+    the row is marked posted, a projection_error names it, and the queue is
+    not jammed."""
+    slack = FakeSlack()
+    append_event(fund_db, "bogus_kind", {"x": 1}, NOW)
+    append_event(fund_db, "alert", {"text": "after"}, NOW)
+    assert drain(fund_db, slack, NOW) == 2        # the alert + the projection_error
+    assert _queue(fund_db) == (0, 1)
+
+
+def test_a_dead_letter_survives_a_transient_post_failure(fund_db):
+    """The two paths compose: the unrenderable row dead-letters once, and the
+    projection_error it appends is delivered by the retrying drain — never
+    dead-lettered a second time by the outage."""
+    slack = _FlakySlack(failures=1)
+    append_event(fund_db, "bogus_kind", {"x": 1}, NOW)
+    append_event(fund_db, "alert", {"text": "after"}, NOW)
+
+    assert drain(fund_db, slack, NOW) == 0
+    assert _queue(fund_db) == (2, 1)     # bogus row dead-lettered, 2 left to post
+    assert drain(fund_db, slack, NOW) == 2
+    assert _queue(fund_db) == (0, 1)
+
+
 def test_every_written_kind_has_a_renderer():
     """Static guard: every append_event kind literal in the codebase renders.
 

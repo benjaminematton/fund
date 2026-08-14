@@ -22,9 +22,8 @@ RUN_DAY_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_day.py"
 
 class FailingSlack:
     """Slack whose post() raises unconditionally — reviewer's repro for Fix
-    1: an outage that dead-letters every event through drain()'s except
-    path, rather than a doctored DB. Records nothing, because it delivers
-    nothing."""
+    1: a real outage through drain()'s except path, rather than a doctored
+    DB. Records nothing, because it delivers nothing."""
 
     def post(self, channel: str, text: str, thread_ts: str | None = None) -> str:
         raise RuntimeError("slack outage")
@@ -173,25 +172,33 @@ def test_undrained_outbox_event(day):
     assert _audit(day) == ["undrained outbox events: 1"]
 
 
-def test_dead_lettered_events_read_as_delivered(tmp_path):
+def test_a_total_slack_outage_never_audits_clean(tmp_path):
     """Fix 1 — reviewer's repro: a golden day run against a Slack whose
-    post() raises on every call. slackkit.outbox.drain() dead-letters every
-    event (marks it posted_at, never delivered) so the undrained check sees
-    zero — the day audits clean with 5 projection_error rows and zero
-    messages actually posted anywhere."""
+    post() raises on every call. The day must not audit clean.
+
+    A post() failure is TRANSIENT, so drain() no longer dead-letters it
+    (that discarded the day's whole projection forever): the rows stay
+    unposted and the undrained check is what fails the day — and every
+    message is still deliverable once Slack is back."""
     sim = sim_day(tmp_path, market={"NVDA": _nvda()}, slack=FailingSlack())
     path = str(tmp_path / "fund.sqlite")
 
     projection_errors = sim.conn.execute(
         "SELECT COUNT(*) c FROM events WHERE kind = 'projection_error'"
         ).fetchone()["c"]
-    assert projection_errors == 5
+    assert projection_errors == 0                # nothing was discarded...
     undrained = sim.conn.execute(
         "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"]
-    assert undrained == 0                       # every row IS marked posted...
+    assert undrained == 5                        # ...it is all still queued
 
-    assert audit_day.audit(path, sim.run_date) == [
-        "dead-lettered outbox events: 5"]        # ...but none were delivered
+    assert audit_day.audit(path, sim.run_date) == ["undrained outbox events: 5"]
+
+    # and the queue really does clear the moment Slack works
+    from slackkit.fake import FakeSlack
+    from slackkit.outbox import drain
+    slack = FakeSlack()
+    assert drain(sim.conn, slack, "2026-07-06T20:00:00+00:00") == 5
+    assert sum(len(v) for v in slack.posts.values()) == 5
 
 
 def test_alert_event_reported(day):

@@ -55,8 +55,11 @@ to trade — come back when it is open.
 ### Known trap: the Slack token
 
 The bot token must start with `xoxb-`. An `xapp-` app-level token cannot call
-`chat.postMessage`; the outbox will dead-letter every event and the audit will
-fail on `dead-lettered outbox events`. Fix the token, not the audit.
+`chat.postMessage`; every `post()` raises, so the outbox stops draining and the
+audit fails on `undrained outbox events`. Nothing is lost — a post failure is
+treated as transient, so the whole day's projection is still queued in SQLite
+and flushes on the next drain once the token is fixed. Fix the token, not the
+audit.
 
 The bot must also be **invited to all five channels** the renderers post to:
 
@@ -64,8 +67,8 @@ The bot must also be **invited to all five channels** the renderers post to:
 #research  #trading-floor  #risk  #trade-log  #pnl
 ```
 
-In each one: `/invite @<your-bot>`. A `not_in_channel` error dead-letters the
-event exactly like a bad token does.
+In each one: `/invite @<your-bot>`. A `not_in_channel` error stops the drain
+exactly like a bad token does — and the queued events flush after the invite.
 
 > Rehearsing somewhere harmless? Set
 > `SLACK_CHANNEL_OVERRIDES=#pnl=#test-pnl,#risk=#test-risk,#trade-log=#test-trade-log,#research=#test-research,#trading-floor=#test-floor`
