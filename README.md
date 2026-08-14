@@ -22,7 +22,7 @@ Agents decide inside a deterministic control envelope. That is the whole idea.
                                               │ market closed? exit 0, trade nothing
                                               v
    orchestrator/  ── stages, sequential, each behind a checkpoint CAS ──────────
-   pre_gate -> research -> decision -> gate -> execution -> reconcile -> close
+   pre_gate -> research -> decision -> gate -> execution -> reconciliation -> close
        │           │          │         │         │            │          │
        │           v          v         │         v            │          v
        │      ┌─────────┐ ┌───────┐     │    ┌────────┐        │      EOD digest
@@ -80,7 +80,8 @@ LLM-free by an AST lint (`scripts/check_purity.py`) that runs in `make test`.
 - **A deterministic risk gate.** Volatility tiers, correlation multipliers, a
   cash cap, an 8-position limit, a 60% sector cap with resize, and a −3% daily
   circuit breaker — one code path serves both the advisory pre-gate and the
-  enforcement pass, so what the PM was shown is what the gate enforces.
+  enforcement pass, so what the PM was shown is what the gate enforces
+  (`tests/test_sim_day.py::test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces`).
 - **A hook that cannot be argued with.** A `PreToolUse` hook denies any order
   without an open, unexpired gate ticket. Hooks run before permission rules;
   the agent's only path to the broker goes through it.
@@ -91,9 +92,11 @@ LLM-free by an AST lint (`scripts/check_purity.py`) that runs in `make test`.
   an unreadable market clock skips the day. Every one of those is a test.
 - **Slack as the firm's UI.** Signals, gate verdicts, fills and the EOD digest
   are projected from an outbox with per-event dead-lettering.
-- **Structured output only.** Agents emit data through strict MCP tool schemas.
-  No code anywhere parses a ticker, an action or a size out of free text.
-- **Record/replay test suite.** 439 offline tests including six full simulated
+- **Structured output only.** Agents emit data through MCP tool schemas that
+  are advisory to the model (the pinned SDK has no `strict=True`); the
+  pydantic handler validates every safety-relevant constraint, so no code
+  anywhere parses a ticker, an action or a size out of free text.
+- **Record/replay test suite.** 518 offline tests including six full simulated
   day shapes that run the real gate, hooks, tools, DB and fill-poll against
   recorded LLM decisions — no network, no API keys, $0 of inference.
 
@@ -151,7 +154,9 @@ the broker's clock.
 
 ## Cost
 
-Runtime is Haiku-tier seats with per-seat `max_budget_usd` caps in
+Runtime is Haiku-tier for the analyst and exec seats, Sonnet-tier for the PM
+(a strong tier for the PM is deliberate — `specs/design.md` §2), with per-seat
+`max_budget_usd` caps in
 `agents/config/*.yaml` — never hardcoded. Three seat turns at MVF's watchlist
 size is the whole daily spend, and a HOLD day skips the execution turn
 entirely (zero tickets → no LLM call).
@@ -176,7 +181,7 @@ and nothing else.
 
 Phase 1 (execution plumbing) and the MVF slice (risk gate, market features,
 fund MCP tools, analyst + PM seats, daily loop, fill-poll, digest, audit,
-schedule) are built and green offline: **439 tests, purity lint clean**.
+schedule) are built and green offline: **518 tests, purity lint clean**.
 The first supervised live trading day is the remaining acceptance box — see
 `HANDOFF-LIVE.md` and `specs/acceptance.md` §4.
 

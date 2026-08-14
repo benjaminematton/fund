@@ -25,9 +25,20 @@ Now run the sanity check. **Do not proceed until every line reads OK.**
 echo "PAPER=${ALPACA_PAPER_TRADE}"                    # must print exactly: PAPER=true
 echo "DB=${FUND_DB}"                                  # must be a path, e.g. state/fund.sqlite
 echo "SLACK=${SLACK_BOT_TOKEN:0:5}"                   # must print: SLACK=xoxb-
+echo "SLACK_EXEC=${SLACK_BOT_TOKEN_EXEC:0:5}"         # must print: SLACK_EXEC=xoxb-
 echo "ANTHROPIC=${ANTHROPIC_API_KEY:0:7}"             # must print: ANTHROPIC=sk-ant-
 echo "ALPACA=${ALPACA_API_KEY:0:2}"                   # must print: ALPACA=PK
 ```
+
+`SLACK_BOT_TOKEN_EXEC` is what `tests/test_live_smoke.py` actually checks —
+inside `test_one_share_paper_round_trip`, after the order round-trip and
+recorder assertions already ran. If it is unset (or not an `xoxb-` token), the
+test calls `pytest.skip()` at that point, and pytest reports the **whole
+test** as skipped, not passed, even though the round-trip itself succeeded.
+So §1's "expect `2 passed`" becomes something like `1 passed, 1 skipped`
+instead, and §5's Slack-permalink evidence row cannot be produced — no Slack
+post was ever attempted. A skip here is not a pass: fix the token before
+relying on §1 as evidence.
 
 Then confirm the keys point at the **paper** endpoint and it is funded:
 
