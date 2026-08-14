@@ -1,8 +1,18 @@
-from agents.tools.fund_server import handle_submit_signal, handle_submit_decision, insert_default_critiques
+import pytest
+
+from agents.tools.fund_server import (handle_get_stage_brief,
+                                      handle_submit_decision,
+                                      handle_submit_signal,
+                                      insert_default_critiques)
 from orchestrator.clock import iso
+from state.journal import append_entry
 from state.transition import transition
 
 RUN = "2026-07-06"
+
+SNAPSHOT = {"cash": 30000.0, "positions": {"MSFT": 40},
+            "allowed_actions": {"NVDA": {"buy": 66, "sell": 0},
+                                "MSFT": {"buy": 0, "sell": 40}}}
 
 def _sig(fund_db, sim_clock, seat="analyst", **over):
     args = dict(ticker="NVDA", direction="bullish", confidence=72, summary="s")
@@ -80,6 +90,106 @@ def test_decision_refused_once_left_submitted(fund_db, sim_clock):
     events_after = fund_db.execute(
         "SELECT COUNT(*) c FROM events WHERE kind='decision'").fetchone()["c"]
     assert events_after == events_before             # no new event appended
+
+
+# --- get_stage_brief: the read half of the seam ------------------------------
+
+def _brief(fund_db, seat="pm", snapshot=SNAPSHOT, journals_root=None):
+    result = handle_get_stage_brief(
+        fund_db, seat=seat, run_date=RUN,
+        snapshot=None if snapshot is None else (lambda: snapshot),
+        journals_root=journals_root)
+    assert result["ok"], result.get("error")
+    return result["brief"]
+
+
+@pytest.mark.parametrize("seat", ["exec", "critic", ""])
+def test_brief_is_analyst_and_pm_only(fund_db, seat):
+    """The exec seat is the only one that can trade; it acts on gate tickets
+    alone and must not gain a read channel into the day's thinking."""
+    result = handle_get_stage_brief(fund_db, seat=seat, run_date=RUN,
+                                    snapshot=lambda: SNAPSHOT)
+    assert not result["ok"] and "analyst/pm-only" in result["error"]
+    assert "brief" not in result
+
+
+def test_analyst_brief_is_the_book_and_its_own_journal(tmp_path, fund_db):
+    """Seat-scoped by construction: the analyst gets account context, never
+    the PM's signal table or the gate's sizing budget."""
+    append_entry(tmp_path, "analyst", "2026-07-02", "signals: NVDA bullish (61/100)")
+    brief = _brief(fund_db, seat="analyst", journals_root=tmp_path)
+    assert (brief["run_date"], brief["seat"]) == (RUN, "analyst")
+    assert (brief["cash"], brief["positions"]) == (30000.0, {"MSFT": 40})
+    assert "NVDA bullish (61/100)" in brief["journal"]
+    assert "signals" not in brief and "allowed_actions" not in brief
+    assert brief["unavailable"] == []
+
+
+def test_pm_brief_adds_todays_signals_and_the_gate_budget(tmp_path, fund_db,
+                                                          sim_clock):
+    _sig(fund_db, sim_clock, summary="capex re-accelerating")
+    brief = _brief(fund_db, journals_root=tmp_path)
+    assert brief["signals"] == [{"agent": "analyst", "ticker": "NVDA",
+                                 "direction": "bullish", "confidence": 72,
+                                 "summary": "capex re-accelerating"}]
+    assert brief["allowed_actions"] == SNAPSHOT["allowed_actions"]
+    assert brief["unavailable"] == []
+
+
+def test_brief_journal_is_scoped_to_the_calling_seat(tmp_path, fund_db):
+    append_entry(tmp_path, "analyst", "2026-07-02", "analyst-only line")
+    append_entry(tmp_path, "pm", "2026-07-02", "pm-only line")
+    assert "pm-only" not in _brief(fund_db, seat="analyst",
+                                   journals_root=tmp_path)["journal"]
+    assert "analyst-only" not in _brief(fund_db, journals_root=tmp_path)["journal"]
+
+
+def test_brief_only_shows_todays_signals(fund_db, sim_clock):
+    _sig(fund_db, sim_clock)
+    fund_db.execute(
+        "INSERT INTO signals (run_date,agent,ticker,direction,confidence,"
+        "summary,created_at) VALUES ('2026-07-03','analyst','NVDA','bearish',"
+        "10,'stale',?)", (iso(sim_clock.now()),))
+    assert [s["direction"] for s in _brief(fund_db)["signals"]] == ["bullish"]
+
+
+def test_a_broken_snapshot_provider_degrades_to_hold_not_a_crash(fund_db):
+    """Invariant 4. A provider that raises must not take the day down and must
+    not silently look like a normal day: every affected section is NAMED in
+    `unavailable`, and allowed_actions comes back empty — "nothing is possible
+    today", which the PM's charter resolves to HOLD."""
+    def boom():
+        raise ConnectionError("alpaca account read failed")
+
+    result = handle_get_stage_brief(fund_db, seat="pm", run_date=RUN,
+                                    snapshot=boom)
+    assert result["ok"]                          # never an exception, never a hole
+    brief = result["brief"]
+    assert brief["allowed_actions"] == {}
+    assert (brief["cash"], brief["positions"]) == (None, {})
+    assert any("account snapshot" in m and "ConnectionError" in m
+               for m in brief["unavailable"])
+
+
+def test_unbound_providers_are_named_not_faked(fund_db):
+    """A wiring bug (no snapshot, no journals root) reads as missing evidence,
+    not as an empty book and an empty journal."""
+    brief = _brief(fund_db, snapshot=None)
+    assert brief["allowed_actions"] == {} and brief["journal"] == ""
+    assert [m.split(" (")[0] for m in brief["unavailable"]] == [
+        "account snapshot", "journal", "allowed actions"]
+
+
+def test_brief_writes_nothing(fund_db, sim_clock):
+    """It is a READ tool: no rows, no projection events, no state change."""
+    _sig(fund_db, sim_clock)
+    before = [fund_db.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]
+              for t in ("signals", "decisions", "events", "tickets")]
+    _brief(fund_db)
+    _brief(fund_db, seat="analyst")
+    after = [fund_db.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]
+             for t in ("signals", "decisions", "events", "tickets")]
+    assert before == after
 
 
 def test_default_critiques_idempotent(fund_db, sim_clock):

@@ -25,7 +25,7 @@ from pathlib import Path
 from agents.replay import load_recording, replay_turn
 from agents.runtime import make_order_gate, make_order_recorder, record_cost
 from orchestrator.clock import SimClock, et_run_date, iso
-from orchestrator.daily import StageCtx, run_day
+from orchestrator.daily import StageCtx, allowed_actions, run_day
 from slackkit.fake import FakeSlack
 from state.db import connect
 from tests.conftest import make_executor
@@ -81,6 +81,7 @@ class SimResult:
     run_date: str
     turns: dict[str, int]
     journals: Path
+    outcomes: dict[str, list]      # stage -> the turn's replayed tool results
 
 
 def sim_day(tmp_path, *, market: dict,
@@ -104,21 +105,35 @@ def sim_day(tmp_path, *, market: dict,
     broker = FakeAlpaca(PRICES, FILL_PRICES, mode="fill")
     slack = slack if slack is not None else FakeSlack()
     turns = {"research": 0, "decision": 0, "execution": 0}
+    outcomes: dict[str, list] = {}
+    journals = tmp_path / "journals"
 
     def _sleep(seconds: float) -> None:
         """The fill-poll's injected wait: time passes and the broker works."""
         clock.advance(seconds=int(seconds))
         broker.tick()
 
+    def _snapshot() -> dict:
+        """The sim's binding of run_day's injected stage-brief provider, built
+        from the SAME `market` fixture the gate later enforces against — and
+        read LIVE, so a `feed_break` applied after the decision turn cannot
+        retroactively change what the PM was shown."""
+        return {"cash": next(iter(market.values()))["cash"],
+                "positions": {t: i["held_qty"] for t, i in market.items()
+                              if i["held_qty"]},
+                "allowed_actions": allowed_actions(market)}
+
     def _turn(stage: str, seat: str, files, after=None):
         decisions = [d for f in files for d in load_recording(RECORDINGS / f)]
 
         def run() -> None:
             turns[stage] += 1
-            asyncio.run(replay_turn(
+            outcomes[stage] = asyncio.run(replay_turn(
                 decisions,
                 pre_hooks=[make_order_gate(lambda: conn, clock)],
-                executor=make_executor(lambda: conn, clock, broker, seat=seat),
+                executor=make_executor(lambda: conn, clock, broker, seat=seat,
+                                       snapshot=_snapshot,
+                                       journals_root=journals),
                 post_hooks=[make_order_recorder(lambda: conn, clock)]))
             record_cost(conn, run_date, seat, f"sim-{seat}", SIM_TURN_COST_USD,
                         iso(clock.now()))
@@ -131,7 +146,6 @@ def sim_day(tmp_path, *, market: dict,
         for ticker, over in (feed_break or {}).items():
             market[ticker].update(over)
 
-    journals = tmp_path / "journals"
     ctx = StageCtx(
         conn=conn, run_date=run_date, clock=clock, slack=slack,
         market_inputs=market,
@@ -141,7 +155,8 @@ def sim_day(tmp_path, *, market: dict,
     run_day(ctx, execution_turn=_turn("execution", "exec", exec_recs),
             broker=broker, sleep=_sleep)
     return SimResult(conn=conn, slack=slack, broker=broker, clock=clock,
-                     run_date=run_date, turns=turns, journals=journals)
+                     run_date=run_date, turns=turns, journals=journals,
+                     outcomes=outcomes)
 
 
 def golden_day(tmp_path) -> SimResult:
@@ -170,6 +185,15 @@ def _decision(sim: SimResult, ticker: str) -> sqlite3.Row:
 def _event_payloads(sim: SimResult, kind: str) -> list[dict]:
     return [json.loads(r["payload"]) for r in sim.conn.execute(
         "SELECT payload FROM events WHERE kind = ? ORDER BY id", (kind,))]
+
+
+def _brief(sim: SimResult, stage: str) -> dict:
+    """The stage brief the seat actually received that turn, straight off the
+    replayed tool result — not re-derived, or the assertion would be circular."""
+    briefs = [o["result"]["brief"] for o in sim.outcomes.get(stage, [])
+              if o.get("tool") == "mcp__fund__get_stage_brief"]
+    assert len(briefs) == 1, f"{stage}: expected one brief, got {len(briefs)}"
+    return briefs[0]
 
 
 def _id_sequence(ids):
@@ -383,4 +407,54 @@ def test_two_orders_same_day(tmp_path):
     assert any("MSFT sell 40@505.00" in t for t in texts)
 
     assert sim.turns == {"research": 1, "decision": 1, "execution": 1}
+    _assert_day_completed(sim)
+
+
+# --- 6. the PM can actually see the analyst's work ---------------------------
+
+def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
+    """README's headline claim, as a test: "what the PM was shown is what the
+    gate enforces".
+
+    Both seats open their turn with `get_stage_brief` — the only path by which
+    the analyst's signal and the gate's allowed-actions snapshot reach the PM
+    (the stage prompt carries nothing but the ticker list, by design: per-run
+    values never go into prompts). The day then runs the REAL gate against the
+    same fixture, so the number the PM was shown and the number the broker was
+    sent are compared, not assumed."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  analyst_recs=("mvf_analyst_brief.jsonl",),
+                  pm_recs=("mvf_pm_brief.jsonl",))
+
+    # the analyst's brief: account context + its own journal, nothing PM-only
+    analyst = _brief(sim, "research")
+    assert (analyst["seat"], analyst["run_date"]) == ("analyst", sim.run_date)
+    assert (analyst["cash"], analyst["positions"]) == (30000.0, {})
+    assert analyst["unavailable"] == []
+    assert "signals" not in analyst and "allowed_actions" not in analyst
+
+    # the PM's brief: the analyst's ACTUAL signal row, submitted this same day
+    pm = _brief(sim, "decision")
+    assert pm["seat"] == "pm"
+    assert pm["unavailable"] == []
+    assert pm["signals"] == [{
+        "agent": "analyst", "ticker": "NVDA", "direction": "bullish",
+        "confidence": 72,
+        "summary": "DC capex guides re-accelerating; fwd P/E below 3y median;"
+                   " reclaimed 50d on volume."}]
+    assert pm["signals"][0]["summary"] == sim.conn.execute(
+        "SELECT summary FROM signals WHERE ticker = 'NVDA'").fetchone()["summary"]
+
+    # THE claim: the snapshot the PM was shown IS the cap the gate enforced and
+    # the size the broker was sent. The PM asked for 80 over a 66 budget, so
+    # the number below is load-bearing, not a coincidence of a small ask.
+    shown = pm["allowed_actions"]["NVDA"]
+    assert shown == {"buy": 66, "sell": 0}
+    ticket = sim.conn.execute("SELECT * FROM tickets").fetchone()
+    assert _decision(sim, "NVDA")["qty"] == 80          # the PM's over-ask
+    assert ticket["max_qty"] == shown["buy"]            # gate cap == shown budget
+    assert sim.broker.place_attempts[0]["qty"] == str(shown["buy"])
+    assert [p["max_qty"] for p in _event_payloads(sim, "gate_approved")] \
+        == [shown["buy"]]
+
     _assert_day_completed(sim)

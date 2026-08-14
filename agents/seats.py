@@ -21,8 +21,13 @@ def load_seat_config(path: str | Path) -> dict:
     return yaml.safe_load(Path(path).read_text())
 
 
-def build_seat_options(cfg: dict, db_path: str | Path,
-                       clock: Clock) -> ClaudeAgentOptions:
+def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
+                       snapshot=None, journals_root=None) -> ClaudeAgentOptions:
+    """`snapshot` (zero-arg -> {cash, positions, allowed_actions}) and
+    `journals_root` are this day's stage-brief providers, injected the same
+    way the DB and the clock are. Unbound (the default) is legal and safe:
+    get_stage_brief then reports the section as unavailable instead of
+    inventing one. Both are ignored by seats without the tool."""
     conn_factory = lambda: connect(db_path)
     charter = CHARTERS_DIR / f"{cfg['seat']}.md"
     options = dict(
@@ -45,7 +50,9 @@ def build_seat_options(cfg: dict, db_path: str | Path,
             "alpaca": {"command": "uvx", "args": ["alpaca-mcp-server"],
                        "env": {"ALPACA_PAPER_TRADE": "true",     # invariant 1
                                "ALPACA_TOOLSETS": cfg["alpaca_toolsets"]}},
-            "fund": build_fund_server(conn_factory, clock, cfg["seat"]),
+            "fund": build_fund_server(conn_factory, clock, cfg["seat"],
+                                      snapshot=snapshot,
+                                      journals_root=journals_root),
         },
         allowed_tools=["mcp__alpaca__*", "mcp__fund__*"],
         # Belt over the toolset brace (invariant 2): every non-trading seat's

@@ -63,7 +63,8 @@ from agents.seats import build_seat_options, load_seat_config      # noqa: E402
 from agents.wallclock import WallClock                             # noqa: E402
 from market.features import build_market_inputs                    # noqa: E402
 from orchestrator.clock import et_run_date, iso                    # noqa: E402
-from orchestrator.daily import StageCtx, run_day, run_pre_gate     # noqa: E402
+from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
+                                run_day)
 from slackkit.outbox import append_event, drain                    # noqa: E402
 from state.db import connect                                       # noqa: E402
 
@@ -194,20 +195,26 @@ def load_watchlist(path: Path) -> list[str]:
 
 # --- seat turns -------------------------------------------------------------
 
-async def _seat_session(cfg: dict, db_path: str, clock, prompt: str):
+async def _seat_session(cfg: dict, db_path: str, clock, prompt: str,
+                        snapshot, journals_root):
     """One seat's live SDK session. Options ALWAYS via build_seat_options —
     the tool surface, settings isolation and order hooks are decided there,
     never here (tests/test_exec_seat_tool_surface.py pins them)."""
     from claude_agent_sdk import ClaudeSDKClient
 
-    options = build_seat_options(cfg, db_path, clock)
+    options = build_seat_options(cfg, db_path, clock, snapshot=snapshot,
+                                 journals_root=journals_root)
     async with ClaudeSDKClient(options=options) as client:
         return await run_seat_turn(client, prompt, REQUIRED_SERVERS)
 
 
 def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
-              prompt: str):
+              prompt: str, snapshot=None, journals_root=None):
     """The injected run_turn callable orchestrator/daily.py drives.
+
+    `snapshot`/`journals_root` are this day's get_stage_brief providers, passed
+    DOWN from _trading_day rather than baked into `prompt` — per-run values
+    belong in tools, never in prompt text (CLAUDE.md).
 
     Records the turn's cost after EVERY turn (the only production caller of
     record_turn_result) and never propagates: a seat that blows up leaves one
@@ -218,7 +225,8 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
     def run() -> None:
         try:
             names, result = asyncio.run(
-                _seat_session(cfg, db_path, clock, prompt))
+                _seat_session(cfg, db_path, clock, prompt, snapshot,
+                              journals_root))
         except Exception as exc:
             _alert(conn, clock,
                    f"{seat}_turn_failed — {type(exc).__name__}: {exc};"
@@ -385,24 +393,36 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
                    journals_root=journals_root)
 
     # Pure recompute (no writes) purely to name today's active tickers in the
-    # stage prompts; run_day computes its own inside the pre_gate checkpoint.
-    active = run_pre_gate(ctx)
-    log(f"{run_date}: watchlist {watchlist} -> active {active}")
+    # stage prompts and to build the seats' stage brief; run_day computes its
+    # own active set inside the pre_gate checkpoint.
+    actions = allowed_actions(market_inputs)
+    active = list(actions)
+    # The ONE injected stage-brief provider for the day. Everything per-run
+    # (the book, the gate's budget, the journals) reaches a seat through this
+    # and get_stage_brief — never through prompt text, which would bake
+    # today's numbers into a string and break replay.
+    brief = {"cash": account.get("cash"),
+             "positions": account.get("positions") or {},
+             "allowed_actions": actions}
+    log(f"{run_date}: watchlist {watchlist} -> active {active}"
+        f" -> allowed {actions}")
     if active:
         tickers = ", ".join(active)
         ctx.run_turn = {
             "research": make_turn(
                 SEATS["research"], load_seat_config(SEAT_CONFIG / "analyst.yaml"),
                 db_path, clock, conn, run_date,
-                f"Research turn. Today's active tickers: {tickers}. Follow"
-                " your charter and end by calling submit_signal exactly once"
-                " per ticker."),
+                f"Research turn. Today's active tickers: {tickers}. Start by"
+                " calling get_stage_brief, then follow your charter and end by"
+                " calling submit_signal exactly once per ticker.",
+                snapshot=lambda: brief, journals_root=journals_root),
             "decision": make_turn(
                 SEATS["decision"], load_seat_config(SEAT_CONFIG / "pm.yaml"),
                 db_path, clock, conn, run_date,
-                f"Decision turn. Today's active tickers: {tickers}. Follow"
-                " your charter and end by calling submit_decision exactly once"
-                " per ticker."),
+                f"Decision turn. Today's active tickers: {tickers}. Start by"
+                " calling get_stage_brief, then follow your charter and end by"
+                " calling submit_decision exactly once per ticker.",
+                snapshot=lambda: brief, journals_root=journals_root),
         }
     else:
         # Nothing is possible today: no LLM spend at all, but every stage still
