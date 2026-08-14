@@ -197,3 +197,112 @@ def test_default_critiques_idempotent(fund_db, sim_clock):
     insert_default_critiques(fund_db, RUN, ["NVDA"], "no_critic_seat", now)
     insert_default_critiques(fund_db, RUN, ["NVDA"], "no_critic_seat", now)
     assert fund_db.execute("SELECT COUNT(*) c FROM critiques").fetchone()["c"] == 1
+
+
+# --- the @tool wrappers themselves ------------------------------------------
+#
+# Everything above (and tests/conftest.py's make_executor, which the whole
+# replay suite runs on) calls the handle_* functions DIRECTLY. That bypasses
+# build_fund_server's @tool wrappers entirely, leaving three things untested:
+# the is_error refusal envelope, the run_date_from_clock(clock) wiring, and
+# tools_by_seat. Inverting `if not result["ok"]` would report a REFUSED
+# decision to the model as recorded; adding submit_decision to the analyst's
+# list broke no test. These drive the registered MCP surface instead.
+
+def _server(conn, clock, seat):
+    from agents.tools.fund_server import build_fund_server
+    return build_fund_server(lambda: conn, clock, seat)["instance"]
+
+
+def _tool_names(conn, clock, seat) -> set[str]:
+    import asyncio
+
+    import mcp.types as mcp
+
+    handler = _server(conn, clock, seat).request_handlers[mcp.ListToolsRequest]
+    result = asyncio.run(handler(mcp.ListToolsRequest(method="tools/list")))
+    return {t.name for t in result.root.tools}
+
+
+def _call(conn, clock, seat, name, args):
+    """One tool call through the registered MCP surface — the same path a live
+    seat's call takes, wrappers included."""
+    import asyncio
+
+    import mcp.types as mcp
+
+    handler = _server(conn, clock, seat).request_handlers[mcp.CallToolRequest]
+    request = mcp.CallToolRequest(
+        method="tools/call",
+        params=mcp.CallToolRequestParams(name=name, arguments=args))
+    return asyncio.run(handler(request)).root
+
+
+SIGNAL_ARGS = {"ticker": "NVDA", "direction": "bullish", "confidence": 72,
+               "summary": "s"}
+
+
+def test_tools_by_seat_is_exactly_what_each_seat_owns(fund_db, sim_clock):
+    """The registered tool list IS the seat's write surface. get_stage_brief on
+    the exec seat would widen the read surface of the only seat that can trade
+    (invariant 2); submit_decision on the analyst would let the analyst decide."""
+    assert _tool_names(fund_db, sim_clock, "analyst") == {
+        "get_stage_brief", "submit_signal"}
+    assert _tool_names(fund_db, sim_clock, "pm") == {
+        "get_stage_brief", "submit_decision"}
+    assert _tool_names(fund_db, sim_clock, "exec") == {"list_open_tickets"}
+
+
+def test_an_unrecognized_seat_is_a_hard_stop_not_a_toolless_seat(fund_db,
+                                                                 sim_clock):
+    """A silently toolless seat is an analyst that never records a signal all
+    day — a full-HOLD day nobody ordered."""
+    with pytest.raises(ValueError, match="unrecognized seat"):
+        _server(fund_db, sim_clock, "critic")
+
+
+def test_a_refused_call_comes_back_as_is_error_through_the_wrapper(
+        fund_db, sim_clock, monkeypatch):
+    """The refusal envelope. Flipping `if not result["ok"]` would hand the
+    model "signal recorded: NVDA" for a call that wrote nothing — the seat
+    would believe its whole turn landed and stop retrying.
+
+    Reached by moving the seat table under a live analyst server rather than
+    by building a mis-seated one: build_fund_server refuses unknown seats, and
+    tools_by_seat (pinned above) is what normally keeps this branch out of
+    reach. This is the shape it takes the moment either of those regresses.
+    """
+    from agents.tools import fund_server
+
+    monkeypatch.setattr(fund_server, "SIGNAL_SEATS", ("pm",))
+    result = _call(fund_db, sim_clock, "analyst", "submit_signal", SIGNAL_ARGS)
+
+    assert result.isError is True
+    assert "analyst-seat-only" in result.content[0].text
+    assert result.content[0].text.startswith("error: ")
+    assert fund_db.execute("SELECT COUNT(*) c FROM signals").fetchone()["c"] == 0
+
+
+def test_a_refused_decision_is_never_reported_as_recorded(fund_db, sim_clock):
+    """The same envelope on the path where it actually bites in production:
+    submit_decision before any critique row exists."""
+    result = _call(fund_db, sim_clock, "pm", "submit_decision",
+                   {"ticker": "NVDA", "action": "buy", "qty": 80,
+                    "thesis": "t", "invalidation": "i"})
+    assert result.isError is True
+    assert "no critique row" in result.content[0].text
+    assert "decision recorded" not in result.content[0].text
+    assert fund_db.execute("SELECT COUNT(*) c FROM decisions").fetchone()["c"] == 0
+
+
+def test_the_wrapper_stamps_the_run_date_from_the_injected_clock(fund_db,
+                                                                 sim_clock):
+    """run_date is the DB key every stage joins on. The wrapper takes it from
+    the bound clock (11:30 ET on the golden day), never from the agent — a
+    wrapper reading the wall clock would key rows to the wrong day and break
+    replay."""
+    result = _call(fund_db, sim_clock, "analyst", "submit_signal", SIGNAL_ARGS)
+    assert result.isError is False
+    assert result.content[0].text == "signal recorded: NVDA"
+    assert fund_db.execute("SELECT run_date FROM signals").fetchone()[
+        "run_date"] == RUN
