@@ -7,6 +7,7 @@ would leave it."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,29 @@ def _doctor(day, sql: str, *args) -> None:
     sim, _ = day
     sim.conn.execute(sql, args)
     sim.conn.commit()
+
+
+def _event(day, kind: str, payload: dict, created_at: str) -> None:
+    """An already-drained event (posted_at set, so it never also trips the
+    undrained check) at a chosen instant — the knob the day-scoping tests turn."""
+    _doctor(day, "INSERT INTO events (kind, payload, created_at, posted_at)"
+                 " VALUES (?, ?, ?, ?)",
+            kind, json.dumps(payload), created_at, created_at)
+
+
+def _complete_day(day, run_date: str, *, costs: bool = True) -> None:
+    """Doctor in a SECOND, structurally clean day: every stage checkpointed
+    done, optionally one cost row. No signals, no decisions, no orders — the
+    zero-active-ticker day shape (HANDOFF-LIVE §2)."""
+    stamp = f"{run_date}T15:30:00+00:00"
+    for stage in audit_day.STAGES:
+        _doctor(day, "INSERT INTO checkpoints (run_date, stage, ticker, status,"
+                     " updated_at) VALUES (?, ?, '*', 'done', ?)",
+                run_date, stage, stamp)
+    if costs:
+        _doctor(day, "INSERT INTO costs (run_date, agent, session_id,"
+                     " usd_estimate, recorded_at) VALUES (?, 'analyst', 's', 0.01, ?)",
+                run_date, stamp)
 
 
 # --- clean ------------------------------------------------------------------
@@ -170,6 +194,100 @@ def test_alert_event_reported(day):
 def test_no_cost_rows(day):
     _doctor(day, "DELETE FROM costs")
     assert _audit(day) == ["no cost rows recorded"]
+
+
+# --- day scoping (Fix 1: the self-poisoning ratchet) ------------------------
+
+def test_an_earlier_days_alert_does_not_red_a_later_day(day):
+    """THE ratchet. The alert count was global, so ONE alert on any past day —
+    a pm_timeout (the DESIGNED default), a cost_unavailable, a gate_error
+    drop — reddened every future audit forever. Worse, run_day's report_audit
+    appends an `alert` BECAUSE the audit failed, so the count grew by one
+    every single day, unbounded, and `make live-day` exited 1 with an
+    `audit … FAILED` post to #risk from day two onward regardless of what
+    actually happened."""
+    sim, path = day
+    _event(day, "alert", {"text": "pm_timeout NVDA — defaulted to hold"},
+           "2026-07-06T15:30:00+00:00")
+    assert audit_day.audit(path, sim.run_date) == ["alert events raised: 1"]
+
+    _complete_day(day, "2026-07-07")
+    assert audit_day.audit(path, "2026-07-07") == []
+
+
+def test_an_earlier_days_dead_letter_does_not_red_a_later_day(day):
+    """Same ratchet, second counter: a Slack outage on Monday must not read as
+    a broken projection on Friday."""
+    sim, path = day
+    _event(day, "projection_error", {"event_id": 1, "kind": "digest"},
+           "2026-07-06T15:30:00+00:00")
+    assert audit_day.audit(path, sim.run_date) == ["dead-lettered outbox events: 1"]
+
+    _complete_day(day, "2026-07-07")
+    assert audit_day.audit(path, "2026-07-07") == []
+
+
+def test_the_window_is_the_et_day_not_the_utc_day(day):
+    """run_date is an ET calendar date (schema.sql), and created_at is UTC.
+    21:00 ET on the 6th is 01:00 UTC on the 7th and is still the 6th's alert;
+    23:00 ET on the 5th is 03:00 UTC on the 6th and is NOT."""
+    sim, path = day
+    _event(day, "alert", {"text": "late"}, "2026-07-07T01:00:00+00:00")
+    assert audit_day.audit(path, sim.run_date) == ["alert events raised: 1"]
+
+    _event(day, "alert", {"text": "yesterday"}, "2026-07-06T03:00:00+00:00")
+    assert audit_day.audit(path, sim.run_date) == ["alert events raised: 1"]
+
+
+def test_the_audits_own_alert_does_not_red_a_rerun_of_the_same_day(day):
+    """report_audit appends its failure as an `alert` on the SAME ET day it
+    audits, so day-scoping alone cannot stop a crash-resume re-fire (or
+    HANDOFF-LIVE §3's explicit second audit run) from counting the previous
+    attempt's audit alert as a fresh violation. The payload marker can."""
+    _event(day, "alert", {"text": "audit 2026-07-06 FAILED: no cost rows recorded",
+                          audit_day.SELF_ALERT_KEY: True},
+           "2026-07-06T15:30:00+00:00")
+    assert _audit(day) == []
+
+
+def test_a_real_alert_still_reds_the_day_it_was_raised_on(day):
+    """The marker excludes exactly one thing. Everything else still counts —
+    including an alert sitting next to a marked one."""
+    _event(day, "alert", {"text": "audit 2026-07-06 FAILED: whatever",
+                          audit_day.SELF_ALERT_KEY: True},
+           "2026-07-06T15:30:00+00:00")
+    _event(day, "alert", {"text": "cost_unavailable pm"},
+           "2026-07-06T15:31:00+00:00")
+    assert _audit(day) == ["alert events raised: 1"]
+
+
+# --- Fix 4: a zero-active-ticker day is a legitimate outcome ----------------
+
+def test_zero_active_ticker_day_needs_no_cost_rows(day):
+    """HANDOFF-LIVE §2 lists `no active tickers` as a legitimate outcome, but
+    with no active tickers no seat turn is ever scheduled, so `costs` has zero
+    rows and the audit failed the run anyway. Every stage still ran; there was
+    simply nothing to research."""
+    _, path = day
+    _complete_day(day, "2026-07-07", costs=False)
+    assert audit_day.audit(path, "2026-07-07") == []
+
+
+def test_a_day_with_coverage_and_no_cost_rows_still_fails(day):
+    """The other half: a day that SHOULD have burned turns (the analyst
+    covered a ticker) and recorded no cost is still a violation — the check
+    stays honest, it does not just get switched off."""
+    _, path = day
+    _complete_day(day, "2026-07-07", costs=False)
+    _doctor(day, "INSERT INTO signals (run_date, agent, ticker, direction,"
+                 " confidence, summary, created_at) VALUES"
+                 " (?, 'analyst', 'NVDA', 'neutral', 0, 'no report', ?)",
+            "2026-07-07", "2026-07-07T15:30:00+00:00")
+    _doctor(day, "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+                 " invalidation, status, created_at) VALUES"
+                 " (?, 'NVDA', 'hold', 0, 't', 'i', 'held', ?)",
+            "2026-07-07", "2026-07-07T15:30:00+00:00")
+    assert audit_day.audit(path, "2026-07-07") == ["no cost rows recorded"]
 
 
 def test_violations_accumulate(day):

@@ -14,28 +14,72 @@ What a clean day means:
     'submitted' — those are the shapes that mean "we don't know what the
     broker did"
   * the outbox is drained (invariant 6: Slack is a projection; an undrained
-    event is a day nobody was told about) AND nothing dead-lettered — a row
-    whose render/post raised is marked posted by slackkit.outbox.drain()
+    event is a day nobody was told about) AND nothing dead-lettered TODAY — a
+    row whose render/post raised is marked posted by slackkit.outbox.drain()
     without ever reaching Slack, so an undrained-only check reads a Slack
     outage as a clean day
-  * no alert events — an alert means something needed human review (a
+  * no alert events TODAY — an alert means something needed human review (a
     timed-out PM, a canceled order, a broker that went unreachable); a
     report of what a "clean" day looks like must not stay silent about them
-  * at least one cost row (no cost rows means no turn ever completed)
+  * at least one cost row, on any day that actually scheduled a seat turn (a
+    day with no active tickers runs no turns and correctly costs nothing)
 
-Order and decision checks are scoped to the audited run_date; the outbox,
-dead-letter, and alert checks are not, because the outbox is global and must
-be fully and successfully drained end to end, not just for one day.
+Every count is scoped to the audited day. The alert and dead-letter counts
+used to be global, which made this script self-poisoning: run_day's
+report_audit appends its own failure as an `alert`, so one imperfect day
+reddened every later day forever, growing by one each morning. The undrained
+count stays global on purpose — an unposted event is unposted regardless of
+which day wrote it, and drain() clears it the moment Slack works again, so it
+cannot ratchet.
+
+events has no run_date column, only created_at (ISO8601 UTC, seconds
+precision, written by orchestrator/clock.iso). run_date is an ET calendar
+date (schema.sql), so the window is computed in ET via stdlib zoneinfo and
+formatted exactly like created_at — same fixed-width UTC layout, so the
+BETWEEN is a plain string comparison and sqlite needs no timezone support.
 """
 from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 # orchestrator/daily.py's run_day, in order. Duplicated deliberately: this
 # script must stay importable with nothing on sys.path but the stdlib.
 STAGES = ("pre_gate", "research", "decision", "gate", "execution",
           "reconciliation", "close")
+
+_ET = ZoneInfo("America/New_York")
+
+# scripts/run_day.py's report_audit stamps its own `alert` payload with this
+# key. Excluded below so a crash-resume re-fire (or HANDOFF-LIVE §3's second,
+# explicit audit run) does not count the previous attempt's audit alert as a
+# fresh violation — day scoping alone cannot, because that alert is raised on
+# the very day it audits.
+SELF_ALERT_KEY = "audit_report"
+_SELF_ALERT = f'%"{SELF_ALERT_KEY}": true%'
+
+
+def et_day_window(run_date: str) -> tuple[str, str]:
+    """[start, end) of the ET calendar day `run_date`, in events.created_at's
+    own format. DST-safe: aware-datetime + timedelta is wall-clock arithmetic,
+    so the second bound is midnight the next ET day whatever the UTC offset
+    did in between."""
+    day = datetime.strptime(run_date, "%Y-%m-%d").date()
+    start = datetime.combine(day, time(0, 0), tzinfo=_ET)
+    return (_stamp(start), _stamp(start + timedelta(days=1)))
+
+
+def _stamp(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _count_today(conn, where: str, window: tuple[str, str], *args) -> int:
+    return conn.execute(
+        f"SELECT COUNT(*) c FROM events WHERE {where}"
+        " AND created_at >= ? AND created_at < ?",
+        (*args, *window)).fetchone()["c"]
 
 
 def audit(db_path: str, run_date: str) -> list[str]:
@@ -79,21 +123,32 @@ def audit(db_path: str, run_date: str) -> list[str]:
     if undrained:
         bad.append(f"undrained outbox events: {undrained}")
 
+    window = et_day_window(run_date)
+
     # drain() marks a dead-lettered row posted_at without ever calling
     # slack.post() successfully — invisible to the undrained check above.
-    dead_lettered = conn.execute(
-        "SELECT COUNT(*) c FROM events WHERE kind = 'projection_error'"
-        ).fetchone()["c"]
+    dead_lettered = _count_today(conn, "kind = 'projection_error'", window)
     if dead_lettered:
         bad.append(f"dead-lettered outbox events: {dead_lettered}")
 
-    alerts = conn.execute(
-        "SELECT COUNT(*) c FROM events WHERE kind = 'alert'").fetchone()["c"]
+    alerts = _count_today(conn, "kind = 'alert' AND payload NOT LIKE ?",
+                          window, _SELF_ALERT)
     if alerts:
         bad.append(f"alert events raised: {alerts}")
 
-    if not conn.execute("SELECT COUNT(*) c FROM costs WHERE run_date = ?",
-                        (run_date,)).fetchone()["c"]:
+    # A day with no active tickers schedules no seat turn, so zero cost rows is
+    # its correct shape, not a violation (HANDOFF-LIVE §2 calls it a legitimate
+    # outcome). run_research writes a default signal row for EVERY active
+    # ticker, so "research reached done and wrote no signal" is exactly "there
+    # was nothing to work on". Any other shape — signals present, or a research
+    # stage that never finished, including a day with no checkpoints at all —
+    # still owes at least one cost row, so a day that SHOULD have burned turns
+    # and recorded nothing still fails.
+    covered = conn.execute("SELECT COUNT(*) c FROM signals WHERE run_date = ?",
+                           (run_date,)).fetchone()["c"]
+    if (covered or seen.get("research") != "done") and not conn.execute(
+            "SELECT COUNT(*) c FROM costs WHERE run_date = ?",
+            (run_date,)).fetchone()["c"]:
         bad.append("no cost rows recorded")
 
     conn.close()
