@@ -227,6 +227,13 @@ Expect one row per seat turn that ran (analyst + pm, plus exec only if there
 was an open ticket) and a total **≤ $0.50**. This is a client-side estimate —
 it is labelled `est.` in the digest for exactly that reason.
 
+Note what that $0.50 is and is not. The per-seat `max_budget_usd` caps in
+`agents/config/*.yaml` sum to **$2.25 worst-case** (analyst $0.50 + pm $0.75 +
+exec $1.00); **expected spend is < $0.50/day**; the real figure is **measured
+after the first live day**. The caps are backstops against a runaway turn, not
+the expectation — so a day near $2.25 is an incident to investigate, and the
+$0.50 box below is the number that actually gets ticked.
+
 ---
 
 ## 5. What ticks what

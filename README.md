@@ -152,9 +152,16 @@ the broker's clock.
 ## Cost
 
 Runtime is Haiku-tier seats with per-seat `max_budget_usd` caps in
-`agents/config/*.yaml` — never hardcoded. The design target is **< $0.50 per
-live day**; three seat turns at MVF's watchlist size is the whole daily spend,
-and a HOLD day skips the execution turn entirely (zero tickets → no LLM call).
+`agents/config/*.yaml` — never hardcoded. Three seat turns at MVF's watchlist
+size is the whole daily spend, and a HOLD day skips the execution turn
+entirely (zero tickets → no LLM call).
+
+The caps are **backstops, not the expectation**, and the two numbers are not
+the same number: **caps sum to $2.25 worst-case** (analyst $0.50 + pm $0.75 +
+exec $1.00); **expected spend is < $0.50/day**; **measured after the first
+live day**. What bounds the expectation is the watchlist size and each seat's
+`max_turns`, not the caps — a day that actually hits $2.25 is a runaway to
+investigate, not a budget that was spent as designed.
 
 Every turn's cost is recorded to the `costs` table and summed into the EOD
 digest. `ResultMessage.total_cost_usd` is a **client-side estimate**, so it is

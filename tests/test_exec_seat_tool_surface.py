@@ -107,3 +107,17 @@ def test_read_only_seats_carry_no_order_hooks(seat, tmp_path):
 def test_exec_carries_both_order_hooks(tmp_path):
     hooks = _opts("exec", tmp_path).hooks
     assert hooks and "PreToolUse" in hooks and "PostToolUse" in hooks
+
+
+@pytest.mark.parametrize("seat", SEATS)
+def test_the_seat_yaml_budget_cap_is_threaded_into_the_options(seat, tmp_path):
+    """max_budget_usd is the only hard stop on a runaway turn. A yaml value
+    that is not actually threaded into the built options is inert — the SDK
+    would apply no cap at all, and the first evidence would be the bill.
+
+    The caps are BACKSTOPS, not the expectation: they sum to $2.25 worst case
+    against an expected spend under $0.50/day (README "Cost"). What bounds the
+    expectation is the watchlist size and the per-seat max_turns, not these."""
+    cap = _cfg(seat)["max_budget_usd"]
+    assert isinstance(cap, (int, float)) and cap > 0
+    assert _opts(seat, tmp_path).max_budget_usd == cap
