@@ -243,13 +243,17 @@ def test_one_unpriceable_holding_does_not_reject_the_whole_universe():
     which is the shape reproduced here."""
     px = _frame()
     px["AAPL"] = float("nan")                  # held, and the feed gave no bars
-    account = _account()
+    # a book of TWO holdings, only one of which is unpriceable: a partial
+    # exclusion is the case this behaviour exists for. (A book whose every
+    # member is unpriceable is a data outage and fails closed instead —
+    # test_a_book_we_cannot_price_at_all_fails_closed.)
+    account = _account(positions={"AAPL": 40, "MSFT": 40},
+                       prices={"AAPL": 200.0, "MSFT": 200.0})
     sectors = {"NVDA": "tech", "MSFT": "tech", "AAPL": "tech"}
     out = build_market_inputs(["NVDA", "MSFT", "AAPL"], account, px, sectors)
 
-    for ticker in ("NVDA", "MSFT"):
-        assert not math.isnan(out[ticker]["avg_corr"])
-        assert isinstance(size({**out[ticker], "side": "buy"}, "enforce"), Approved)
+    assert not math.isnan(out["NVDA"]["avg_corr"])   # measured vs MSFT alone
+    assert isinstance(size({**out["NVDA"], "side": "buy"}, "enforce"), Approved)
 
     # ...and the poisoned ticker still rejects ALONE: its price is the
     # broker's live mark, so NaN vol from its own missing bars is the only
@@ -257,6 +261,13 @@ def test_one_unpriceable_holding_does_not_reject_the_whole_universe():
     assert math.isnan(out["AAPL"]["vol_60d"])
     assert out["AAPL"]["price"] == 200.0
     assert size({**out["AAPL"], "side": "buy"}, "enforce") == Rejected("gate_error")
+
+    # MSFT is held, so ITS book is the unpriceable AAPL alone -> every member
+    # excluded -> NaN -> rejected. Asserted here rather than hidden: the
+    # blast radius of a data outage is exactly the tickers whose whole book
+    # went dark, and never wider.
+    assert math.isnan(out["MSFT"]["avg_corr"])
+    assert size({**out["MSFT"], "side": "buy"}, "enforce") == Rejected("gate_error")
 
 
 def test_avg_corr_vs_book_excludes_a_book_ticker_with_no_bars():
@@ -266,12 +277,39 @@ def test_avg_corr_vs_book_excludes_a_book_ticker_with_no_bars():
     px["AAPL"] = float("nan")
     assert avg_corr_vs_book(px, "NVDA", ["AAPL", "MSFT"]) == pytest.approx(
         avg_corr_vs_book(px, "NVDA", ["MSFT"]))
-    # a book that is entirely unpriceable falls back to the empty-book tier
-    # (there is nothing left to measure) — which is exactly why the caller
-    # must alert: a shrunken basket understates correlation and sizes UP
-    assert avg_corr_vs_book(px, "NVDA", ["AAPL"]) == 0.0
     # the candidate's own missing history still rejects the candidate alone
     assert math.isnan(avg_corr_vs_book(px, "AAPL", ["NVDA", "MSFT"]))
+
+
+def test_an_empty_book_sizes_at_the_permissive_tier():
+    """No holdings means no correlation risk to measure, so 0.0 -> the 1.10x
+    tier is the CORRECT answer, not a fallback. Pinned so the all-excluded
+    fix below cannot collaterally start rejecting the first trade of the
+    fund's life, when the book is legitimately empty."""
+    px = _frame()
+    assert avg_corr_vs_book(px, "NVDA", []) == 0.0
+    inputs = build_gate_inputs(
+        ticker="NVDA", side="buy", price=100.0, equity=100_000.0, cash=100_000.0,
+        sectors={"NVDA": "tech"}, vol_60d=0.30, avg_corr=avg_corr_vs_book(px, "NVDA", []),
+        held_qty=0, position_count=0, sector_value=0.0, daily_pnl_pct=0.0)
+    assert isinstance(size(inputs, "enforce"), Approved)
+
+
+def test_a_book_we_cannot_price_at_all_fails_closed():
+    """Distinct from the empty book above: we HOLD things, we just can't
+    price any of them. That is a data outage, not an absence of correlation
+    risk — inferring 'uncorrelated' from it would size UP on missing data,
+    which is the one direction gate/ must never fail. NaN -> gate_error."""
+    px = _frame()
+    px["AAPL"] = float("nan")
+    assert math.isnan(avg_corr_vs_book(px, "NVDA", ["AAPL"]))
+    # and it is loud: the caller still names exactly what was dropped
+    assert unpriceable_book_tickers(px, ["AAPL"]) == ["AAPL"]
+    inputs = build_gate_inputs(
+        ticker="NVDA", side="buy", price=100.0, equity=100_000.0, cash=100_000.0,
+        sectors={"NVDA": "tech"}, vol_60d=0.30, avg_corr=avg_corr_vs_book(px, "NVDA", ["AAPL"]),
+        held_qty=0, position_count=1, sector_value=0.0, daily_pnl_pct=0.0)
+    assert size(inputs, "enforce") == Rejected("gate_error")
 
 
 def test_unpriceable_book_tickers_names_exactly_what_was_excluded():

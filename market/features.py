@@ -42,15 +42,24 @@ def unpriceable_book_tickers(close_df: pd.DataFrame, book_tickers) -> list[str]:
 
 def avg_corr_vs_book(close_df: pd.DataFrame, ticker: str, book_tickers: list[str]) -> float:
     """Mean pairwise return-correlation of `ticker` vs each ticker in the book.
-    Empty book -> 0.0 (most permissive multiplier tier). A book ticker missing
-    from close_df entirely -> NaN (gate rejects; that is a wiring bug).
+
+    An EMPTY book -> 0.0, the most permissive multiplier tier. That is the
+    correct answer rather than a fallback: with no holdings there is no
+    correlation risk to measure.
 
     Book tickers the frame carries but cannot price are EXCLUDED from the
     basket instead of poisoning the mean with NaN: every candidate correlates
     against the SAME book, so one unpriceable holding used to reject the whole
     universe and cost the entire trading day. The exclusion is never silent —
-    unpriceable_book_tickers() names them for the caller's alert. `ticker`'s
-    OWN missing history still -> NaN, which rejects that one ticker."""
+    unpriceable_book_tickers() names them for the caller's alert.
+
+    But a non-empty book with EVERY member excluded -> NaN, not 0.0. "We hold
+    things and can price none of them" is a data outage, not an absence of
+    correlation risk; treating it as the empty book would size UP on missing
+    data, the one direction this fail-closed pipeline must never fail.
+
+    A book ticker missing from close_df entirely -> NaN (a caller/wiring bug).
+    `ticker`'s OWN missing history -> NaN, which rejects that one ticker."""
     if not book_tickers:
         return 0.0
     if ticker not in close_df.columns or any(t not in close_df.columns for t in book_tickers):
@@ -59,7 +68,7 @@ def avg_corr_vs_book(close_df: pd.DataFrame, ticker: str, book_tickers: list[str
         return float("nan")
     basket = [t for t in book_tickers if _has_return_history(close_df, t)]
     if not basket:
-        return 0.0          # nothing left to measure: the empty-book tier
+        return float("nan")   # see the "all excluded" paragraph above
     rets = close_df[ticker].pct_change()
     corrs = [rets.corr(close_df[t].pct_change()) for t in basket]
     return float(np.mean(corrs))

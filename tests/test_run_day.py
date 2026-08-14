@@ -301,6 +301,24 @@ def test_a_held_ticker_with_no_price_history_is_named_in_an_alert(wired):
     assert len(payloads) == 1
     assert payloads[0]["tickers"] == ["AAPL"]
     assert "AAPL" in payloads[0]["text"] and "NVDA" not in payloads[0]["text"]
+    assert "sizing is looser" in payloads[0]["text"]
+
+
+def test_a_book_with_no_priceable_member_alerts_that_buys_fail_closed(wired):
+    """When EVERY holding is dark there is no shrunken basket — correlation
+    is unmeasurable, features returns NaN and the gate rejects. The alert
+    must say that, because the operator response is opposite: a partial gap
+    means watch the loose sizing, a blackout means the day will not trade."""
+    import pandas as pd
+    conn, _, clock = wired
+    close_df = pd.DataFrame({"NVDA": [100.0, 101.0, 102.0],
+                             "AAPL": [float("nan")] * 3})
+    run_day_script.alert_missing_price_history(conn, clock, close_df, {"AAPL": 40})
+    payloads = _alert_payloads(conn)
+    assert len(payloads) == 1
+    assert payloads[0]["tickers"] == ["AAPL"]
+    assert "fails the gate closed" in payloads[0]["text"]
+    assert "sizing is looser" not in payloads[0]["text"]
 
 
 def test_a_fully_priced_book_raises_no_price_history_alert(wired):

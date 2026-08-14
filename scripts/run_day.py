@@ -287,10 +287,17 @@ def alert_missing_price_history(conn, clock, close_df, positions) -> None:
     gaps = unpriceable_book_tickers(close_df, positions)
     if not gaps:
         return
+    # every holding dark is a data outage, not a shrunken basket: features
+    # returns NaN there and the gate rejects, so say which one happened.
+    total_blackout = set(gaps) >= set(positions)
+    consequence = ("no book member is priceable at all, so correlation is"
+                   " unmeasurable and every buy today fails the gate closed"
+                   if total_blackout else
+                   "today's correlations are understated and sizing is looser"
+                   " than it should be")
     _alert(conn, clock,
            f"no usable price history for held {', '.join(gaps)} — excluded"
-           " from the book-correlation basket, so today's correlations are"
-           " understated and sizing is looser than it should be until the"
+           f" from the book-correlation basket: {consequence}, until the"
            " feed recovers",
            tickers=gaps)
 
