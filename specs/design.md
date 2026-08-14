@@ -183,7 +183,7 @@ fund/
 │   ├── runtime.py         # Slack-listener → ClaudeSDKClient bridge; ALL hooks live here
 │   ├── charters/          # _template.md, pm.md, quant.md, fundamentals.md, ... (versioned)
 │   ├── config/            # per-seat yaml: model, toolsets, channels, budget
-│   └── tools/             # in-process MCP: submit_signal, submit_decision
+│   └── tools/             # in-process MCP: get_stage_brief, submit_signal, submit_decision
 ├── gate/                  # risk gate + ticket store (no LLM imports — CI-enforced)
 ├── stratgate/             # strategy validation gates G1–G4 (no LLM imports — CI-enforced) ← from starter kit
 ├── fundbt/                # run_backtest tool: engine, cost floors, trial registry, hashing ← from starter kit
