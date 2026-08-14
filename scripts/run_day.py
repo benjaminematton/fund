@@ -61,7 +61,8 @@ from agents.exec_turn import check_tool_calls, run_seat_turn       # noqa: E402
 from agents.runtime import record_turn_result                      # noqa: E402
 from agents.seats import build_seat_options, load_seat_config      # noqa: E402
 from agents.wallclock import WallClock                             # noqa: E402
-from market.features import build_market_inputs                    # noqa: E402
+from market.features import (build_market_inputs,                  # noqa: E402
+                             unpriceable_book_tickers)
 from orchestrator.clock import et_run_date, iso                    # noqa: E402
 from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
                                 run_day)
@@ -272,6 +273,28 @@ def _alert(conn, clock, text: str, **payload) -> None:
     append_event(conn, "alert", {"text": text, **payload}, iso(clock.now()))
 
 
+# --- market-data gaps -------------------------------------------------------
+
+def alert_missing_price_history(conn, clock, close_df, positions) -> None:
+    """Name every held ticker the feed gave no usable history for.
+
+    market/features.py drops those from the book-correlation basket so ONE
+    unpriceable holding cannot NaN-poison every candidate and cost the whole
+    trading day — but a shrunken basket understates correlation and therefore
+    sizes UP, so the exclusion must be visible. features.py is pure compute
+    with no event access, which is why the alert is appended HERE, in the
+    composition root that assembles the market snapshot."""
+    gaps = unpriceable_book_tickers(close_df, positions)
+    if not gaps:
+        return
+    _alert(conn, clock,
+           f"no usable price history for held {', '.join(gaps)} — excluded"
+           " from the book-correlation basket, so today's correlations are"
+           " understated and sizing is looser than it should be until the"
+           " feed recovers",
+           tickers=gaps)
+
+
 # --- audit ------------------------------------------------------------------
 
 def report_audit(conn, slack, db_path: str, run_date: str, clock) -> int:
@@ -382,6 +405,8 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
     account = source.account_state()
     universe = sorted(set(watchlist) | set(account.get("positions") or {}))
     close_df = source.close_frame(universe, end=pd.Timestamp(clock.now()))
+    alert_missing_price_history(conn, clock, close_df,
+                                account.get("positions") or {})
     market_inputs = build_market_inputs(watchlist, account, close_df, sectors)
 
     journals_root = Path(environ.get("FUND_JOURNALS") or (ROOT / "journals"))

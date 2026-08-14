@@ -3,8 +3,9 @@ import numpy as np
 import pandas as pd
 import pytest
 from market.features import (annualized_vol, avg_corr_vs_book, build_gate_inputs,
-                             build_market_inputs, sector_book_value)
-from gate.risk import size, Rejected
+                             build_market_inputs, sector_book_value,
+                             unpriceable_book_tickers)
+from gate.risk import size, Approved, Rejected
 
 def _frame(n=90, seed=7):
     rng = np.random.default_rng(seed)
@@ -138,6 +139,59 @@ def test_build_market_inputs_carries_the_gate_fields_through():
     # correlation is measured against the BOOK, excluding the ticker itself
     assert out["avg_corr"] == pytest.approx(avg_corr_vs_book(px, "NVDA", ["AAPL"]))
     assert out["sector_value"] == pytest.approx(40 * 200.0)
+
+
+def test_one_unpriceable_holding_does_not_reject_the_whole_universe():
+    """Every candidate correlates against the SAME book, so a book ticker
+    whose correlation came back NaN made avg_corr NaN for the whole
+    universe -> Rejected('gate_error') for every ticker, i.e. a data gap in
+    one unrelated position cost the entire trading day. AlpacaSource's
+    _reshape_close_frame gives a ticker with zero bars an all-NaN COLUMN,
+    which is the shape reproduced here."""
+    px = _frame()
+    px["AAPL"] = float("nan")                  # held, and the feed gave no bars
+    account = _account()
+    sectors = {"NVDA": "tech", "MSFT": "tech", "AAPL": "tech"}
+    out = build_market_inputs(["NVDA", "MSFT", "AAPL"], account, px, sectors)
+
+    for ticker in ("NVDA", "MSFT"):
+        assert not math.isnan(out[ticker]["avg_corr"])
+        assert isinstance(size({**out[ticker], "side": "buy"}, "enforce"), Approved)
+
+    # ...and the poisoned ticker still rejects ALONE: its price is the
+    # broker's live mark, so NaN vol from its own missing bars is the only
+    # thing failing it. A candidate's OWN NaN must never stop being a reject.
+    assert math.isnan(out["AAPL"]["vol_60d"])
+    assert out["AAPL"]["price"] == 200.0
+    assert size({**out["AAPL"], "side": "buy"}, "enforce") == Rejected("gate_error")
+
+
+def test_avg_corr_vs_book_excludes_a_book_ticker_with_no_bars():
+    """The exclusion is on the BOOK basket only, and is measured over what
+    is left — not NaN, and not a stale 0.0."""
+    px = _frame()
+    px["AAPL"] = float("nan")
+    assert avg_corr_vs_book(px, "NVDA", ["AAPL", "MSFT"]) == pytest.approx(
+        avg_corr_vs_book(px, "NVDA", ["MSFT"]))
+    # a book that is entirely unpriceable falls back to the empty-book tier
+    # (there is nothing left to measure) — which is exactly why the caller
+    # must alert: a shrunken basket understates correlation and sizes UP
+    assert avg_corr_vs_book(px, "NVDA", ["AAPL"]) == 0.0
+    # the candidate's own missing history still rejects the candidate alone
+    assert math.isnan(avg_corr_vs_book(px, "AAPL", ["NVDA", "MSFT"]))
+
+
+def test_unpriceable_book_tickers_names_exactly_what_was_excluded():
+    """The caller alerts from this; it must name the dropped tickers and
+    nothing else."""
+    px = _frame()
+    px["AAPL"] = float("nan")
+    assert unpriceable_book_tickers(px, ["NVDA", "AAPL", "MSFT"]) == ["AAPL"]
+    assert unpriceable_book_tickers(px, ["NVDA", "MSFT"]) == []
+    # a ticker the frame does not carry AT ALL is a caller/wiring bug, not a
+    # feed gap: it is NOT excluded (it still fails closed as NaN above), so
+    # it must not be reported as excluded either
+    assert unpriceable_book_tickers(px, ["ZZZZ"]) == []
 
 
 def test_build_market_inputs_unknown_ticker_reaches_the_gate_as_gate_error():

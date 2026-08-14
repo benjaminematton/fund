@@ -10,21 +10,58 @@ import pandas as pd
 
 
 def annualized_vol(series: pd.Series) -> float:
-    """Std dev (ddof=1) of the last 60 daily pct-change returns, annualized."""
-    rets = series.pct_change().dropna().tail(60)
+    """Std dev (ddof=1) of the last 60 daily pct-change returns, annualized.
+    Gaps are dropped BEFORE differencing, never forward-filled: pandas'
+    default pad turns a missing bar into a fake 0% return, which understates
+    vol and sizes UP (and is deprecated besides)."""
+    rets = series.dropna().pct_change().dropna().tail(60)
     return rets.std(ddof=1) * np.sqrt(252)
+
+
+def _has_return_history(close_df: pd.DataFrame, ticker: str) -> bool:
+    """True when close_df carries at least two returns for `ticker`. One
+    return cannot produce a correlation (std of a single point is NaN), so
+    two is the floor for a ticker to be worth putting in a basket."""
+    return ticker in close_df.columns and int(close_df[ticker].count()) >= 3
+
+
+def unpriceable_book_tickers(close_df: pd.DataFrame, book_tickers) -> list[str]:
+    """Sorted book tickers that avg_corr_vs_book DROPS from its basket: a
+    column the frame carries but with no usable price history (AlpacaSource's
+    _reshape_close_frame gives a ticker with zero bars an all-NaN column).
+
+    The caller MUST alert on these. A silently-shrunken basket understates
+    correlation and therefore sizes UP, which is the dangerous direction.
+
+    A ticker the frame does not carry AT ALL is deliberately absent here: that
+    is a caller/wiring bug rather than a feed gap (run_day fetches exactly the
+    universe it prices), and avg_corr_vs_book still fails it closed as NaN."""
+    return sorted({t for t in book_tickers
+                   if t in close_df.columns and not _has_return_history(close_df, t)})
 
 
 def avg_corr_vs_book(close_df: pd.DataFrame, ticker: str, book_tickers: list[str]) -> float:
     """Mean pairwise return-correlation of `ticker` vs each ticker in the book.
     Empty book -> 0.0 (most permissive multiplier tier). A book ticker missing
-    from close_df -> NaN (gate rejects; never silently drop and understate corr)."""
+    from close_df entirely -> NaN (gate rejects; that is a wiring bug).
+
+    Book tickers the frame carries but cannot price are EXCLUDED from the
+    basket instead of poisoning the mean with NaN: every candidate correlates
+    against the SAME book, so one unpriceable holding used to reject the whole
+    universe and cost the entire trading day. The exclusion is never silent —
+    unpriceable_book_tickers() names them for the caller's alert. `ticker`'s
+    OWN missing history still -> NaN, which rejects that one ticker."""
     if not book_tickers:
         return 0.0
     if ticker not in close_df.columns or any(t not in close_df.columns for t in book_tickers):
         return float("nan")
+    if not _has_return_history(close_df, ticker):
+        return float("nan")
+    basket = [t for t in book_tickers if _has_return_history(close_df, t)]
+    if not basket:
+        return 0.0          # nothing left to measure: the empty-book tier
     rets = close_df[ticker].pct_change()
-    corrs = [rets.corr(close_df[t].pct_change()) for t in book_tickers]
+    corrs = [rets.corr(close_df[t].pct_change()) for t in basket]
     return float(np.mean(corrs))
 
 

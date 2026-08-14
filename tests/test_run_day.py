@@ -276,6 +276,43 @@ def test_a_market_data_failure_reaches_slack(wired, tmp_path):
     assert conn.execute("SELECT COUNT(*) c FROM checkpoints").fetchone()["c"] == 0
 
 
+# --- market-data gaps must be named, never silent ---------------------------
+
+def _alert_payloads(conn) -> list[dict]:
+    import json
+    return [json.loads(r["payload"]) for r in conn.execute(
+        "SELECT payload FROM events WHERE kind = 'alert' ORDER BY id")]
+
+
+def test_a_held_ticker_with_no_price_history_is_named_in_an_alert(wired):
+    """market/features.py drops an unpriceable holding from the
+    book-correlation basket so ONE data gap cannot reject the whole universe
+    — but a shrunken basket understates correlation and sizes UP, so the
+    exclusion must never be silent. features.py is pure compute with no event
+    access, so the composition root that assembles the market snapshot owns
+    the alert."""
+    import pandas as pd
+    conn, _, clock = wired
+    close_df = pd.DataFrame({"NVDA": [100.0, 101.0, 102.0],
+                             "AAPL": [float("nan")] * 3})
+    run_day_script.alert_missing_price_history(
+        conn, clock, close_df, {"AAPL": 40, "NVDA": 5})
+    payloads = _alert_payloads(conn)
+    assert len(payloads) == 1
+    assert payloads[0]["tickers"] == ["AAPL"]
+    assert "AAPL" in payloads[0]["text"] and "NVDA" not in payloads[0]["text"]
+
+
+def test_a_fully_priced_book_raises_no_price_history_alert(wired):
+    import pandas as pd
+    conn, _, clock = wired
+    close_df = pd.DataFrame({"NVDA": [100.0, 101.0, 102.0],
+                             "AAPL": [200.0, 201.0, 202.0]})
+    run_day_script.alert_missing_price_history(
+        conn, clock, close_df, {"AAPL": 40, "NVDA": 5})
+    assert _alert_payloads(conn) == []
+
+
 # --- single-instance guard (Fix 5) ------------------------------------------
 
 def test_a_second_instance_backs_off_instead_of_racing(tmp_path):
