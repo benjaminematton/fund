@@ -277,6 +277,35 @@ Paste all five into the commit message (or PR body) that ticks the boxes.
 **STOP, capture, report. Do not retry blind.** Re-running a live day after an
 unexplained failure is how you turn one bad order into two.
 
+### The card — everything below, on one screen
+
+| # | Stop on | You see it | It means |
+|---|---|---|---|
+| 1 | Hook deny on a live order | `#risk`, run log | An order no ticket authorised. The gate held; the reason it had to is the bug |
+| 2 | Any audit line but `AUDIT CLEAN` | §3 terminal | Each line names its own shape. All counts are ET-day-scoped |
+| 3 | `run_day_failed — …` | `#risk` | Raised BEFORE the audit ran. DB is mid-flight; may be post-order |
+| 4 | An order you did not expect | `#trade-log`, broker | Wrong symbol, wrong side, or qty > ticket `max_qty` |
+| 5 | Paper guard fired | startup | Do NOT export and retry. Find out why it was wrong |
+
+**Then, before touching anything:** run the capture block below (DB copy,
+audit, checkpoints, decisions, orders, events, broker orders) and report with
+the artefacts attached.
+
+**Re-run ONLY if** it was a crash (killed / slept / network) AND the audit
+shows stages at `running`/`pending` AND no order looks wrong. Checkpoint CAS
+resumes rather than repeats; `client_order_id` idempotency makes a re-placed
+order a broker 422, not a double fill. **When in doubt, do not.**
+
+**Two things that look like aborts and are not:**
+- A resumed day reporting `alert events raised: 1` — that is the original
+  crash, correctly counted. Read the alert TEXT, not the count. A second,
+  different alert (or count > 1) is new and real.
+- `cost_unavailable` as the only line — the SDK left `total_cost_usd` unset
+  and the fund refused to record a fake `0.00`. Still stop and report: it is
+  an accounting gap, not a trading fault.
+
+### The detail
+
 Stop immediately on any of:
 
 1. **A hook deny on a live order.** The seat's `place_*` call came back denied
