@@ -394,3 +394,179 @@ def test_num_turns_is_logged_for_every_seat_turn(capsys):
 def test_a_result_without_num_turns_still_logs(capsys):
     run_day_script.log_turn_result("pm", object())
     assert "num_turns=" in capsys.readouterr().out
+
+
+# --- make_turn: a seat failure degrades to HOLD, it does not abort the day --
+
+def _turn(conn, clock, seat="analyst", **over):
+    """make_turn with everything but the seat session already wired. The
+    session itself is monkeypatched per-test — it is the only piece that needs
+    a real SDK client."""
+    kwargs = dict(cfg={}, db_path=":memory:", clock=clock, conn=conn,
+                  run_date="2026-07-06", prompt="p")
+    kwargs.update(over)
+    return run_day_script.make_turn(seat, **kwargs)
+
+
+def _alert_texts(conn) -> list[str]:
+    return [p["text"] for p in _alert_payloads(conn)]
+
+
+def test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land(
+        wired, monkeypatch):
+    """make_turn's `except Exception` IS the degrade-to-HOLD path (invariant
+    4). Delete it and one seat failure — a uvx cold start, an SDK timeout, a
+    blown budget — propagates out of run_stage, past run_day, and aborts the
+    whole trading day: no gate pass, no digest, nothing drained. Untested
+    until now, so nothing noticed."""
+    conn, _, clock = wired
+
+    async def _boom(*a, **k):
+        raise TimeoutError("session never connected")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _boom)
+    run = _turn(conn, clock, seat="analyst")
+    run()                                    # must NOT raise
+
+    texts = _alert_texts(conn)
+    assert len(texts) == 1
+    assert "analyst_turn_failed" in texts[0] and "TimeoutError" in texts[0]
+    assert "default is HOLD" in texts[0]
+
+    # ...and the stage that owns this turn still lands its own default: the
+    # ticker gets neutral/0 "no report" instead of the day stopping.
+    from orchestrator.daily import StageCtx, run_research
+    run_research(StageCtx(conn=conn, run_date="2026-07-06", clock=clock,
+                          slack=None, run_turn={"research": run}), ["NVDA"])
+    row = conn.execute("SELECT direction, confidence, summary FROM signals"
+                       " WHERE run_date = '2026-07-06' AND ticker = 'NVDA'"
+                       ).fetchone()
+    assert (row["direction"], row["confidence"], row["summary"]) == (
+        "neutral", 0, "no report")
+
+
+def test_an_exec_tool_call_violation_is_alerted_after_the_cost_is_recorded(
+        wired, monkeypatch):
+    """check_tool_calls fires only for the exec seat, and only AFTER the cost
+    is recorded — a violating turn still spent real money. A silent no-op exec
+    turn (zero tool calls) is the shape this catches: open tickets, no orders,
+    nobody told."""
+    conn, _, clock = wired
+
+    async def _silent(*a, **k):
+        return [], _Result(cost=0.02)
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _silent)
+    _turn(conn, clock, seat="exec")()
+
+    texts = _alert_texts(conn)
+    assert len(texts) == 1 and "exec_turn_violation" in texts[0]
+    assert "zero tool calls" in texts[0]
+    assert conn.execute("SELECT COUNT(*) c FROM costs").fetchone()["c"] == 1
+
+
+def test_an_off_mandate_tool_call_is_alerted(wired, monkeypatch):
+    conn, _, clock = wired
+
+    async def _off_mandate(*a, **k):
+        return ["Bash"], _Result()
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _off_mandate)
+    _turn(conn, clock, seat="exec")()
+    assert "Bash" in _alert_texts(conn)[0]
+
+
+def test_a_clean_exec_turn_raises_no_alert(wired, monkeypatch):
+    """The inverse: an alert on every turn would be as useless as an alert on
+    none."""
+    conn, _, clock = wired
+
+    async def _clean(*a, **k):
+        return ["mcp__fund__list_open_tickets",
+                "mcp__alpaca__place_stock_order"], _Result()
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _clean)
+    _turn(conn, clock, seat="exec")()
+    assert _alert_texts(conn) == []
+    assert conn.execute("SELECT COUNT(*) c FROM costs").fetchone()["c"] == 1
+
+
+# --- _trading_day: the whole composition, offline ---------------------------
+
+class _QuietSource:
+    """A funded-but-uninvestable account: zero cash and no positions, so every
+    ticker's buy shape is no_headroom and every sell shape is nothing_held.
+    That is the ZERO-ACTIVE-TICKER day — every stage still runs, checkpoints
+    and posts the digest (invariant 4), at zero LLM cost."""
+
+    def account_state(self) -> dict:
+        return {"equity": 100000.0, "cash": 0.0, "positions": {},
+                "prices": {}, "daily_pnl_pct": 0.0}
+
+    def close_frame(self, universe, end=None):
+        import pandas as pd
+        return pd.DataFrame(
+            {t: [100.0, 101.0, 99.99, 100.9899] for t in universe},
+            index=pd.bdate_range("2026-06-29", periods=4))
+
+    def get_order(self, client_order_id):        # reconcile_orders' broker
+        raise AssertionError("no orders were placed on a zero-ticker day")
+
+
+def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
+        wired, tmp_path, monkeypatch, capsys):
+    """_trading_day's only other caller is a fake source that raises inside
+    close_frame, so build_market_inputs, StageCtx, run_pre_gate, make_turn,
+    run_day and report_audit were never reached by any test. This drives all
+    of them with a real DB, a real outbox and a FakeSlack.
+
+    Zero active tickers is the shape that needs no LLM at all — asserted, not
+    assumed: _seat_session raises if anything tries to open a session."""
+    conn, slack, clock = wired
+    db_path = str(tmp_path / "fund.sqlite")
+
+    async def _no_llm(*a, **k):
+        raise AssertionError("a zero-ticker day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _QuietSource(), "2026-07-06", db_path,
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "no active tickers" in out           # run_pre_gate ran and found none
+    assert "AUDIT CLEAN 2026-07-06" in out      # report_audit ran, not skipped
+
+    # every stage of run_day reached 'done' — the composition ran end to end
+    assert {r["stage"]: r["status"] for r in conn.execute(
+        "SELECT stage, status FROM checkpoints WHERE run_date = '2026-07-06'")
+    } == {s: "done" for s in ("pre_gate", "research", "decision", "gate",
+                              "execution", "reconciliation", "close")}
+
+    # ...and the day still spoke: a digest in #pnl, no alerts, nothing left
+    # undrained (which is what audit_day's own clean verdict above rests on)
+    assert len(slack.posts["#pnl"]) == 1
+    assert "2026-07-06 close" in slack.posts["#pnl"][0]["text"]
+    assert _alert_payloads(conn) == []
+    assert conn.execute("SELECT COUNT(*) c FROM events"
+                        " WHERE posted_at IS NULL").fetchone()["c"] == 0
+
+
+def test_a_zero_ticker_day_writes_no_decisions_and_costs_nothing(
+        wired, tmp_path, monkeypatch):
+    """The other half of invariant 4's "nothing is possible today": no ticker
+    reaches an LLM, so no signal, no decision and no cost row exist — and the
+    audit still calls that clean (a day that ran no turns owes no cost row)."""
+    conn, slack, clock = wired
+    monkeypatch.setattr(run_day_script, "_seat_session", None)
+
+    run_day_script._trading_day(
+        conn, slack, clock, _QuietSource(), "2026-07-06",
+        str(tmp_path / "fund.sqlite"),
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    for table in ("signals", "decisions", "tickets", "costs", "orders"):
+        assert conn.execute(f"SELECT COUNT(*) c FROM {table}"
+                            ).fetchone()["c"] == 0, table
