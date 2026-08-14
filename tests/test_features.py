@@ -29,6 +29,59 @@ def test_avg_corr_vs_book():
     # no book -> corr 0.0 (=> 1.10x multiplier tier, most permissive)
     assert avg_corr_vs_book(px, "NVDA", []) == 0.0
 
+
+# --- hardcoded goldens: the two numbers that pick the sizing tiers ----------
+#
+# The two tests above re-derive their expectation with the SAME expression the
+# implementation uses, so a wrong annualization factor or a ddof flip passes
+# both. vol_60d selects _vol_tier and avg_corr selects _corr_mult, so either
+# error mis-sizes EVERY position on EVERY day. The literals below are hand
+# derived once, from an exact input series, and never recomputed from the code.
+
+# Closes chosen so every pct_change is exactly +/- r, r = 0.01.
+GOLDEN_A = [100.0, 101.0, 99.99, 100.9899]          # returns ( r, -r,  r)
+GOLDEN_B = [50.0, 50.5, 49.995, 50.49495]           # returns ( r, -r,  r)
+GOLDEN_C = [200.0, 202.0, 204.02, 201.9798]         # returns ( r,  r, -r)
+
+
+def test_annualized_vol_is_the_hand_derived_literal():
+    """Hand derivation, returns r = 0.01 over [r, -r, r]:
+
+        mean            = r/3
+        deviations      = (2r/3, -4r/3, 2r/3)
+        sum of squares  = (4 + 16 + 4) r^2 / 9 = 24 r^2 / 9
+        var  (ddof=1)   = (24 r^2 / 9) / 2     =  4 r^2 / 3
+        std             = 2r / sqrt(3)
+        annualized      = 2r * sqrt(252/3) = 2r * sqrt(84)
+                        = 0.02 * 9.16515139... = 0.18330302779823...
+
+    ddof=0 would divide by 3 instead of 2 and give 0.14966...; dropping the
+    sqrt() from the annualization would give 2.909... Both are RED here.
+    """
+    series = pd.Series(GOLDEN_A, index=pd.bdate_range("2026-06-29", periods=4))
+    assert annualized_vol(series) == pytest.approx(0.1833030277982336, abs=1e-12)
+
+
+def test_avg_corr_vs_book_is_the_hand_derived_literal():
+    """Hand derivation, in units of r (the level of r cancels in Pearson's rho):
+
+        candidate A returns  x = ( 1, -1,  1)
+        book ticker B        y = ( 1, -1,  1)  -> identical -> rho = +1.0
+        book ticker C        z = ( 1,  1, -1)
+
+        For x vs z:  dx = (2/3, -4/3, 2/3), dz = (2/3, 2/3, -4/3)
+          sum dx*dz = ( 4 - 8 - 8) / 9 = -12/9
+          sum dx^2  = sum dz^2 = (4 + 16 + 4)/9 = 24/9
+          rho       = (-12/9) / (24/9) = -0.5
+
+        mean(+1.0, -0.5) = 0.25
+    """
+    px = pd.DataFrame({"A": GOLDEN_A, "B": GOLDEN_B, "C": GOLDEN_C},
+                      index=pd.bdate_range("2026-06-29", periods=4))
+    assert avg_corr_vs_book(px, "A", ["B"]) == pytest.approx(1.0, abs=1e-12)
+    assert avg_corr_vs_book(px, "A", ["C"]) == pytest.approx(-0.5, abs=1e-12)
+    assert avg_corr_vs_book(px, "A", ["B", "C"]) == pytest.approx(0.25, abs=1e-12)
+
 def test_sector_book_value_marks_at_current_prices():
     v = sector_book_value(
         positions={"AAPL": 120, "MSFT": 40}, prices={"AAPL": 232.0, "MSFT": 505.0},
@@ -232,6 +285,51 @@ def test_unpriceable_book_tickers_names_exactly_what_was_excluded():
     # feed gap: it is NOT excluded (it still fails closed as NaN above), so
     # it must not be reported as excluded either
     assert unpriceable_book_tickers(px, ["ZZZZ"]) == []
+
+
+def test_a_well_formed_snapshot_is_APPROVED_with_the_hand_derived_qty():
+    """The APPROVE side of the features -> gate seam.
+
+    Every other test that feeds build_market_inputs' output into size() asserts
+    Rejected, which is indistinguishable from a total schema break: GateInputs
+    is extra="forbid", so ONE spurious key in build_gate_inputs' dict turns
+    every day into a permanent full HOLD with the whole suite still green.
+    This test is the instrument that measures that — it is RED the moment the
+    dict and the model stop matching.
+
+    Hand derivation from the fixed frame below (r = 0.01):
+      vol_60d    = 2r * sqrt(84)      = 0.18330...  -> 0.15 < v <= 0.50 -> 0.20
+      avg_corr   = rho(x, y)          = 0.50        -> 0.4 <= c < 0.6   -> 0.95
+      dollar     = 100_000 * 0.20 * 0.95            = 19_000.00
+      cash cap   = min(19_000, 30_000)              = 19_000.00
+      price      = last close of NVDA               =    100.9899
+      pre_sector = floor(19_000 / 100.9899)         = floor(188.1376) = 188
+      sector_val = 40 AAPL * broker mark 50.00      =  2_000.00
+      headroom   = 0.60 * 100_000 - 2_000           = 58_000.00
+      cap        = floor(58_000 / 100.9899)         = floor(574.3148) = 574
+      max_qty    = min(188, 574)                    = 188
+    """
+    px = pd.DataFrame(
+        {"NVDA": [100.0, 101.0, 99.99, 100.9899],   # returns x = ( r, -r,  r)
+         "AAPL": [50.0, 49.5, 49.005, 49.49505]},   # returns y = (-r, -r,  r)
+        index=pd.bdate_range("2026-06-29", periods=4))
+    account = dict(equity=100000.0, cash=30000.0, daily_pnl_pct=-0.004,
+                   positions={"AAPL": 40}, prices={"AAPL": 50.0})
+    inputs = build_market_inputs(["NVDA"], account, px,
+                                 {"NVDA": "tech", "AAPL": "tech"})
+    out = inputs["NVDA"]
+
+    # the inputs the derivation above rests on, so a drift shows up as itself
+    assert out["price"] == 100.9899
+    assert out["vol_60d"] == pytest.approx(0.1833030277982336, abs=1e-12)
+    assert out["avg_corr"] == pytest.approx(0.5, abs=1e-9)
+    assert out["sector_value"] == 2000.0
+
+    assert size({**out, "side": "buy"}, "enforce") == Approved(
+        max_qty=188, pre_sector_qty=188, side="buy")
+    # ...and the held leg is sell-able for exactly what is held
+    assert size({**inputs["AAPL"], "side": "sell"}, "enforce") == Approved(
+        max_qty=40, pre_sector_qty=40, side="sell")
 
 
 def test_build_market_inputs_unknown_ticker_reaches_the_gate_as_gate_error():
