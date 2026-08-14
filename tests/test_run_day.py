@@ -13,13 +13,19 @@ Never calls main(): that builds real clients.
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import yaml
 
+from orchestrator.clock import SimClock
+from slackkit.fake import FakeSlack
+from state.db import connect
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run_day.py"
+START = datetime(2026, 7, 6, 15, 30, tzinfo=timezone.utc)
 
 
 def _load():
@@ -183,3 +189,151 @@ def test_watchlist_stays_within_the_cost_bound():
 def test_every_stage_seat_has_a_committed_config():
     for seat in run_day_script.SEATS.values():
         assert (run_day_script.SEAT_CONFIG / f"{seat}.yaml").exists()
+
+
+# --- nothing after connect() may die silently (Fixes 2 & 3) -----------------
+
+@pytest.fixture
+def wired(tmp_path):
+    """The live root's post-connect() world, minus the real clients: a real DB,
+    a real outbox, a Slack we can read back."""
+    conn = connect(tmp_path / "fund.sqlite")
+    return conn, FakeSlack(), SimClock(START)
+
+
+def _risk_texts(slack) -> list[str]:
+    return [p["text"] for p in slack.posts.get("#risk", [])]
+
+
+def test_a_raise_inside_the_day_alerts_slack_and_exits_nonzero(wired):
+    """Fix 2 — the silent death. run_day(...) then report_audit(...) with no
+    try/finally means any raise inside a stage body (a DB error in
+    run_research's insert, a journals permission failure in run_close) skips
+    the audit entirely: no alert appended, nothing drained, Slack never told.
+    That is reachable AFTER the gate minted a ticket and the seat placed an
+    order, so #risk shows a ticket and #trade-log shows nothing."""
+    conn, slack, clock = wired
+
+    def body():
+        raise sqlite3_error()
+
+    assert run_day_script.guarded(conn, slack, clock, body) == 1
+    texts = _risk_texts(slack)
+    assert len(texts) == 1
+    assert "run_day_failed" in texts[0] and "OperationalError" in texts[0]
+    assert conn.execute("SELECT COUNT(*) c FROM events WHERE kind = 'alert'"
+                        " AND posted_at IS NOT NULL").fetchone()["c"] == 1
+
+
+def sqlite3_error():
+    import sqlite3
+    return sqlite3.OperationalError("database is locked")
+
+
+def test_a_systemexit_inside_the_day_is_not_silent(wired):
+    """Fix 3 — load_watchlist raises SystemExit, which `except Exception` would
+    walk straight past. A scheduled job that stops on a config error must still
+    say so in Slack."""
+    conn, slack, clock = wired
+
+    def body():
+        raise SystemExit("run_day: config/watchlist.yaml lists no tickers")
+
+    assert run_day_script.guarded(conn, slack, clock, body) == 1
+    assert "lists no tickers" in _risk_texts(slack)[0]
+
+
+def test_the_guard_returns_the_bodys_own_exit_code(wired):
+    conn, slack, clock = wired
+    assert run_day_script.guarded(conn, slack, clock, lambda: 0) == 0
+    assert run_day_script.guarded(conn, slack, clock, lambda: 1) == 1
+    assert slack.posts == {}
+
+
+class _DeadDataSource:
+    """The market-data half of Fix 3: account_state answers, close_frame does
+    not. Both run after connect() and before the first DB write."""
+
+    def account_state(self) -> dict:
+        return {"equity": 100000.0, "cash": 30000.0, "positions": {},
+                "position_count": 0, "daily_pnl_pct": 0.0}
+
+    def close_frame(self, universe, end=None):
+        raise ConnectionError("alpaca data api unreachable")
+
+
+def test_a_market_data_failure_reaches_slack(wired, tmp_path):
+    """Fix 3, through the real composition path — not a stubbed body."""
+    conn, slack, clock = wired
+    code = run_day_script.guarded(
+        conn, slack, clock,
+        lambda: run_day_script._trading_day(
+            conn, slack, clock, _DeadDataSource(), "2026-07-06",
+            str(tmp_path / "fund.sqlite"),
+            {"FUND_JOURNALS": str(tmp_path / "journals")}))
+    assert code == 1
+    assert "ConnectionError" in _risk_texts(slack)[0]
+    assert conn.execute("SELECT COUNT(*) c FROM checkpoints").fetchone()["c"] == 0
+
+
+# --- single-instance guard (Fix 5) ------------------------------------------
+
+def test_a_second_instance_backs_off_instead_of_racing(tmp_path):
+    """Two overlapping processes both re-run a stage whose checkpoint is
+    'running' — correct crash-resume semantics, but overlapping it means two
+    concurrent seat turns (double LLM spend) and two concurrent drains (double
+    Slack posts)."""
+    path = tmp_path / "run_day.lock"
+    held = run_day_script.acquire_lock(path)
+    assert held is not None
+    assert run_day_script.acquire_lock(path) is None
+
+
+def test_a_dead_process_leaves_no_lock_behind(tmp_path):
+    """Tomorrow's run must not be blocked by yesterday's crash: flock is held
+    by the open file description, so the kernel drops it when the process
+    dies — no staleness check, no pid liveness guessing."""
+    path = tmp_path / "run_day.lock"
+    held = run_day_script.acquire_lock(path)
+    held.close()                                   # == the process going away
+    assert run_day_script.acquire_lock(path) is not None
+
+
+# --- cost accounting must never take the day down (Fix 6) -------------------
+
+class _Result:
+    def __init__(self, cost=0.01, turns=7):
+        self.total_cost_usd = cost
+        self.session_id = "sess-1"
+        self.num_turns = turns
+
+
+def test_a_cost_recording_failure_does_not_take_the_trading_day_down(wired):
+    """Fix 6: record_turn_result's own DB writes can raise, and run_day calls
+    it outside make_turn's try. A cost-accounting failure must not kill a day
+    that has already traded — the audit's cost check is the backstop."""
+    conn, _, clock = wired
+    conn.close()
+    run_day_script.record_cost_guarded(conn, clock, "2026-07-06", "analyst",
+                                       _Result())
+
+
+def test_the_cost_seam_still_records_when_the_db_is_healthy(wired):
+    conn, _, clock = wired
+    run_day_script.record_cost_guarded(conn, clock, "2026-07-06", "analyst",
+                                       _Result())
+    assert conn.execute("SELECT COUNT(*) c FROM costs").fetchone()["c"] == 1
+
+
+def test_num_turns_is_logged_for_every_seat_turn(capsys):
+    """HANDOFF-LIVE §7 right-sizes max_turns from the first live day's
+    num_turns; the SDK's own stdout formatting must not be the only capture
+    path for it."""
+    run_day_script.log_turn_result("analyst", _Result(turns=11))
+    out = capsys.readouterr().out
+    assert "analyst" in out and "num_turns=11" in out
+
+
+def test_a_result_without_num_turns_still_logs(capsys):
+    run_day_script.log_turn_result("pm", object())
+    assert "num_turns=" in capsys.readouterr().out

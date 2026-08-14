@@ -201,8 +201,14 @@ def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
     free in the digest and in the ≤$0.50/day acceptance box) or silence
     (which would hide a broken cost pillar). An alert is the honest third
     option — it costs the day an audit violation, which is exactly the human
-    review a fund that cannot account for its spend deserves. Never raises:
-    a cost-accounting gap must not take the trading day down (invariant 4).
+    review a fund that cannot account for its spend deserves.
+
+    A MISSING estimate therefore never raises. A broken DB still does: both
+    branches below write and commit, and swallowing a failed write here would
+    hide the very gap this function exists to surface. Keeping the trading day
+    alive through that is the CALLER's job, and scripts/run_day.py does it in
+    record_cost_guarded() — cost accounting must never take down trading
+    (invariant 4), but it must not lie about itself either.
 
     Returns True iff a cost row was written."""
     usd = getattr(result, "total_cost_usd", None)

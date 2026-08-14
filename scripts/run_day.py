@@ -12,22 +12,32 @@ here — and then injected.
 Posture (invariant 4: the default is HOLD):
   * ALPACA_PAPER_TRADE != 'true'      -> exit 1 before a single client is built
   * a missing env var                 -> exit 1 naming every missing var
+  * another run_day already running   -> log, exit 0, touch nothing
   * market closed / clock unreadable  -> log, exit 0, trade nothing
   * a seat turn that raises            -> one `alert`, then the stage's own
                                           default (neutral/0, pm_timeout hold)
   * anything the audit flags           -> `alert` posted to Slack, exit 1
+  * anything ELSE that raises after    -> one `alert`, drained to Slack, then
+    connect() (a stage body, the           exit 1 — nobody is watching a
+    watchlist yaml, the market feed)       scheduled run, and a silent stop is
+                                           the worst outcome of all
 
 One fire per market day (review P4). Checkpoint CAS makes a re-fire resume
-rather than repeat, so a crashed day is recovered by running this again.
+rather than repeat, so a crashed day is recovered by running this again —
+SEQUENTIALLY. Two OVERLAPPING processes would both re-run a stage whose
+checkpoint is 'running': two seat turns' LLM spend, two drains' Slack posts.
+That is what acquire_lock() below exists to prevent.
 """
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))            # `python scripts/run_day.py` from anywhere
@@ -57,10 +67,37 @@ SEAT_CONFIG = ROOT / "agents" / "config"
 # `trading` toolset (invariant 2); every seat is built by build_seat_options,
 # never hand-rolled here.
 SEATS = {"research": "analyst", "decision": "pm", "execution": "exec"}
+LOCK_NAME = "run_day.lock"
 
 
 def log(msg: str) -> None:
     print(f"run_day: {msg}", flush=True)
+
+
+# --- single instance --------------------------------------------------------
+
+def acquire_lock(path: Path):
+    """Non-blocking exclusive flock, or None if another run_day holds it.
+
+    Sequential re-fires are safe (checkpoint CAS resumes them); OVERLAPPING
+    ones are not — `make live-day` on top of a running scheduled job would put
+    two processes through the same 'running' stage body, doubling the LLM spend
+    and the Slack posts. flock is held by the open file description, so the
+    kernel releases it the instant the process dies: a crash can never leave a
+    lock that blocks tomorrow's run, and there is no pid-liveness guessing.
+    The caller must keep the returned handle alive for the run's duration."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+")           # 'a+', not 'w': never truncate a lock
+    try:                                # file another process is holding
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
 
 
 # --- environment ------------------------------------------------------------
@@ -176,7 +213,8 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
                    f"{seat}_turn_failed — {type(exc).__name__}: {exc};"
                    " stage default applies (default is HOLD)")
             return
-        record_turn_result(conn, run_date, seat, result, iso(clock.now()))
+        log_turn_result(seat, result)
+        record_cost_guarded(conn, clock, run_date, seat, result)
         if seat == "exec":
             try:
                 check_tool_calls(names)
@@ -186,38 +224,105 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
     return run
 
 
-def _alert(conn, clock, text: str) -> None:
+def log_turn_result(seat: str, result) -> None:
+    """num_turns right-sizes each seat's max_turns (HANDOFF-LIVE §7) and is
+    persisted nowhere, so log it explicitly rather than leaving the SDK's own
+    stdout formatting as the owner's only capture path."""
+    log(f"{seat} turn done: num_turns={getattr(result, 'num_turns', 'n/a')}"
+        f" est_cost_usd={getattr(result, 'total_cost_usd', 'n/a')}")
+
+
+def record_cost_guarded(conn, clock, run_date: str, seat: str, result) -> None:
+    """Cost accounting must never take the trading day down (review Fix 6).
+
+    record_turn_result never raises on a MISSING estimate — that path is an
+    alert — but its DB writes can, and this is called after the seat may
+    already have placed a real order. No alert on failure: appending one is
+    another write to the same connection that just failed. The log line plus
+    the audit's own 'no cost rows recorded' check are the surfacing path, and
+    both are louder than a dead trading day."""
+    try:
+        record_turn_result(conn, run_date, seat, result, iso(clock.now()))
+    except Exception as exc:
+        log(f"ALERT cost_record_failed {seat} — {type(exc).__name__}: {exc};"
+            " trading continues; the audit will flag the missing cost row")
+
+
+def _alert(conn, clock, text: str, **payload) -> None:
     log(f"ALERT {text}")
-    append_event(conn, "alert", {"text": text}, iso(clock.now()))
+    append_event(conn, "alert", {"text": text, **payload}, iso(clock.now()))
 
 
 # --- audit ------------------------------------------------------------------
 
 def report_audit(conn, slack, db_path: str, run_date: str, clock) -> int:
     """Run the day's invariant audit; a violation becomes an `alert` event,
-    is drained to Slack, and exits non-zero so launchd/cron surfaces it."""
+    is drained to Slack, and exits non-zero so launchd/cron surfaces it.
+
+    That alert carries audit_day.SELF_ALERT_KEY so the audit cannot poison
+    itself: without the marker, a crash-resume re-fire of the SAME day would
+    count this attempt's alert as a fresh violation on the next one."""
     problems = audit_day.audit(db_path, run_date)
     if not problems:
         log(f"AUDIT CLEAN {run_date}")
         return 0
     now = iso(clock.now())
-    _alert(conn, clock,
-           f"audit {run_date} FAILED: " + "; ".join(problems))
+    _alert(conn, clock, f"audit {run_date} FAILED: " + "; ".join(problems),
+           **{audit_day.SELF_ALERT_KEY: True})
     drain(conn, slack, now)
     return 1
+
+
+def guarded(conn, slack, clock, body: Callable[[], int]) -> int:
+    """Run `body`, and make sure a failure is never silent (review Fixes 2/3).
+
+    Without this, any raise inside a stage body — a DB error in run_research's
+    insert, a journals permission failure in run_close — propagated out of
+    main() and skipped report_audit entirely: no alert appended, nothing
+    drained, Slack never told. That is reachable AFTER the gate minted a ticket
+    and the exec seat placed an order, so #risk shows a ticket, #trade-log
+    shows nothing, and the owner of an unattended run learns nothing until
+    they read logs/run_day.err.log.
+
+    SystemExit is caught alongside Exception on purpose: load_watchlist's
+    "lists no tickers" hard stop is a BaseException, and a scheduled job that
+    stops on a config error must still say so in Slack. The recovery is itself
+    guarded — if the DB is what broke, the original failure is the one that
+    matters and it is already in the log."""
+    try:
+        return body()
+    except (Exception, SystemExit) as exc:
+        text = (f"run_day_failed — {type(exc).__name__}: {exc}. The day"
+                " stopped here and the audit did not run; nothing further was"
+                " traded (default is HOLD).")
+        log(f"ALERT {text}")
+        try:
+            append_event(conn, "alert", {"text": text}, iso(clock.now()))
+            drain(conn, slack, iso(clock.now()))
+        except Exception as inner:
+            log(f"could not record/post that alert ({type(inner).__name__}:"
+                f" {inner}) — the failure above is the one that matters")
+        return 1
 
 
 # --- main -------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
-    import pandas as pd
-
     from market.source_alpaca import AlpacaSource
     from slackkit.real import RealSlack
 
     environ = os.environ
     paper_guard(environ)                     # invariant 1, before anything else
     env = require_env(REQUIRED_ENV, environ)
+
+    db_path = env["FUND_DB"]
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    lock_path = Path(db_path).parent / LOCK_NAME
+    lock = acquire_lock(lock_path)           # must outlive the run; kept in scope
+    if lock is None:
+        log(f"another run_day holds {lock_path} — exiting 0 rather than racing"
+            " it (two overlapping runs = two seat turns and two drains)")
+        return 0
 
     clock = WallClock()                      # the one real clock, injected below
     source = AlpacaSource()                  # re-guards ALPACA_PAPER_TRADE
@@ -226,8 +331,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     run_date = et_run_date(clock.now())
-    db_path = env["FUND_DB"]
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
 
     slack = RealSlack(env["SLACK_BOT_TOKEN"])
@@ -235,6 +338,22 @@ def main(argv: list[str] | None = None) -> int:
     if overrides:
         log(f"channel overrides active: {overrides}")
         slack = RemappedSlack(slack, overrides)
+
+    # From connect() onward nothing may die silently: the guard covers the
+    # watchlist/sectors load, the market-data fetch, every stage body, and the
+    # audit itself.
+    return guarded(conn, slack, clock,
+                   lambda: _trading_day(conn, slack, clock, source, run_date,
+                                        db_path, environ))
+
+
+def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
+                 environ: dict) -> int:
+    """Everything between the DB connection and the audit's verdict. Split out
+    of main() so guarded() wraps the whole of it in one place — and so the
+    pre-write failure paths (watchlist, sectors yaml, the market-data fetch)
+    are exercisable offline without building a real client."""
+    import pandas as pd
 
     watchlist = load_watchlist(WATCHLIST_YAML)
     sectors = yaml.safe_load(SECTORS_YAML.read_text()) or {}
