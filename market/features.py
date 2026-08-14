@@ -65,11 +65,25 @@ def avg_corr_vs_book(close_df: pd.DataFrame, ticker: str, book_tickers: list[str
     return float(np.mean(corrs))
 
 
+def unmapped_holdings(positions: dict, sectors: dict) -> list[str]:
+    """Sorted held tickers with no config/sectors.yaml entry (a missing key
+    and an explicit null both count). sector_book_value fails closed on
+    these; the caller MUST alert, because the fix is a one-line yaml commit
+    and until it lands every buy of the day is gate_error."""
+    return sorted(t for t in positions if sectors.get(t) is None)
+
+
 def sector_book_value(positions: dict, prices: dict, sectors: dict, sector: str) -> float:
     """Sum of qty * current price for held positions whose sector matches.
-    A position with no entry in prices -> NaN (gate rejects; never silently
-    drop and understate sector book value)."""
-    matching = [t for t, qty in positions.items() if sectors.get(t) == sector]
+    Fails CLOSED on either missing input -> NaN (gate rejects; never silently
+    drop a position and understate sector book value):
+      * a held position with no entry in `sectors` — dropping it hid real
+        concentration and let the 60% post-trade sector cap approve more than
+        it should
+      * a matching position with no entry in `prices`"""
+    if unmapped_holdings(positions, sectors):
+        return float("nan")
+    matching = [t for t, qty in positions.items() if sectors[t] == sector]
     if any(t not in prices for t in matching):
         return float("nan")
     return sum(positions[t] * prices[t] for t in matching)

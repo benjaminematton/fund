@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from market.features import (annualized_vol, avg_corr_vs_book, build_gate_inputs,
                              build_market_inputs, sector_book_value,
-                             unpriceable_book_tickers)
+                             unmapped_holdings, unpriceable_book_tickers)
 from gate.risk import size, Approved, Rejected
 
 def _frame(n=90, seed=7):
@@ -65,6 +65,46 @@ def test_sector_book_value_missing_price_is_nan():
         positions={"AAPL": 120, "MSFT": 40}, prices={"AAPL": 232.0},
         sectors={"AAPL": "tech", "MSFT": "tech"}, sector="tech")
     assert math.isnan(v)
+
+
+def test_sector_book_value_missing_sector_entry_is_nan():
+    """A held ticker with no config/sectors.yaml entry used to be silently
+    dropped from EVERY sector's book value, understating concentration and
+    letting the 60% post-trade sector cap approve more than it should. It
+    fails closed now, exactly like its missing-price neighbour above."""
+    v = sector_book_value(
+        positions={"AAPL": 120, "MSFT": 40},
+        prices={"AAPL": 232.0, "MSFT": 505.0},
+        sectors={"AAPL": "tech"},                     # MSFT is unmapped
+        sector="tech")
+    assert math.isnan(v)
+    # an explicit null entry in the yaml is as unmapped as a missing key
+    assert math.isnan(sector_book_value(
+        positions={"AAPL": 120, "MSFT": 40},
+        prices={"AAPL": 232.0, "MSFT": 505.0},
+        sectors={"AAPL": "tech", "MSFT": None}, sector="tech"))
+    # ...and a fully mapped book still marks at the golden day's $48,040
+    assert sector_book_value(
+        positions={"AAPL": 120, "MSFT": 40},
+        prices={"AAPL": 232.0, "MSFT": 505.0},
+        sectors={"AAPL": "tech", "MSFT": "tech"}, sector="tech") == 48040.0
+
+
+def test_unmapped_holdings_names_exactly_the_missing_yaml_entries():
+    """The caller alerts from this, so the fix is a one-line yaml commit."""
+    assert unmapped_holdings({"AAPL": 120, "MSFT": 40}, {"AAPL": "tech"}) == ["MSFT"]
+    assert unmapped_holdings({"AAPL": 120}, {"AAPL": "tech"}) == []
+    assert unmapped_holdings({}, {}) == []
+
+
+def test_an_unmapped_holding_fails_buys_closed_through_the_gate():
+    """End-to-end: the NaN reaches gate.risk.size() as gate_error, so an
+    unknown sector can never quietly widen the sector cap's headroom."""
+    px = _frame()
+    account = _account()
+    out = build_market_inputs(["NVDA"], account, px, {"NVDA": "tech"})["NVDA"]
+    assert math.isnan(out["sector_value"])           # AAPL is held, unmapped
+    assert size({**out, "side": "buy"}, "enforce") == Rejected("gate_error")
 
 
 def test_annualized_vol_empty_series_is_nan():

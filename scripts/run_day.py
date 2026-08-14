@@ -61,7 +61,7 @@ from agents.exec_turn import check_tool_calls, run_seat_turn       # noqa: E402
 from agents.runtime import record_turn_result                      # noqa: E402
 from agents.seats import build_seat_options, load_seat_config      # noqa: E402
 from agents.wallclock import WallClock                             # noqa: E402
-from market.features import (build_market_inputs,                  # noqa: E402
+from market.features import (build_market_inputs, unmapped_holdings,  # noqa: E402
                              unpriceable_book_tickers)
 from orchestrator.clock import et_run_date, iso                    # noqa: E402
 from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
@@ -295,6 +295,23 @@ def alert_missing_price_history(conn, clock, close_df, positions) -> None:
            tickers=gaps)
 
 
+def alert_unmapped_sectors(conn, clock, positions, sectors) -> None:
+    """Name every held ticker missing from config/sectors.yaml.
+
+    sector_book_value fails closed on those (invariant 4), so the whole day's
+    buys come back gate_error until the yaml names them — a one-line commit,
+    but only if the alert says which ticker. Appended here for the same
+    reason as alert_missing_price_history: features.py is pure compute."""
+    gaps = unmapped_holdings(positions, sectors)
+    if not gaps:
+        return
+    _alert(conn, clock,
+           f"no config/sectors.yaml entry for held {', '.join(gaps)} —"
+           " sector book value is NaN, so every buy fails closed"
+           " (gate_error) until the yaml names them",
+           tickers=gaps)
+
+
 # --- audit ------------------------------------------------------------------
 
 def report_audit(conn, slack, db_path: str, run_date: str, clock) -> int:
@@ -407,6 +424,7 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
     close_df = source.close_frame(universe, end=pd.Timestamp(clock.now()))
     alert_missing_price_history(conn, clock, close_df,
                                 account.get("positions") or {})
+    alert_unmapped_sectors(conn, clock, account.get("positions") or {}, sectors)
     market_inputs = build_market_inputs(watchlist, account, close_df, sectors)
 
     journals_root = Path(environ.get("FUND_JOURNALS") or (ROOT / "journals"))

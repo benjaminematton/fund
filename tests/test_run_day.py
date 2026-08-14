@@ -313,6 +313,26 @@ def test_a_fully_priced_book_raises_no_price_history_alert(wired):
     assert _alert_payloads(conn) == []
 
 
+def test_a_held_ticker_missing_from_sectors_yaml_is_named_in_an_alert(wired):
+    """sector_book_value fails closed on an unmapped holding, so every buy
+    of the day becomes gate_error. The alert must name the ticker — the fix
+    is a one-line commit to config/sectors.yaml."""
+    conn, _, clock = wired
+    run_day_script.alert_unmapped_sectors(
+        conn, clock, {"AAPL": 40, "NVDA": 5}, {"NVDA": "tech"})
+    payloads = _alert_payloads(conn)
+    assert len(payloads) == 1
+    assert payloads[0]["tickers"] == ["AAPL"]
+    assert "AAPL" in payloads[0]["text"] and "sectors.yaml" in payloads[0]["text"]
+
+
+def test_a_fully_mapped_book_raises_no_sector_alert(wired):
+    conn, _, clock = wired
+    run_day_script.alert_unmapped_sectors(
+        conn, clock, {"AAPL": 40, "NVDA": 5}, {"NVDA": "tech", "AAPL": "tech"})
+    assert _alert_payloads(conn) == []
+
+
 # --- single-instance guard (Fix 5) ------------------------------------------
 
 def test_a_second_instance_backs_off_instead_of_racing(tmp_path):
