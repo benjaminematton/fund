@@ -2,7 +2,8 @@ import asyncio
 import json
 
 from agents.runtime import (make_decision_recorder, make_order_gate,
-                            make_order_recorder, record_cost)
+                            make_order_recorder, record_cost,
+                            record_turn_result)
 from tests.test_tickets import TID, _seed, order
 
 NOW = "2026-07-06T15:30:00+00:00"
@@ -142,6 +143,70 @@ def test_record_cost_inserts_row(fund_db):
     record_cost(fund_db, "2026-07-06", "exec", "sess-1", 0.0123, NOW)
     row = fund_db.execute("SELECT * FROM costs").fetchone()
     assert row["agent"] == "exec" and row["usd_estimate"] == 0.0123
+
+
+class _Result:
+    """Stands in for the SDK's ResultMessage — record_turn_result must read it
+    by attribute, never by isinstance, so the cost pillar is testable offline."""
+
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
+
+
+def _costs(conn):
+    return conn.execute("SELECT * FROM costs").fetchall()
+
+
+def _alerts(conn):
+    return [json.loads(r["payload"])["text"] for r in conn.execute(
+        "SELECT payload FROM events WHERE kind = 'alert' ORDER BY id")]
+
+
+def test_record_turn_result_writes_the_cost_row(fund_db):
+    """The live wiring seam (scripts/run_day.py calls this after every seat
+    turn): a ResultMessage with a populated estimate becomes exactly one row."""
+    assert record_turn_result(fund_db, "2026-07-06", "analyst",
+                              _Result(total_cost_usd=0.0123, session_id="s1"),
+                              NOW) is True
+    rows = _costs(fund_db)
+    assert len(rows) == 1
+    assert (rows[0]["run_date"], rows[0]["agent"], rows[0]["session_id"],
+            rows[0]["usd_estimate"], rows[0]["recorded_at"]) == (
+        "2026-07-06", "analyst", "s1", 0.0123, NOW)
+    assert _alerts(fund_db) == []
+
+
+def test_record_turn_result_none_cost_records_nothing_and_alerts(fund_db):
+    """total_cost_usd is Optional in the SDK. A missing estimate must NOT
+    become a 0.0 row — that would make real spend look free in the digest.
+    No row, one alert, no crash (invariant 4)."""
+    assert record_turn_result(fund_db, "2026-07-06", "pm",
+                              _Result(total_cost_usd=None, session_id="s2"),
+                              NOW) is False
+    assert _costs(fund_db) == []
+    assert _alerts(fund_db) == [
+        "cost_unavailable pm — turn completed with no total_cost_usd estimate"
+        " (session s2); the day's est. inference cost understates spend"]
+
+
+def test_record_turn_result_missing_attributes_do_not_crash_the_day(fund_db):
+    """A result object from an older/newer SDK that carries neither attribute
+    must degrade to the same alert, never raise into the stage runner."""
+    assert record_turn_result(fund_db, "2026-07-06", "exec", object(),
+                              NOW) is False
+    assert _costs(fund_db) == []
+    assert len(_alerts(fund_db)) == 1
+
+
+def test_record_turn_result_rejects_non_numeric_estimate(fund_db):
+    """usd_estimate is REAL NOT NULL: a string or NaN must be refused at the
+    seam, not written as garbage the digest then sums."""
+    for bad in ("0.02", float("nan"), True):
+        conn_rows_before = len(_costs(fund_db))
+        assert record_turn_result(fund_db, "2026-07-06", "pm",
+                                  _Result(total_cost_usd=bad,
+                                          session_id="s3"), NOW) is False
+        assert len(_costs(fund_db)) == conn_rows_before
 
 
 def test_hooks_reuse_one_connection_per_factory_binding(fund_db, sim_clock):

@@ -181,3 +181,38 @@ def record_cost(conn: sqlite3.Connection, run_date: str, agent: str,
         " recorded_at) VALUES (?, ?, ?, ?, ?)",
         (run_date, agent, session_id, usd_estimate, now_iso))
     conn.commit()
+
+
+def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
+                       result, now_iso: str) -> bool:
+    """The cost seam: pull the estimate off ONE seat turn's ResultMessage and
+    record it. scripts/run_day.py calls this after EVERY seat turn — this is
+    the only production caller of record_cost, so it is deliberately a plain
+    tested function rather than inline script code.
+
+    Read by attribute, never isinstance: the SDK type is not importable from
+    the purity-lint-adjacent test path, and an offline stub must exercise the
+    same code the live day runs.
+
+    total_cost_usd is Optional[float] in the SDK and is NOT always populated.
+    When it is missing/None/non-finite we write NO cost row and append one
+    `alert` instead. Deliberate: costs.usd_estimate is REAL NOT NULL, so the
+    only alternatives are a fabricated 0.0 (which would make real spend look
+    free in the digest and in the ≤$0.50/day acceptance box) or silence
+    (which would hide a broken cost pillar). An alert is the honest third
+    option — it costs the day an audit violation, which is exactly the human
+    review a fund that cannot account for its spend deserves. Never raises:
+    a cost-accounting gap must not take the trading day down (invariant 4).
+
+    Returns True iff a cost row was written."""
+    usd = getattr(result, "total_cost_usd", None)
+    session_id = str(getattr(result, "session_id", None) or "unknown")
+    if isinstance(usd, bool) or not isinstance(usd, (int, float)) \
+            or usd != usd or usd in (float("inf"), float("-inf")):
+        append_event(conn, "alert", {
+            "text": f"cost_unavailable {seat} — turn completed with no"
+                    f" total_cost_usd estimate (session {session_id}); the"
+                    " day's est. inference cost understates spend"}, now_iso)
+        return False
+    record_cost(conn, run_date, seat, session_id, float(usd), now_iso)
+    return True

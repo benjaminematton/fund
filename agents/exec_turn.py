@@ -72,6 +72,40 @@ async def await_servers_connected(
         elapsed += poll_s
 
 
+async def run_seat_turn(client, prompt: str, required: set[str], *,
+                        wait_timeout_s: float = 30.0, poll_s: float = 0.5,
+                        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+                        ) -> tuple[list[str], object | None]:
+    """One turn for ANY seat: (c) wait for the required MCP servers, query,
+    drain the response. Returns (tool-call names, ResultMessage | None).
+
+    The result is handed back rather than swallowed because the live
+    composition root records every turn's cost off it
+    (agents.runtime.record_turn_result). Matched by type NAME, not isinstance,
+    so this module keeps its zero SDK imports and stays offline-testable.
+
+    Applies NO (a)/(b) tool-call assertions — analyst and PM degrade to the
+    orchestrator's neutral/0 and pm_timeout defaults on a quiet turn
+    (invariant 4). run_exec_turn adds those assertions for the one seat where
+    a silent no-op is a hard failure."""
+    await await_servers_connected(client, required, timeout_s=wait_timeout_s,
+                                  poll_s=poll_s, sleep=sleep)
+    await client.query(prompt)
+    tool_names: list[str] = []
+    result = None
+    async for msg in client.receive_response():
+        if type(msg).__name__ == "ResultMessage":
+            result = msg
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if type(block).__name__ == "ToolUseBlock":
+                    name = getattr(block, "name", None)
+                    if name:
+                        tool_names.append(name)
+    return tool_names, result
+
+
 async def run_exec_turn(client, prompt: str, required: set[str], *,
                         wait_timeout_s: float = 30.0, poll_s: float = 0.5,
                         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
@@ -84,18 +118,9 @@ async def run_exec_turn(client, prompt: str, required: set[str], *,
     Returns the tool-call names made this turn. Raises ExecTurnViolation on any
     violation. NOTE: (a)/(b) are DETECTORS — they see calls after they ran; the
     PREVENTER is the seat's `tools=[...]` allow-array (no Bash to reach for)."""
-    await await_servers_connected(client, required, timeout_s=wait_timeout_s,
-                                  poll_s=poll_s, sleep=sleep)
-    await client.query(prompt)
-    tool_names: list[str] = []
-    async for msg in client.receive_response():
-        content = getattr(msg, "content", None)
-        if isinstance(content, list):
-            for block in content:
-                if type(block).__name__ == "ToolUseBlock":
-                    name = getattr(block, "name", None)
-                    if name:
-                        tool_names.append(name)
+    tool_names, _ = await run_seat_turn(
+        client, prompt, required, wait_timeout_s=wait_timeout_s,
+        poll_s=poll_s, sleep=sleep)
     check_tool_calls(tool_names)
     return tool_names
 
