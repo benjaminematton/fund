@@ -288,16 +288,21 @@ def _decision_line(conn: sqlite3.Connection, run_date: str) -> str:
 
 
 def _fill_line(conn: sqlite3.Connection, run_date: str) -> str:
+    """Partially-filled orders count (review Fix 7): real shares changed hands,
+    so a digest reading `fills: none` beside them is untrue — and the digest is
+    cited as acceptance evidence (HANDOFF-LIVE §5). Marked `(partial)` so the
+    word keeps meaning something on a complete fill."""
     rows = conn.execute(
-        "SELECT o.symbol, o.side, o.filled_qty, o.filled_avg_price"
+        "SELECT o.symbol, o.side, o.filled_qty, o.filled_avg_price, o.status"
         " FROM orders o JOIN tickets t ON t.id = o.client_order_id"
         " JOIN decisions d ON d.id = t.decision_id"
-        " WHERE d.run_date = ? AND o.status = 'filled'"
+        " WHERE d.run_date = ? AND o.status IN ('filled', 'partially_filled')"
         " ORDER BY o.submitted_at", (run_date,)).fetchall()
     if not rows:
         return "fills: none"
     return "fills: " + ", ".join(
         f"{r['symbol']} {r['side']} {r['filled_qty']}@{r['filled_avg_price']:.2f}"
+        + (" (partial)" if r["status"] == "partially_filled" else "")
         for r in rows)
 
 

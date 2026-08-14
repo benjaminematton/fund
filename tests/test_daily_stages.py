@@ -389,6 +389,53 @@ def test_close_posts_digest_and_journals(fund_db, sim_clock, tmp_path):
     assert (root / "pm.md").exists() and (root / "analyst.md").exists()
 
 
+def _seed_order(fund_db, sim_clock, ticker, status, filled_qty, price):
+    """A decision + its ticket + the broker's answer, the way a day that
+    actually traded leaves them."""
+    _seed_decision(fund_db, sim_clock, ticker, "buy", 80)
+    decision_id = fund_db.execute(
+        "SELECT id FROM decisions WHERE ticker = ?", (ticker,)).fetchone()["id"]
+    now = iso(sim_clock.now())
+    fund_db.execute(
+        "INSERT INTO tickets (id, decision_id, ticker, side, max_qty,"
+        " expires_at, status, created_at) VALUES (?,?,?,'buy',66,?,'open',?)",
+        (TID, decision_id, ticker, now, now))
+    fund_db.execute(
+        "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
+        " filled_qty, filled_avg_price, submitted_at)"
+        " VALUES (?, ?, 'buy', 66, ?, ?, ?, ?)",
+        (TID, ticker, status, filled_qty, price, now))
+    fund_db.commit()
+
+
+def _digest_text(fund_db) -> str:
+    return json.loads(fund_db.execute(
+        "SELECT payload FROM events WHERE kind='digest'"
+        ).fetchone()["payload"])["text"]
+
+
+def test_close_digest_marks_a_partial_fill(fund_db, sim_clock, tmp_path):
+    """Fix 7: a partially_filled order moved REAL shares, but the fill line
+    filtered on status='filled' alone, so the digest read `fills: none` — and
+    HANDOFF-LIVE §5 now cites that digest as acceptance evidence, so a digest
+    that omits a real fill is a truthfulness problem, not a cosmetic one."""
+    _seed_order(fund_db, sim_clock, "NVDA", "partially_filled", 20, 180.14)
+    run_close(_ctx(fund_db, sim_clock, {}, journals_root=tmp_path / "journals"))
+    text = _digest_text(fund_db)
+    assert "fills: NVDA buy 20@180.14 (partial)" in text
+    assert "fills: none" not in text
+
+
+def test_close_digest_leaves_a_complete_fill_unmarked(fund_db, sim_clock, tmp_path):
+    """The other half: 'partial' must mean something, so a full fill never
+    carries it."""
+    _seed_order(fund_db, sim_clock, "NVDA", "filled", 66, 180.14)
+    run_close(_ctx(fund_db, sim_clock, {}, journals_root=tmp_path / "journals"))
+    text = _digest_text(fund_db)
+    assert "fills: NVDA buy 66@180.14" in text
+    assert "partial" not in text
+
+
 def test_close_rerun_posts_one_digest(fund_db, sim_clock, tmp_path):
     root = tmp_path / "journals"
     ctx = _ctx(fund_db, sim_clock, {}, journals_root=root)
