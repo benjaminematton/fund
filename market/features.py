@@ -9,26 +9,61 @@ import numpy as np
 import pandas as pd
 
 
+MIN_HISTORY_RETURNS = 40
+"""Minimum daily returns before a ticker may enter a vol or correlation
+computation. HUMAN-COMMIT-ONLY — the same rule as the gate thresholds, for
+the same reason: it decides how large a position may be, so an agent must
+never edit it.
+
+Fisher gives se(r) ~= 1/sqrt(n-3) ~= 0.16 at n=40, adequate against the
+0.2-wide correlation tier bands in gate/risk.py. Below that a correlation
+is noise wearing a sign — and at 2 returns Pearson's rho is exactly +/-1.0
+BY CONSTRUCTION, not as an estimate, so a 3-bar holding would drag the
+basket mean a half-point and cross a tier boundary on nothing at all.
+
+The same constant governs vol: annualizing a 5-return tail is the identical
+defect one field over, so both computations draw from the same puddle rule.
+"""
+
+
+def _vol_of_returns(rets: pd.Series) -> float:
+    """The arithmetic alone, with no admission check.
+
+    Split out so the hand-derived golden vector can pin the annualization
+    factor and ddof on a short exact series (a wrong factor mis-sizes every
+    position on every day, so it must stay pinned to a literal). Production
+    never calls this — it enters through annualized_vol(), which enforces
+    MIN_HISTORY_RETURNS first."""
+    return rets.std(ddof=1) * np.sqrt(252)
+
+
 def annualized_vol(series: pd.Series) -> float:
-    """Std dev (ddof=1) of the last 60 daily pct-change returns, annualized.
+    """Std dev (ddof=1) of the last 60 daily pct-change returns, annualized,
+    or NaN when there are fewer than MIN_HISTORY_RETURNS of them.
     Gaps are dropped BEFORE differencing, never forward-filled: pandas'
     default pad turns a missing bar into a fake 0% return, which understates
     vol and sizes UP (and is deprecated besides)."""
     rets = series.dropna().pct_change().dropna().tail(60)
-    return rets.std(ddof=1) * np.sqrt(252)
+    if len(rets) < MIN_HISTORY_RETURNS:
+        return float("nan")
+    return _vol_of_returns(rets)
 
 
 def _has_return_history(close_df: pd.DataFrame, ticker: str) -> bool:
-    """True when close_df carries at least two returns for `ticker`. One
-    return cannot produce a correlation (std of a single point is NaN), so
-    two is the floor for a ticker to be worth putting in a basket."""
-    return ticker in close_df.columns and int(close_df[ticker].count()) >= 3
+    """True when close_df carries at least MIN_HISTORY_RETURNS returns for
+    `ticker` — m non-NaN closes yield m-1 returns. Anything thinner is a
+    puddle: see the constant's rationale."""
+    return (ticker in close_df.columns
+            and int(close_df[ticker].count()) - 1 >= MIN_HISTORY_RETURNS)
 
 
 def unpriceable_book_tickers(close_df: pd.DataFrame, book_tickers) -> list[str]:
     """Sorted book tickers that avg_corr_vs_book DROPS from its basket: a
-    column the frame carries but with no usable price history (AlpacaSource's
-    _reshape_close_frame gives a ticker with zero bars an all-NaN column).
+    column the frame carries but with too little usable price history —
+    fewer than MIN_HISTORY_RETURNS returns. That covers both the empty case
+    (AlpacaSource's _reshape_close_frame gives a ticker with zero bars an
+    all-NaN column) and the thin case, which is the more dangerous of the
+    two because it silently produces a confident-looking number.
 
     The caller MUST alert on these. A silently-shrunken basket understates
     correlation and therefore sizes UP, which is the dangerous direction.

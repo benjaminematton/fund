@@ -278,6 +278,13 @@ def test_a_market_data_failure_reaches_slack(wired, tmp_path):
 
 # --- market-data gaps must be named, never silent ---------------------------
 
+# MIN_HISTORY_RETURNS-clearing fixtures for the price-history alerts: a ticker
+# with a handful of bars is now itself unpriceable, so a 3-bar "healthy" column
+# would make these tests assert the opposite of what they mean.
+_PRICED = [100.0, 101.0] * 22 + [100.0]        # 45 closes = 44 returns
+_DARK = [float("nan")] * 45
+
+
 def _alert_payloads(conn) -> list[dict]:
     import json
     return [json.loads(r["payload"]) for r in conn.execute(
@@ -293,8 +300,7 @@ def test_a_held_ticker_with_no_price_history_is_named_in_an_alert(wired):
     the alert."""
     import pandas as pd
     conn, _, clock = wired
-    close_df = pd.DataFrame({"NVDA": [100.0, 101.0, 102.0],
-                             "AAPL": [float("nan")] * 3})
+    close_df = pd.DataFrame({"NVDA": _PRICED, "AAPL": _DARK})
     run_day_script.alert_missing_price_history(
         conn, clock, close_df, {"AAPL": 40, "NVDA": 5})
     payloads = _alert_payloads(conn)
@@ -311,8 +317,7 @@ def test_a_book_with_no_priceable_member_alerts_that_buys_fail_closed(wired):
     means watch the loose sizing, a blackout means the day will not trade."""
     import pandas as pd
     conn, _, clock = wired
-    close_df = pd.DataFrame({"NVDA": [100.0, 101.0, 102.0],
-                             "AAPL": [float("nan")] * 3})
+    close_df = pd.DataFrame({"NVDA": _PRICED, "AAPL": _DARK})
     run_day_script.alert_missing_price_history(conn, clock, close_df, {"AAPL": 40})
     payloads = _alert_payloads(conn)
     assert len(payloads) == 1
@@ -324,8 +329,7 @@ def test_a_book_with_no_priceable_member_alerts_that_buys_fail_closed(wired):
 def test_a_fully_priced_book_raises_no_price_history_alert(wired):
     import pandas as pd
     conn, _, clock = wired
-    close_df = pd.DataFrame({"NVDA": [100.0, 101.0, 102.0],
-                             "AAPL": [200.0, 201.0, 202.0]})
+    close_df = pd.DataFrame({"NVDA": _PRICED, "AAPL": _PRICED})
     run_day_script.alert_missing_price_history(
         conn, clock, close_df, {"AAPL": 40, "NVDA": 5})
     assert _alert_payloads(conn) == []
@@ -523,9 +527,13 @@ class _QuietSource:
 
     def close_frame(self, universe, end=None):
         import pandas as pd
-        return pd.DataFrame(
-            {t: [100.0, 101.0, 99.99, 100.9899] for t in universe},
-            index=pd.bdate_range("2026-06-29", periods=4))
+        # 45 closes = 44 returns, comfortably over MIN_HISTORY_RETURNS: this
+        # day must be uninvestable through CASH, not through thin data, or
+        # it would stop exercising the no_headroom/nothing_held shapes it
+        # exists for and become a gate_error day instead.
+        closes = [100.0, 101.0] * 22 + [100.0]
+        return pd.DataFrame({t: closes for t in universe},
+                            index=pd.bdate_range("2026-06-29", periods=45))
 
     def get_order(self, client_order_id):        # reconcile_orders' broker
         raise AssertionError("no orders were placed on a zero-ticker day")

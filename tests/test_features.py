@@ -43,6 +43,18 @@ GOLDEN_A = [100.0, 101.0, 99.99, 100.9899]          # returns ( r, -r,  r)
 GOLDEN_B = [50.0, 50.5, 49.995, 50.49495]           # returns ( r, -r,  r)
 GOLDEN_C = [200.0, 202.0, 204.02, 201.9798]         # returns ( r,  r, -r)
 
+GOLDEN_R = 0.01
+GOLDEN_CYCLES = 14        # 14 x a 3-return cycle = 42 returns >= MIN_HISTORY_RETURNS
+
+
+def _closes(base: float, cycle: tuple, cycles: int = GOLDEN_CYCLES) -> list[float]:
+    """Closes whose pct_change is `cycle` repeated `cycles` times, exactly."""
+    out = [base]
+    for _ in range(cycles):
+        for ret in cycle:
+            out.append(out[-1] * (1 + ret))
+    return out
+
 
 def test_annualized_vol_is_the_hand_derived_literal():
     """Hand derivation, returns r = 0.01 over [r, -r, r]:
@@ -57,9 +69,32 @@ def test_annualized_vol_is_the_hand_derived_literal():
 
     ddof=0 would divide by 3 instead of 2 and give 0.14966...; dropping the
     sqrt() from the annualization would give 2.909... Both are RED here.
+
+    Targets _vol_of_returns, not annualized_vol: the public function now
+    refuses anything under MIN_HISTORY_RETURNS returns, and this 3-return
+    series is deliberately shorter than that so the arithmetic stays
+    hand-checkable against an exact literal. The admission rule the public
+    function adds is pinned separately, below.
     """
+    from market.features import _vol_of_returns
     series = pd.Series(GOLDEN_A, index=pd.bdate_range("2026-06-29", periods=4))
-    assert annualized_vol(series) == pytest.approx(0.1833030277982336, abs=1e-12)
+    rets = series.dropna().pct_change().dropna().tail(60)
+    assert _vol_of_returns(rets) == pytest.approx(0.1833030277982336, abs=1e-12)
+
+
+def test_annualized_vol_refuses_a_puddle_at_the_ruled_boundary():
+    """MIN_HISTORY_RETURNS is the admission rule for BOTH computations.
+    Annualizing a handful of returns is the same defect as correlating
+    them: a confident-looking number built from noise, which picks a
+    sizing tier. n-1 returns from n closes, so the boundary is exact."""
+    idx = lambda n: pd.bdate_range("2026-01-01", periods=n)
+    thin = pd.Series(_closes(100.0, (GOLDEN_R, -GOLDEN_R, GOLDEN_R), 13)[:40],
+                     index=idx(40))                      # 39 returns
+    assert len(thin) == 40 and math.isnan(annualized_vol(thin))
+
+    ok = pd.Series(_closes(100.0, (GOLDEN_R, -GOLDEN_R, GOLDEN_R), 14)[:41],
+                   index=idx(41))                        # 40 returns
+    assert len(ok) == 41 and not math.isnan(annualized_vol(ok))
 
 
 def test_avg_corr_vs_book_is_the_hand_derived_literal():
@@ -75,12 +110,28 @@ def test_avg_corr_vs_book_is_the_hand_derived_literal():
           rho       = (-12/9) / (24/9) = -0.5
 
         mean(+1.0, -0.5) = 0.25
+
+    Each cycle contributes the SAME amount to both the numerator and the
+    denominator of Pearson's rho, so rho is invariant to how many times the
+    cycle repeats: the literals above are the values for 1 cycle and for
+    GOLDEN_CYCLES cycles alike. That is what lets this vector clear
+    MIN_HISTORY_RETURNS without a single expected number moving.
     """
-    px = pd.DataFrame({"A": GOLDEN_A, "B": GOLDEN_B, "C": GOLDEN_C},
-                      index=pd.bdate_range("2026-06-29", periods=4))
+    cyc = lambda *c: _closes(1.0, c)          # base cancels out of rho
+    px = pd.DataFrame(
+        {"A": cyc(GOLDEN_R, -GOLDEN_R, GOLDEN_R),
+         "B": cyc(GOLDEN_R, -GOLDEN_R, GOLDEN_R),
+         "C": cyc(GOLDEN_R, GOLDEN_R, -GOLDEN_R)},
+        index=pd.bdate_range("2026-06-29", periods=3 * GOLDEN_CYCLES + 1))
     assert avg_corr_vs_book(px, "A", ["B"]) == pytest.approx(1.0, abs=1e-12)
     assert avg_corr_vs_book(px, "A", ["C"]) == pytest.approx(-0.5, abs=1e-12)
     assert avg_corr_vs_book(px, "A", ["B", "C"]) == pytest.approx(0.25, abs=1e-12)
+    # the 4-close vectors the derivation was written against are the same
+    # cycle, one repetition — kept as the proof that repetition changed nothing
+    short = pd.DataFrame({"A": GOLDEN_A, "B": GOLDEN_B, "C": GOLDEN_C},
+                         index=pd.bdate_range("2026-06-29", periods=4))
+    assert short["A"].pct_change().corr(short["C"].pct_change()) == pytest.approx(
+        -0.5, abs=1e-12)
 
 def test_sector_book_value_marks_at_current_prices():
     v = sector_book_value(
@@ -312,6 +363,45 @@ def test_a_book_we_cannot_price_at_all_fails_closed():
     assert size(inputs, "enforce") == Rejected("gate_error")
 
 
+def test_a_two_return_holding_cannot_drag_the_basket():
+    """The finding this threshold exists for. Pearson's rho over 2 returns
+    is exactly +/-1.0 BY CONSTRUCTION — the sign is a coin flip on two days
+    of noise, and either way it dominates the mean and can cross a tier
+    boundary. Before MIN_HISTORY_RETURNS such a ticker stayed in the basket
+    AND went unreported, so no alert fired: missing data silently bought a
+    looser multiplier."""
+    px = _frame()
+    px["THIN"] = float("nan")
+    px.iloc[-3:, px.columns.get_loc("THIN")] = [10.0, 10.5, 10.2]   # 2 returns
+
+    # the degeneracy itself, so the rationale is pinned and not just asserted
+    assert px["NVDA"].pct_change().corr(px["THIN"].pct_change()) == pytest.approx(
+        -1.0, abs=1e-9)
+    # ...and it is kept out of the basket rather than averaged into it
+    assert avg_corr_vs_book(px, "NVDA", ["AAPL", "THIN"]) == pytest.approx(
+        avg_corr_vs_book(px, "NVDA", ["AAPL"]))
+    # ...and named, so the exclusion is never silent
+    assert unpriceable_book_tickers(px, ["AAPL", "THIN"]) == ["THIN"]
+    # ...and as a CANDIDATE it fails closed on both fields at once
+    assert math.isnan(avg_corr_vs_book(px, "THIN", ["AAPL"]))
+    assert math.isnan(annualized_vol(px["THIN"]))
+
+
+def test_basket_admission_is_exactly_at_the_ruled_boundary():
+    """39 returns out, 40 in — MIN_HISTORY_RETURNS counts RETURNS, and n
+    closes yield n-1 of them. An off-by-one here silently re-admits the
+    puddle the constant exists to keep out."""
+    px = _frame()
+    for name, closes in (("R39", 40), ("R40", 41)):
+        px[name] = float("nan")
+        px.iloc[-closes:, px.columns.get_loc(name)] = _closes(
+            100.0, (GOLDEN_R, -GOLDEN_R, GOLDEN_R), 14)[:closes]
+
+    assert unpriceable_book_tickers(px, ["R39", "R40"]) == ["R39"]
+    assert math.isnan(avg_corr_vs_book(px, "NVDA", ["R39"]))
+    assert not math.isnan(avg_corr_vs_book(px, "NVDA", ["R40"]))
+
+
 def test_unpriceable_book_tickers_names_exactly_what_was_excluded():
     """The caller alerts from this; it must name the dropped tickers and
     nothing else."""
@@ -335,22 +425,35 @@ def test_a_well_formed_snapshot_is_APPROVED_with_the_hand_derived_qty():
     This test is the instrument that measures that — it is RED the moment the
     dict and the model stop matching.
 
-    Hand derivation from the fixed frame below (r = 0.01):
-      vol_60d    = 2r * sqrt(84)      = 0.18330...  -> 0.15 < v <= 0.50 -> 0.20
-      avg_corr   = rho(x, y)          = 0.50        -> 0.4 <= c < 0.6   -> 0.95
-      dollar     = 100_000 * 0.20 * 0.95            = 19_000.00
-      cash cap   = min(19_000, 30_000)              = 19_000.00
-      price      = last close of NVDA               =    100.9899
-      pre_sector = floor(19_000 / 100.9899)         = floor(188.1376) = 188
-      sector_val = 40 AAPL * broker mark 50.00      =  2_000.00
-      headroom   = 0.60 * 100_000 - 2_000           = 58_000.00
-      cap        = floor(58_000 / 100.9899)         = floor(574.3148) = 574
-      max_qty    = min(188, 574)                    = 188
+    The frame carries the SAME two return patterns the 4-close version of
+    this test used, repeated GOLDEN_CYCLES times to clear
+    MIN_HISTORY_RETURNS. rho is invariant to that repetition (see
+    test_avg_corr_vs_book_is_the_hand_derived_literal), so avg_corr and
+    therefore the 0.95 multiplier are unchanged; vol and the last close move
+    with the longer series and are re-derived in closed form below.
+
+    Hand derivation (r = 0.02, k = 14 cycles of the 3-return pattern, so
+    n = 42 returns):
+      mean(x)    = r/3; devs are 2r/3 (twice per cycle) and -4r/3 (once)
+      sum sq dev = k * (4 + 16 + 4) r^2 / 9      = 336 k r^2 / 9
+      var(ddof=1)= 336 k r^2 / (9 * 41)          = 336 r^2 / 369
+      vol_60d    = r * sqrt(252 * 336 / 369)     = 0.30296...
+                                        -> 0.15 < v <= 0.50 -> 0.20
+      avg_corr   = rho(x, y)          = 0.50     -> 0.4 <= c < 0.6 -> 0.95
+      dollar     = 100_000 * 0.20 * 0.95         = 19_000.00
+      cash cap   = min(19_000, 30_000)           = 19_000.00
+      price      = 100 * ((1+r)(1-r)(1+r))^k = 100 * 1.019592^14 = 131.21088...
+      pre_sector = floor(19_000 / 131.21088...)  = floor(144.8055) = 144
+      sector_val = 40 AAPL * broker mark 50.00   =  2_000.00
+      headroom   = 0.60 * 100_000 - 2_000        = 58_000.00
+      cap        = floor(58_000 / 131.21088...)  = floor(442.0378) = 442
+      max_qty    = min(144, 442)                 = 144
     """
+    r = 0.02
     px = pd.DataFrame(
-        {"NVDA": [100.0, 101.0, 99.99, 100.9899],   # returns x = ( r, -r,  r)
-         "AAPL": [50.0, 49.5, 49.005, 49.49505]},   # returns y = (-r, -r,  r)
-        index=pd.bdate_range("2026-06-29", periods=4))
+        {"NVDA": _closes(100.0, (r, -r, r)),     # returns x = ( r, -r,  r)
+         "AAPL": _closes(50.0, (-r, -r, r))},    # returns y = (-r, -r,  r)
+        index=pd.bdate_range("2026-06-29", periods=3 * GOLDEN_CYCLES + 1))
     account = dict(equity=100000.0, cash=30000.0, daily_pnl_pct=-0.004,
                    positions={"AAPL": 40}, prices={"AAPL": 50.0})
     inputs = build_market_inputs(["NVDA"], account, px,
@@ -358,13 +461,14 @@ def test_a_well_formed_snapshot_is_APPROVED_with_the_hand_derived_qty():
     out = inputs["NVDA"]
 
     # the inputs the derivation above rests on, so a drift shows up as itself
-    assert out["price"] == 100.9899
-    assert out["vol_60d"] == pytest.approx(0.1833030277982336, abs=1e-12)
+    assert out["price"] == pytest.approx(100 * ((1 + r) * (1 - r) * (1 + r))
+                                         ** GOLDEN_CYCLES, abs=1e-9)
+    assert out["vol_60d"] == pytest.approx(0.3029609972482573, abs=1e-12)
     assert out["avg_corr"] == pytest.approx(0.5, abs=1e-9)
     assert out["sector_value"] == 2000.0
 
     assert size({**out, "side": "buy"}, "enforce") == Approved(
-        max_qty=188, pre_sector_qty=188, side="buy")
+        max_qty=144, pre_sector_qty=144, side="buy")
     # ...and the held leg is sell-able for exactly what is held
     assert size({**inputs["AAPL"], "side": "sell"}, "enforce") == Approved(
         max_qty=40, pre_sector_qty=40, side="sell")
