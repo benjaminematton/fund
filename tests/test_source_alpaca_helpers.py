@@ -81,3 +81,49 @@ def test_clock_dict_missing_or_non_bool_is_open_reads_closed():
     assert _clock_dict(_Clock())["is_open"] is False
     assert _clock_dict(_Clock(is_open="true"))["is_open"] is False
     assert _clock_dict(_Clock(is_open=1))["is_open"] is False
+
+
+# ---- cancel_order: the BrokerPort cancel wiring (C2) ----
+
+def test_installed_alpaca_py_exposes_the_cancel_api_we_call():
+    """The one thing that can otherwise only fail LIVE: a wrong alpaca-py
+    method name. Pin both calls against the installed TradingClient (0.44 has
+    no cancel-by-client-id — hence the two-step lookup-then-cancel)."""
+    from alpaca.trading.client import TradingClient
+    assert callable(TradingClient.get_order_by_client_id)
+    assert callable(TradingClient.cancel_order_by_id)
+    assert not hasattr(TradingClient, "cancel_order_by_client_id")
+
+
+def _bare_source():
+    """AlpacaSource without __init__ (no env vars, no network clients) — the
+    only way to exercise the cancel wiring offline. Nothing here touches the
+    real broker; `_trading` is replaced by the caller."""
+    from market.source_alpaca import AlpacaSource
+    return AlpacaSource.__new__(AlpacaSource)
+
+
+def test_cancel_order_resolves_client_id_then_cancels_by_order_id():
+    calls = []
+    class Trading:
+        def get_order_by_client_id(self, cid):
+            calls.append(("get", cid))
+            return _Clock(id="alp-0001")
+        def cancel_order_by_id(self, oid):
+            calls.append(("cancel", oid))
+    src = _bare_source()
+    src._trading = Trading()
+    src.cancel_order("tid-1")
+    assert calls == [("get", "tid-1"), ("cancel", "alp-0001")]
+
+
+def test_cancel_order_propagates_broker_errors():
+    """Unlike the read path, cancel must NOT swallow: reconcile re-queries and
+    records only what the broker confirms, so a silent 'ok' would let it write
+    a cancel that never happened (invariants 4/6)."""
+    class Trading:
+        def get_order_by_client_id(self, cid): raise ConnectionError("down")
+    src = _bare_source()
+    src._trading = Trading()
+    with pytest.raises(ConnectionError):
+        src.cancel_order("tid-1")

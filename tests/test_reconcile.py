@@ -209,6 +209,113 @@ def test_fill_with_decision_not_approved_alerts_and_does_not_transition(fund_db,
     assert "expired" in alert["payload"] and "not" in alert["payload"]
 
 
+def _pending(conn, sim_clock, qty=67):
+    """Seed a consumed ticket + a submitted order, ready for the poll loop."""
+    _seed(conn)
+    conn.execute("UPDATE tickets SET status='consumed'"); conn.commit()
+    _submitted_order(conn, iso(sim_clock.now()), qty=qty)
+
+
+def test_timeout_cancels_at_the_broker_before_writing_canceled(fund_db, sim_clock):
+    """C2: the timeout path must actually cancel at the broker, not just write
+    'canceled' into SQLite and hope (invariant 6)."""
+    _pending(fund_db, sim_clock)
+    broker = FakeAlpaca({"NVDA": 180.0}, mode="never_fill")
+    broker.place_order({"client_order_id": TID, "symbol": "NVDA",
+                        "side": "buy", "qty": 67})
+    _poll(fund_db, sim_clock, broker)
+    assert broker.cancel_attempts == [TID]
+    assert broker.orders[TID]["status"] == "canceled"    # broker-side, not just DB
+    assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "canceled"
+
+
+def test_fill_during_cancel_race_records_the_fill_not_a_cancel(fund_db, sim_clock):
+    """C2 headline: the order fills while the cancel is in flight. The DB must
+    record the TRUE terminal state — filled/executed with a fill event — never
+    canceled/failed over shares the fund actually holds."""
+    _pending(fund_db, sim_clock)
+    broker = FakeAlpaca({"NVDA": 180.0}, {"NVDA": 180.14},
+                        mode="fill_during_cancel")
+    broker.place_order({"client_order_id": TID, "symbol": "NVDA",
+                        "side": "buy", "qty": 67})
+    n, _ = _poll(fund_db, sim_clock, broker)
+    assert broker.cancel_attempts == [TID]
+    assert n == 1
+    o = fund_db.execute("SELECT * FROM orders").fetchone()
+    assert o["status"] == "filled"
+    assert o["filled_qty"] == 67 and o["filled_avg_price"] == 180.14
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "executed"
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"] == 1
+
+
+def test_cancel_error_and_still_open_leaves_order_submitted(fund_db, sim_clock):
+    """Cancel request errored and the broker still reports the order working:
+    ambiguous, so fail closed — no terminal state the broker hasn't
+    confirmed, row left for the next run, alert raised."""
+    _pending(fund_db, sim_clock)
+    class CancelBoom:
+        def get_order_by_client_order_id(self, coid): return {"status": "accepted"}
+        def cancel_order(self, coid): raise ConnectionError()
+    reconcile_orders(fund_db, clock=sim_clock, broker=CancelBoom(),
+                     sleep=lambda s: None, poll_s=3.0, max_wait_s=3.0)
+    assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "submitted"
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
+    alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
+    assert alert is not None and "cancel unconfirmed" in alert["payload"]
+
+
+def test_requery_error_after_cancel_leaves_order_submitted(fund_db, sim_clock):
+    """The cancel went out but the confirming re-query failed: we do not know
+    the terminal state, so write nothing (invariant 4)."""
+    _pending(fund_db, sim_clock)
+    class RequeryBoom:
+        def __init__(self): self.canceled = []
+        def get_order_by_client_order_id(self, coid):
+            if self.canceled: raise ConnectionError()
+            return {"status": "accepted"}
+        def cancel_order(self, coid): self.canceled.append(coid)
+    broker = RequeryBoom()
+    reconcile_orders(fund_db, clock=sim_clock, broker=broker,
+                     sleep=lambda s: None, poll_s=3.0, max_wait_s=3.0)
+    assert broker.canceled == [TID]
+    assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "submitted"
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
+    alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
+    assert alert is not None and "ConnectionError" in alert["payload"]
+
+
+def test_pending_cancel_is_not_a_confirmed_cancel(fund_db, sim_clock):
+    """'pending_cancel' is the broker still deciding — not a terminal state.
+    The row stays 'submitted' so the next run re-polls and re-cancels."""
+    _pending(fund_db, sim_clock)
+    class PendingCancel:
+        def __init__(self): self.canceled = []
+        def get_order_by_client_order_id(self, coid):
+            return {"status": "pending_cancel"} if self.canceled else {"status": "accepted"}
+        def cancel_order(self, coid): self.canceled.append(coid)
+    reconcile_orders(fund_db, clock=sim_clock, broker=PendingCancel(),
+                     sleep=lambda s: None, poll_s=3.0, max_wait_s=3.0)
+    assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "submitted"
+    assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
+    alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
+    assert alert is not None and "pending_cancel" in alert["payload"]
+
+
+def test_second_run_after_cancel_is_a_noop(fund_db, sim_clock):
+    """Idempotency (invariant 5): once the order is canceled the second run
+    must not re-cancel or re-alert."""
+    _pending(fund_db, sim_clock)
+    broker = FakeAlpaca({"NVDA": 180.0}, mode="never_fill")
+    broker.place_order({"client_order_id": TID, "symbol": "NVDA",
+                        "side": "buy", "qty": 67})
+    _poll(fund_db, sim_clock, broker)
+    before = fund_db.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
+    _poll(fund_db, sim_clock, broker)
+    assert broker.cancel_attempts == [TID]
+    assert fund_db.execute("SELECT COUNT(*) c FROM events").fetchone()["c"] == before
+
+
 def test_idempotent_second_run_no_double_event(fund_db, sim_clock):
     _seed(fund_db)
     now = iso(sim_clock.now())

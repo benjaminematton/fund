@@ -87,6 +87,45 @@ def test_market_order_acks_accepted_then_fills_on_tick():
     assert o["filled_avg_price"] == "180.14"
 
 
+def test_cancel_marks_order_canceled_and_records_the_attempt():
+    b = FakeAlpaca({"NVDA": 180.0}, mode="never_fill")
+    b.place_order({"client_order_id": "c1", "symbol": "NVDA", "side": "buy", "qty": 5})
+    b.cancel_order("c1")
+    assert b.cancel_attempts == ["c1"]
+    o = b.get_order_by_client_order_id("c1")
+    assert o["status"] == "canceled" and o["filled_avg_price"] is None
+
+
+def test_cancel_unknown_or_terminal_order_raises():
+    """The live broker 404s an unknown client id and 422s a terminal order —
+    the fake raises so the caller's fail-closed path is exercised offline."""
+    b = FakeAlpaca({"NVDA": 180.0}, {"NVDA": 180.14}, mode="instant")
+    try:
+        b.cancel_order("nope")
+        raise AssertionError("expected KeyError")
+    except KeyError:
+        pass
+    b.place_order({"client_order_id": "c1", "symbol": "NVDA", "side": "buy", "qty": 5})
+    try:
+        b.cancel_order("c1")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_fill_during_cancel_mode_fills_in_the_race():
+    """The order never fills on tick(), then fills as the cancel arrives."""
+    b = FakeAlpaca({"NVDA": 180.0}, {"NVDA": 180.14}, mode="fill_during_cancel")
+    b.place_order({"client_order_id": "c1", "symbol": "NVDA", "side": "buy", "qty": 67})
+    for _ in range(10): b.tick()
+    assert b.get_order_by_client_order_id("c1")["status"] == "accepted"
+    b.cancel_order("c1")
+    o = b.get_order_by_client_order_id("c1")
+    # live string shape, as everywhere else on this method
+    assert o["status"] == "filled" and o["filled_qty"] == "67"
+    assert o["filled_avg_price"] == "180.14"
+
+
 def test_never_fill_and_partial_modes():
     b = FakeAlpaca({"NVDA": 180.0}, mode="never_fill")
     b.place_order({"client_order_id": "c1", "symbol": "NVDA", "side": "buy", "qty": 5})

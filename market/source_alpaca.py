@@ -67,6 +67,17 @@ class AlpacaSource:
         return {k: (str(v) if k in ("qty", "filled_qty", "filled_avg_price")
                     and v is not None else v) for k, v in d.items()}
 
+    def cancel_order(self, coid: str) -> None:
+        """Request cancellation of a still-working order. alpaca-py 0.44 has
+        no cancel-by-client-id, so resolve the client id to the broker's order
+        id (`get_order_by_client_id`) and cancel by that
+        (`cancel_order_by_id(order_id)` -> None). Deliberately does NOT
+        swallow: a failed cancel must reach the caller, which re-queries and
+        records only what the broker confirms (invariant 4)."""
+        o = self._trading.get_order_by_client_id(coid)
+        oid = o["id"] if isinstance(o, dict) else o.id
+        self._trading.cancel_order_by_id(oid)
+
     def market_clock(self) -> dict:
         """Broker's market clock: {is_open, next_open, next_close}. The live
         day's skip-if-closed guard reads this."""

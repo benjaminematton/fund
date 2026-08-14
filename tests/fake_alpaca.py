@@ -4,7 +4,9 @@ default `place_order` acks "accepted" (real Alpaca fills market orders
 asynchronously); orders advance to filled/partially_filled/never only on
 `tick()`, per the broker's `mode`. Pass `mode="instant"` for the old
 synchronous-fill fiction still used by hook-level tests that never call
-`tick()`.
+`tick()`. `mode="fill_during_cancel"` models the race the fill-poll's timeout
+path must survive: the order never fills on `tick()`, but the fill lands at
+the broker just as the cancel request arrives.
 
 FakeAlpaca models the BROKER (a clean dict, like the REST order object).
 `mcp_envelope` models the alpaca-mcp-server layer that sits between the agent
@@ -54,6 +56,7 @@ class FakeAlpaca:
         self.mode = mode
         self.orders: dict[str, dict] = {}
         self.place_attempts: list[dict] = []
+        self.cancel_attempts: list[str] = []
 
     def place_order(self, args: dict) -> dict:
         self.place_attempts.append(dict(args))
@@ -85,11 +88,37 @@ class FakeAlpaca:
         self.orders[coid] = order
         return dict(order)
 
+    def cancel_order(self, coid: str) -> None:
+        """Request cancellation of a working order, mirroring
+        AlpacaSource.cancel_order (which resolves the client id to the broker
+        order id, then cancels by that id). Raises on an unknown client id or
+        an order that is already terminal — exactly the 404/422 the live
+        broker returns, so the caller's fail-closed path is exercised.
+
+        In `mode="fill_during_cancel"` the order FILLS instead of canceling:
+        the race where the fill lands at the broker while the cancel is in
+        flight. The cancel is recorded in `cancel_attempts` either way."""
+        o = self.orders.get(coid)
+        if o is None:
+            raise KeyError(f"order not found: client_order_id={coid}")
+        self.cancel_attempts.append(coid)
+        if o["status"] in ("filled", "canceled"):
+            raise ValueError(
+                f"order {coid} is not cancelable (status {o['status']})")
+        if self.mode == "fill_during_cancel":
+            o["status"] = "filled"
+            o["filled_qty"] = o["qty"]
+            o["filled_avg_price"] = self.fill_prices.get(
+                o["symbol"], self.prices[o["symbol"]])
+            return
+        o["status"] = "canceled"
+
     def tick(self) -> None:
         """Advance accepted orders one step, per `mode`. No-op for `instant`
-        (orders are already terminal) and `never_fill` (orders never
-        advance). Already-terminal orders (filled) are left untouched."""
-        if self.mode in ("instant", "never_fill"):
+        (orders are already terminal), `never_fill` and `fill_during_cancel`
+        (orders never advance on their own). Already-terminal orders (filled)
+        are left untouched."""
+        if self.mode in ("instant", "never_fill", "fill_during_cancel"):
             return
         for order in self.orders.values():
             px = self.fill_prices.get(order["symbol"], self.prices[order["symbol"]])

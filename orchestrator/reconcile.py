@@ -1,9 +1,11 @@
 """Fill-poll: drive submitted orders to a terminal state (MVF review A3/T2).
 Deterministic; broker + sleep are injected. Bounded: poll_s cadence, max_wait_s
-cap, then the timeout path (order canceled*, decision failed, alert). Errors
-and unparseable broker payloads fail closed — the order stays 'submitted' and
-the next run retries; both are surfaced as loud alerts, never silent.
-*cancel is issued agent-side next cycle if needed; DB reflects intent."""
+cap, then the timeout path — which CANCELS AT THE BROKER, re-queries once, and
+records only the state the broker confirms (order canceled + decision failed,
+or the fill that won the race). Errors and unparseable broker payloads fail
+closed — the order stays 'submitted' and the next run retries; all of it is
+surfaced as loud alerts, never silent. The DB never claims a terminal state
+the broker has not confirmed (invariants 4 and 6)."""
 from __future__ import annotations
 import sqlite3
 from typing import Callable
@@ -89,6 +91,71 @@ def _apply(conn, row, o, now) -> bool:
         return False
     return False
 
+# Broker statuses that mean "this order is dead, no more shares are coming",
+# mapped to the orders status we record. Anything else (pending_cancel,
+# done_for_day, accepted, new, ...) is NOT a confirmed cancel: the row stays
+# 'submitted' and the next run re-polls and re-cancels it.
+_CONFIRMED_DEAD = {"canceled": "canceled", "expired": "canceled",
+                   "rejected": "rejected"}
+
+
+def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
+    """Close out ONE order the broker last confirmed still working, past the
+    cap: request the cancel, re-query ONCE, record the TRUE terminal state.
+    Returns True iff the order filled in the race (keeps the caller's fill
+    counter honest).
+
+    Fail closed everywhere the broker leaves us guessing — a cancel that
+    errored while the order still works, a re-query that errored or returned
+    nothing, a status that is not confirmed-dead: leave the row 'submitted'
+    for the next run and alert. Requesting a cancel twice is harmless
+    (idempotent by client_order_id); recording a cancel that did not happen
+    is not."""
+    coid = row["client_order_id"]
+    try:
+        broker.cancel_order(coid)
+        cancel_err = ""
+    except Exception as e:                 # keep going: the re-query decides
+        cancel_err = f", cancel_order raised {type(e).__name__}"
+    stale = (f"order {coid[:8]} unfilled after {int(max_wait_s)}s — cancel "
+             "unconfirmed ({why}), left submitted for the next run")
+    try:
+        o = broker.get_order_by_client_order_id(coid)
+        if not o:
+            raise ValueError("broker returned no order for this client_order_id")
+        status = o.get("status")
+    except Exception as e:
+        append_event(conn, "alert", {"text": stale.format(
+            why=f"re-query raised {type(e).__name__}{cancel_err}")}, now)
+        return False
+    if status in ("filled", "partially_filled"):
+        try:
+            return _apply(conn, row, o, now)      # the race: record the fill
+        except Exception as e:
+            append_event(conn, "alert", {"text": stale.format(
+                why=f"broker reports '{status}' but the payload is "
+                    f"unparseable ({type(e).__name__})")}, now)
+            return False
+    if status not in _CONFIRMED_DEAD:
+        append_event(conn, "alert", {"text": stale.format(
+            why=f"broker still reports '{status}'{cancel_err}")}, now)
+        return False
+    if try_transition(conn, "orders", {"client_order_id": coid},
+                      "submitted", _CONFIRMED_DEAD[status], now):
+        t = conn.execute("SELECT decision_id FROM tickets WHERE id=?",
+                         (coid,)).fetchone()
+        decision_failed = False
+        if t is not None:
+            decision_failed = try_transition(conn, "decisions",
+                                             {"id": t["decision_id"]},
+                                             "approved", "failed", now)
+        suffix = "decision failed" if decision_failed else "decision unchanged"
+        append_event(conn, "alert", {"text":
+            f"order {coid[:8]} unfilled after {int(max_wait_s)}s — "
+            f"{_CONFIRMED_DEAD[status]} at the broker, {suffix}"}, now)
+    return False
+
+
 def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
                      sleep: Callable[[float], None],
                      poll_s: float = 3.0, max_wait_s: float = 90.0) -> int:
@@ -97,7 +164,8 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
     filled, waited = 0, 0.0
     # Positive framing (MVF review Fix 4): what we KNOW from the most recent
     # poll of each still-pending order, not what we failed to rule out.
-    confirmed_open: set[str] = set()   # broker confirmed non-terminal, non-partial
+    # coid -> order row; broker confirmed non-terminal, non-partial
+    confirmed_open: dict[str, sqlite3.Row] = {}
     problem: dict[str, str] = {}       # broker unreachable or payload unparseable -> exception type
     while True:
         pending = _statuses(conn)
@@ -115,33 +183,22 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
                 # parse (e.g. _apply's coercion raised). Either way leave the
                 # order 'submitted' for the next poll and surface it loudly.
                 problem[coid] = type(e).__name__
-                confirmed_open.discard(coid)
+                confirmed_open.pop(coid, None)
                 continue
             problem.pop(coid, None)
             status = o.get("status") if o else None
             if status in ("filled", "partially_filled"):
-                confirmed_open.discard(coid)   # terminal or partial — never cap-canceled
+                confirmed_open.pop(coid, None)  # terminal or partial — never cap-canceled
             else:
-                confirmed_open.add(coid)
+                confirmed_open[coid] = row
         if waited >= max_wait_s:
             break
         sleep(poll_s)
         waited += poll_s
     now = iso(clock.now())
-    for coid in confirmed_open:                   # timeout path: broker confirmed still open
-        if try_transition(conn, "orders", {"client_order_id": coid},
-                          "submitted", "canceled", now):
-            t = conn.execute("SELECT decision_id FROM tickets WHERE id=?",
-                             (coid,)).fetchone()
-            decision_failed = False
-            if t is not None:
-                decision_failed = try_transition(conn, "decisions",
-                                                 {"id": t["decision_id"]},
-                                                 "approved", "failed", now)
-            suffix = "decision failed" if decision_failed else "decision unchanged"
-            append_event(conn, "alert", {"text":
-                f"order {coid[:8]} unfilled after {int(max_wait_s)}s — "
-                f"canceled, {suffix}"}, now)
+    for row in confirmed_open.values():   # timeout path: broker confirmed still open
+        if _timeout_close(conn, row, broker, now, max_wait_s):
+            filled += 1                   # it filled while the cancel was in flight
     for coid, reason in problem.items():           # fail-closed path: loud, not silent
         cur = conn.execute("SELECT status FROM orders WHERE client_order_id=?",
                            (coid,)).fetchone()
