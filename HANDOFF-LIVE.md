@@ -67,19 +67,30 @@ to trade — come back when it is open.
 
 The bot token must start with `xoxb-`. An `xapp-` app-level token cannot call
 `chat.postMessage`; every `post()` raises, so the outbox stops draining and the
-audit fails on `undrained outbox events`. Nothing is lost — a post failure is
-treated as transient, so the whole day's projection is still queued in SQLite
-and flushes on the next drain once the token is fixed. Fix the token, not the
-audit.
+audit fails on `undrained outbox events`. Nothing is lost — that post failure
+is transient, so the whole day's projection is still queued in SQLite and
+flushes on the next drain once the token is fixed. Fix the token, not the
+audit. (A *revoked* token is different: `invalid_auth` is permanent, and
+permanent errors dead-letter — see below.)
 
-The bot must also be **invited to all five channels** the renderers post to:
+**Invite the bot to all five channels the renderers post to — do this before
+anything else.** `not_in_channel` is permanent: those events dead-letter one
+by one (audit: `dead-lettered outbox events`) and never reach Slack, while the
+other four channels keep delivering. An invite afterwards does not bring them
+back.
 
 ```
 #research  #trading-floor  #risk  #trade-log  #pnl
 ```
 
-In each one: `/invite @<your-bot>`. A `not_in_channel` error stops the drain
-exactly like a bad token does — and the queued events flush after the invite.
+In each one: `/invite @<your-bot>`. Then verify — the printed list must
+contain all five:
+
+```bash
+curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  "https://slack.com/api/users.conversations?types=public_channel&limit=200" \
+  | python3 -c 'import json,sys; print(sorted("#"+c["name"] for c in json.load(sys.stdin)["channels"]))'
+```
 
 > Rehearsing somewhere harmless? Set
 > `SLACK_CHANNEL_OVERRIDES=#pnl=#test-pnl,#risk=#test-risk,#trade-log=#test-trade-log,#research=#test-research,#trading-floor=#test-floor`

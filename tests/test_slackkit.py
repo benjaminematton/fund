@@ -164,6 +164,81 @@ def test_a_dead_letter_survives_a_transient_post_failure(fund_db):
     assert _queue(fund_db) == (0, 1)
 
 
+def test_a_permanent_post_error_dead_letters_only_that_events_channel(fund_db):
+    """Day-one shape: the bot was invited to 4 of 5 channels, so #pnl posts
+    raise not_in_channel — PERMANENT, it will raise identically forever. That
+    one event dead-letters and the drain CONTINUES: ordering only has to hold
+    within a channel, so a dead channel must not stop #trade-log fills or
+    #risk alerts."""
+    slack = FakeSlack(permanent_failures={"#pnl"})
+    append_event(fund_db, "digest", {"text": "day 1 pnl"}, NOW)
+    append_event(fund_db, "fill", FILL, NOW)
+    append_event(fund_db, "alert", {"text": "risk breach"}, NOW)
+
+    posted = drain(fund_db, slack, NOW)
+
+    assert "#pnl" not in slack.posts                     # never delivered...
+    assert _queue(fund_db) == (0, 1)                     # ...and dead-lettered
+    # the healthy channels are untouched
+    assert [p["text"] for p in slack.posts["#trade-log"]] == [render("fill", FILL)[1]]
+    assert any("risk breach" in p["text"] for p in slack.posts["#risk"])
+    # the dead letter is visible: a projection_error naming it was posted
+    assert any("projection error" in p["text"] for p in slack.posts["#risk"])
+    assert posted == sum(len(v) for v in slack.posts.values())
+
+
+def test_a_permanently_dead_channel_does_not_loop_on_its_own_projection_error(fund_db):
+    """If the dead channel IS #risk, the projection_error routed there also
+    fails permanently. It must dead-letter without appending another one."""
+    slack = FakeSlack(permanent_failures={"#risk"})
+    append_event(fund_db, "alert", {"text": "risk breach"}, NOW)
+    append_event(fund_db, "fill", FILL, NOW)
+
+    posted = drain(fund_db, slack, NOW)
+
+    assert posted == 1                                   # only the fill landed
+    assert [p["text"] for p in slack.posts["#trade-log"]] == [render("fill", FILL)[1]]
+    unposted, dead = _queue(fund_db)
+    assert unposted == 0                                 # queue is not jammed
+    assert dead == 1                                     # exactly one, no loop
+
+
+def test_real_slack_raises_permanent_post_error_on_permanent_codes():
+    from slack_sdk.errors import SlackApiError
+
+    from slackkit.port import PermanentPostError
+    from slackkit.real import RealSlack
+
+    for code in ("not_in_channel", "channel_not_found", "invalid_auth",
+                 "is_archived"):
+        slack = RealSlack("xoxb-not-a-real-token")
+
+        def _raise(**kwargs):
+            raise SlackApiError("boom", {"ok": False, "error": code})
+
+        slack._client.chat_postMessage = _raise
+        with pytest.raises(PermanentPostError) as exc:
+            slack.post("#pnl", "hi")
+        assert code in str(exc.value)
+
+
+def test_real_slack_leaves_every_other_slack_error_transient():
+    from slack_sdk.errors import SlackApiError
+
+    from slackkit.port import PermanentPostError
+    from slackkit.real import RealSlack
+
+    slack = RealSlack("xoxb-not-a-real-token")
+
+    def _raise(**kwargs):
+        raise SlackApiError("boom", {"ok": False, "error": "ratelimited"})
+
+    slack._client.chat_postMessage = _raise
+    with pytest.raises(SlackApiError) as exc:
+        slack.post("#pnl", "hi")
+    assert not isinstance(exc.value, PermanentPostError)
+
+
 def test_every_written_kind_has_a_renderer():
     """Static guard: every append_event kind literal in the codebase renders.
 
