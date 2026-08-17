@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper
+.PHONY: test lint sim-day replay live-day live-paper schema-pin
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -39,6 +39,16 @@ replay:
 	@echo "replay: not implemented yet — requires the recorder/replayer (Phase 1," >&2
 	@echo "see specs/acceptance.md §0). Usage when built: make replay REC=<recording>" >&2
 	@exit 2
+
+# Pin the broker's REAL tool schema. Read-only: initialize + tools/list, no
+# order is ever placed. Needs .env loaded and uvx on PATH.
+#
+# This is the ONLY guard against the 2026-08-17 outage class, where the gate
+# validated a stop-leg shape the broker had never exposed and every offline
+# test agreed with the gate because the fixtures encoded the same assumption.
+# Offline tests cannot catch that by construction — run this before a live day.
+schema-pin: deps
+	$(PYTHON) -m pytest -m live tests/test_live_smoke.py -k schema_pin -v
 
 # One live trading day: real clock, real Slack, real Alpaca paper, real LLM
 # seats. Needs .env loaded (`set -a; source .env; set +a`). Manual/launchd

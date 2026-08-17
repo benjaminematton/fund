@@ -133,6 +133,14 @@ def validate_order(conn: sqlite3.Connection, tool_input,
     # undeliverable (the gate denied the real shape and the MCP server
     # rejected the assumed one). tests/test_live_smoke.py's schema pin holds
     # these names to the server's actual surface.
+    # A nested object is not a parameter the broker has ever accepted, on any
+    # ticket. Denying it by name means the pre-2026-08-17 shape can never be
+    # quietly approved on a key Alpaca would drop on the floor.
+    nested = [k for k in ("stop_loss", "take_profit")
+              if tool_input.get(k) is not None]
+    if nested:
+        return False, (f"{nested} is not a parameter place_stock_order accepts"
+                       " — exit legs are flat (stop_loss_stop_price)")
     legs = {k: tool_input.get(k) for k in _STOP_LEG_KEYS
             if tool_input.get(k) is not None}
     if t["stop_price"] is None:
@@ -140,6 +148,14 @@ def validate_order(conn: sqlite3.Connection, tool_input,
             return False, ("ticket has no stop_price; order must not carry a "
                            f"stop leg, got {sorted(legs)}")
     else:
+        # The ticket authorizes ONE exit: a stop-MARKET at its stop_price.
+        # stop_loss_limit_price would make that a stop-LIMIT, which can go
+        # unfilled through a gap-down — the exact move the stop exists for —
+        # and take_profit_limit_price is an exit no ticket field authorizes.
+        extra = sorted(k for k in legs if k != "stop_loss_stop_price")
+        if extra:
+            return False, (f"ticket authorizes a stop-market exit only; {extra}"
+                           " changes the exit the gate approved")
         leg_price = _as_price(tool_input.get("stop_loss_stop_price"))
         if leg_price is None or leg_price != float(t["stop_price"]):
             return False, (

@@ -199,7 +199,7 @@ def _place_stock_order_schema() -> dict:
         f"alpaca-mcp-server exposes no place_stock_order; got {[t['name'] for t in tools]}")
 
 
-def test_place_stock_order_takes_a_flat_stop_leg_not_a_nested_one():
+def test_schema_pin_place_stock_order_takes_a_flat_stop_leg():
     """gate/tickets.py validate_order reads these exact names. If Alpaca ever
     renames them, or reintroduces a nested object, the gate silently stops
     matching real orders — which is precisely the 2026-08-17 failure."""

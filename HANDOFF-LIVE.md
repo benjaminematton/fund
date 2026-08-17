@@ -98,6 +98,28 @@ curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
 
 ---
 
+## 0b. Pin the broker's tool schema — run this before every live day
+
+```bash
+make schema-pin
+```
+
+Expect `1 passed`. Read-only: it initializes the broker MCP server and calls
+`tools/list`; no order is placed.
+
+**Why this is its own step.** On 2026-08-17 the gate validated a nested
+`stop_loss: {stop_price}` that `place_stock_order` has never exposed — the
+real tool takes flat `stop_loss_stop_price`. Every ticket carrying a stop was
+undeliverable, and the whole offline suite was green over it because
+FakeAlpaca and the recordings encoded the *same* wrong assumption. Fixture and
+code agreed with each other and both disagreed with Alpaca. No offline test
+can catch that class of bug by construction; this one asks the server.
+
+If it fails, STOP — do not run the day. A schema change means `gate/tickets.py`
+and `charters/exec.md` are describing an order the broker will not accept.
+
+---
+
 ## 1. The `@live` smoke — one share, end to end
 
 ```bash

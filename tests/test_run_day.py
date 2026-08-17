@@ -618,3 +618,55 @@ def test_a_zero_ticker_day_writes_no_decisions_and_costs_nothing(
     for table in ("signals", "decisions", "tickets", "costs", "orders"):
         assert conn.execute(f"SELECT COUNT(*) c FROM {table}"
                             ).fetchone()["c"] == 0, table
+
+
+def test_the_open_ticket_count_reaches_check_tool_calls(wired, monkeypatch):
+    """D3's WIRING, not its logic. The guard itself is unit-tested in
+    test_exec_turn_guard, but nothing exercised run_day's call site: replacing
+    the live count with a literal 0 — which fully reinstates the 2026-08-17
+    failure, an exec turn that reads its tickets and places nothing — left the
+    entire suite green. The count is what makes the guard load-bearing, so the
+    count is what this pins."""
+    from gate.tickets import create_ticket
+    from orchestrator.clock import iso
+    conn, _, clock = wired
+    cur = conn.execute(
+        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+        " invalidation, stop_price, status, created_at) VALUES"
+        " ('2026-07-06','NVDA','buy',58,'t','i',NULL,'approved',?)",
+        (iso(clock.now()),))
+    conn.commit()
+    tid = "cad36b5a-e04d-4d20-8262-71c71d30c283"
+    create_ticket(conn, id=tid, decision_id=cur.lastrowid, ticker="NVDA",
+                  side="buy", max_qty=58, stop_price=None,
+                  expires_at_iso="2026-07-07T00:00:00+00:00",
+                  now_iso=iso(clock.now()))
+
+    async def _read_only(*a, **k):        # exactly yesterday's shape
+        return ["mcp__fund__list_open_tickets"], _Result(cost=0.02, turns=4)
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _read_only)
+    _turn(conn, clock, seat="exec")()
+
+    texts = _alert_texts(conn)
+    assert len(texts) == 1
+    assert "exec_turn_violation" in texts[0]
+    assert "1 open ticket" in texts[0]
+    # the cost is still recorded — a violating turn spent real money
+    assert conn.execute("SELECT COUNT(*) c FROM costs").fetchone()["c"] == 1
+
+
+def test_a_consumed_ticket_does_not_accuse_the_seat_that_executed_it(
+        wired, monkeypatch):
+    """The count is taken AFTER the turn deliberately. A seat that places an
+    order consumes its ticket, so nothing is left open to accuse it of
+    inaction — counting BEFORE the turn would fire on every successful day."""
+    conn, _, clock = wired
+
+    async def _placed(*a, **k):
+        return ["mcp__fund__list_open_tickets",
+                "mcp__alpaca__place_stock_order"], _Result(cost=0.02)
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _placed)
+    _turn(conn, clock, seat="exec")()
+    assert _alert_texts(conn) == []

@@ -172,7 +172,7 @@ def test_the_nested_stop_leg_is_not_accepted_as_a_stop(fund_db):
     ok, reason = validate_order(
         fund_db, order(order_class="oto", stop_loss={"stop_price": 168.0}), NOW)
     assert not ok
-    assert "stop_loss_stop_price" in reason
+    assert "not a parameter place_stock_order accepts" in reason
 
 
 def test_a_flat_stop_leg_is_read_from_a_string_like_the_real_tool_sends(fund_db):
@@ -184,10 +184,13 @@ def test_a_flat_stop_leg_is_read_from_a_string_like_the_real_tool_sends(fund_db)
         ok, reason = validate_order(
             fund_db, order(order_class="oto", stop_loss_stop_price=value), NOW)
         assert ok, f"{value!r} rejected: {reason}"
-    for value in ("168.01", "", "abc", None, True):
+    for value in ("168.01", "", "abc", None):
         ok, _ = validate_order(
             fund_db, order(order_class="oto", stop_loss_stop_price=value), NOW)
         assert not ok, f"{value!r} was accepted as the ticket's stop"
+    ok, _ = validate_order(
+        fund_db, order(order_class="oto", stop_loss_stop_price=True), NOW)
+    assert not ok, "True was accepted as the ticket's stop"
 
 
 def test_a_stopless_ticket_refuses_every_exit_leg_not_just_the_stop(fund_db):
@@ -200,3 +203,51 @@ def test_a_stopless_ticket_refuses_every_exit_leg_not_just_the_stop(fund_db):
         ok, reason = validate_order(fund_db, order(**{leg: "168.0"}), NOW)
         assert not ok, f"{leg} was allowed on a stopless ticket"
         assert leg in reason
+
+
+def test_a_stopped_ticket_authorizes_a_stop_market_and_nothing_else(fund_db):
+    """Review finding, 2026-08-17 fix wave. The first pass at the flat-leg
+    rewrite validated stop_loss_stop_price and computed the other legs
+    without ever checking them, so extra exits rode along on a valid stop.
+
+    stop_loss_limit_price is the dangerous one: it converts the ticket's
+    authorized stop-MARKET into a stop-LIMIT, which can go unfilled straight
+    through a gap-down — precisely the move the stop exists to survive. The
+    gate approved a market exit; anything else is a different order."""
+    _seed(fund_db, stop_price=168.0)
+    for extra in ("stop_loss_limit_price", "take_profit_limit_price"):
+        ok, reason = validate_order(fund_db, order(
+            order_class="oto", stop_loss_stop_price="168.0",
+            **{extra: "100.0"}), NOW)
+        assert not ok, f"{extra} rode along on a valid stop"
+        assert extra in reason
+    # the stop alone still passes — the check must not deny the legal order
+    ok, reason = validate_order(
+        fund_db, order(order_class="oto", stop_loss_stop_price="168.0"), NOW)
+    assert ok, reason
+
+
+def test_the_nested_shape_is_denied_on_a_stopless_ticket_too(fund_db):
+    """Before the flat rewrite, a nested stop_loss on a stopless ticket was
+    denied. It must stay denied: the broker has no such parameter, so
+    approving it would let an order through carrying an exit instruction
+    nobody validated and Alpaca would silently drop."""
+    _seed(fund_db)  # stop_price NULL
+    ok, reason = validate_order(
+        fund_db, order(stop_loss={"stop_price": 168.0}), NOW)
+    assert not ok
+    assert "not a parameter place_stock_order accepts" in reason
+
+
+def test_bool_is_rejected_as_a_type_not_by_numeric_coincidence(fund_db):
+    """float(True) == 1.0, so a ticket whose stop happens to BE 1.0 is the
+    only place that distinguishes "bool is not a price" from "the number did
+    not match". Without this, the bool branch of _as_price could be deleted
+    and every other stop test would stay green."""
+    _seed(fund_db, stop_price=1.0)
+    ok, reason = validate_order(
+        fund_db, order(order_class="oto", stop_loss_stop_price=True), NOW)
+    assert not ok, "True was accepted as a stop of 1.0"
+    ok, _ = validate_order(
+        fund_db, order(order_class="oto", stop_loss_stop_price="1.0"), NOW)
+    assert ok, "the real stop of 1.0 must still pass"
