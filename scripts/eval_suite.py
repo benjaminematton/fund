@@ -4,8 +4,13 @@ Loads .env itself so `make eval` cannot silently half-run on a missing key —
 a suite that fails on credentials burns real trials into INCONCLUSIVE traces
 before anyone notices.
 
-Usage:  .venv/bin/python3 scripts/eval_suite.py [case-id ...]
-        (no args = every case; named cases = a targeted probe run)
+Usage:  .venv/bin/python3 scripts/eval_suite.py [--label NAME] [case-id ...]
+        (no cases = every case; named cases = a targeted probe run)
+
+--label scopes the run's traces to evals/traces/<NAME>/. Use it for anything
+that changes a charter WITHOUT committing: traces are keyed by git sha, and an
+uncommitted charter edit leaves the sha identical, so a probe run would
+silently overwrite the control baseline it is being compared against.
 """
 
 from __future__ import annotations
@@ -21,7 +26,13 @@ from scripts.eval_one import ENV, load_env  # noqa: E402
 TRIALS = 3
 
 
-def main(only: list[str]) -> int:
+def main(argv: list[str]) -> int:
+    label = None
+    if argv and argv[0] == "--label":
+        label = argv[1]
+        argv = argv[2:]
+    only = argv
+    traces_root = (ROOT / "evals/traces" / label) if label else None
     if not ENV.exists():
         print(f"no .env at {ENV}", file=sys.stderr)
         return 2
@@ -48,7 +59,8 @@ def main(only: list[str]) -> int:
     for case in cases:
         for trial in range(1, TRIALS + 1):
             print(f"  {case.id} trial {trial} ...", flush=True)
-            trace = run_trial(case.seat, case, trial)
+            trace = run_trial(case.seat, case, trial,
+                              traces_root=traces_root)
             traces.append(trace)
             results.append(grade_trace(trace, case, full_registry()))
 
@@ -67,6 +79,8 @@ def main(only: list[str]) -> int:
             if v.outcome != "PASS":
                 print(f"  {r.case}/{r.trial} {v.invariant} {v.outcome}"
                       f" [{v.tag}] {v.detail[:120]}")
+    if label:
+        print(f"traces: evals/traces/{label}/")
     return 0
 
 
