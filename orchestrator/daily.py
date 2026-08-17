@@ -281,6 +281,26 @@ def run_gate(ctx: StageCtx) -> None:
             _gate_reject(ctx, d, "gate_error", now)
 
 
+def _alert_unexecuted_tickets(ctx: StageCtx) -> None:
+    """D2: a ticket the gate approved that is STILL open and unexpired after
+    the trader turn, with no order row keyed by it (invariant 5:
+    orders.client_order_id IS the ticket id), means the turn produced nothing.
+    That is exactly the 2026-08-17 failure — turn billed, no order placed,
+    stage 'done', day reported a success. Alerting (not raising) is
+    deliberate: default HOLD stands, the day still finishes, and the alert
+    plus the reddened audit are the signal. Zero open tickets stays silent —
+    a hold day is normal."""
+    now = iso(ctx.clock.now())
+    for ticket in open_tickets(ctx.conn, now):
+        placed = ctx.conn.execute(
+            "SELECT 1 FROM orders WHERE client_order_id = ?",
+            (ticket["id"],)).fetchone()
+        if placed is None:
+            append_event(ctx.conn, "alert",
+                         {"text": f"ticket {ticket['id'][:8]} open after exec"
+                                  " turn — no order"}, now)
+
+
 def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> str:
     """Trader stage. Zero open tickets -> no turn at all (no LLM spend on a
     hold day); the stage still drains and still checkpoints done."""
@@ -288,11 +308,9 @@ def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> 
     expire_open_tickets(ctx.conn, now)   # gate expiry is clock-injected (§0)
 
     def body() -> None:
-        if run_trader_turn is None:
-            return
-        if not open_tickets(ctx.conn, iso(ctx.clock.now())):
-            return
-        run_trader_turn()
+        if run_trader_turn is not None and open_tickets(ctx.conn, iso(ctx.clock.now())):
+            run_trader_turn()
+        _alert_unexecuted_tickets(ctx)
 
     run_stage(ctx, "execution", body)
     return "done"

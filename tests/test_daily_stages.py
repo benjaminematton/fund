@@ -7,8 +7,8 @@ import pytest
 
 from orchestrator.clock import iso
 from orchestrator.daily import (StageCtx, allowed_actions, run_close, run_day,
-                                run_decision, run_gate, run_pre_gate,
-                                run_research)
+                                run_decision, run_execution, run_gate,
+                                run_pre_gate, run_research)
 from slackkit.fake import FakeSlack
 from slackkit.outbox import append_event
 
@@ -533,3 +533,69 @@ def test_execution_turn_skipped_when_no_open_tickets(fund_db, sim_clock, tmp_pat
     assert calls == []
     assert fund_db.execute("SELECT status FROM checkpoints WHERE stage='execution'"
                            ).fetchone()["status"] == "done"
+    # a hold day has nothing open, so it must not raise the no-order alert
+    assert not any("after exec turn" in t for t in _alert_texts(fund_db))
+
+
+# --- execution: the silent no-order day (D2) ---------------------------------
+
+def _alert_texts(fund_db) -> list[str]:
+    return [json.loads(r["payload"])["text"] for r in fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert' ORDER BY id").fetchall()]
+
+
+def _open_ticket(fund_db, sim_clock, ticker="NVDA", tid=TID):
+    """An approved decision + its live (unexpired) ticket, exactly as run_gate
+    leaves them just before the trader turn."""
+    _seed_decision(fund_db, sim_clock, ticker, "buy", 80)
+    decision_id = fund_db.execute(
+        "SELECT id FROM decisions WHERE ticker = ?", (ticker,)).fetchone()["id"]
+    now = iso(sim_clock.now())
+    fund_db.execute(
+        "INSERT INTO tickets (id, decision_id, ticker, side, max_qty,"
+        " expires_at, status, created_at) VALUES (?,?,?,'buy',66,?,'open',?)",
+        (tid, decision_id, ticker, iso(sim_clock.now() + timedelta(minutes=45)),
+         now))
+    fund_db.commit()
+    return tid
+
+
+def test_execution_alerts_when_the_turn_placed_no_order(fund_db, sim_clock):
+    """2026-08-16 live day: the gate approved NVDA, the trader burned a turn,
+    NO order was placed, and the stage still checkpointed 'done' — the day
+    read as a success. The stage must still complete (default HOLD is a valid
+    outcome, not a failed stage); the alert is the signal."""
+    _open_ticket(fund_db, sim_clock)
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    assert run_execution(ctx, lambda: None) == "done"      # turn does nothing
+    assert _alert_texts(fund_db) == [
+        f"ticket {TID[:8]} open after exec turn — no order"]
+    assert fund_db.execute("SELECT status FROM checkpoints WHERE stage='execution'"
+                           ).fetchone()["status"] == "done"
+    posts = ctx.slack.posts["#risk"]         # projected to #risk, drained once
+    assert len(posts) == 1
+    assert posts[0]["text"] == f"ticket {TID[:8]} open after exec turn — no order"
+
+
+def test_execution_stays_silent_when_the_ticket_has_an_order(fund_db, sim_clock):
+    """The healthy path: an order row keyed by the ticket id (invariant 5)
+    means the turn did its job — no alert, even if the ticket is still open."""
+    _open_ticket(fund_db, sim_clock)
+    fund_db.execute(
+        "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
+        " submitted_at) VALUES (?, 'NVDA', 'buy', 66, 'submitted', ?)",
+        (TID, iso(sim_clock.now())))
+    fund_db.commit()
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    assert run_execution(ctx, lambda: None) == "done"
+    assert _alert_texts(fund_db) == []
+
+
+def test_execution_alert_is_not_reposted_on_a_resume(fund_db, sim_clock):
+    """The stage is 'done' after the first pass, so a re-fire must not append
+    a second copy of the alert."""
+    _open_ticket(fund_db, sim_clock)
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    run_execution(ctx, lambda: None)
+    run_execution(ctx, lambda: None)
+    assert len(_alert_texts(fund_db)) == 1
