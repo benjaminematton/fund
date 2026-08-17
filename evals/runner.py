@@ -157,7 +157,11 @@ def run_trial(seat: str, case: Case, trial: int, *,
         is_error=bool(err) or bool(getattr(result, "is_error", False)),
         error=err)
     state.conn.close()
-    trace.write(traces_root or DEFAULT_TRACES)
+    # A workdir scopes the WHOLE trial, traces included. Without this the rig's
+    # own unit tests (which pass workdir= but not traces_root=) deposit junk
+    # traces into evals/traces/, where make eval-report grades them as a real
+    # suite run and git offers to commit them.
+    trace.write(traces_root or (base / "traces" if workdir else DEFAULT_TRACES))
     return trace
 
 

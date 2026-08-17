@@ -23,9 +23,10 @@ dev = ["pytest>=8"]
 #  - tests/test_golden.py numbers change only via deliberate re-record commits
 
 [tool.pytest.ini_options]
-addopts = "-m 'not live' -q"
+addopts = "-m 'not live and not eval' -q"
 markers = [
     "live: hits real APIs (Alpaca paper, Slack, Anthropic) — excluded from make test; run manually with: pytest -m live <file> -v",
+    "eval: spends real money on real LLM turns (evals/) — excluded from make test; run with: make eval",
 ]
 filterwarnings = ["error::DeprecationWarning:fund.*",
   "ignore::DeprecationWarning:websockets.legacy.*"]

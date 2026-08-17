@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper schema-pin
+.PHONY: test lint sim-day replay live-day live-paper schema-pin eval eval-report
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -59,3 +59,20 @@ live-day: deps
 
 # Alias kept for the specs/acceptance.md name.
 live-paper: live-day
+
+# Eval suite: REAL LLM turns against the REAL charters, 6 cases x 3 trials.
+# Costs money (~$2.10) and needs .env loaded. Never CI-on-commit — the code
+# invariants already run against recorded traces inside `make test` for $0.
+#
+# Places no orders and touches no broker: the seats under eval are the analyst
+# and PM, whose Alpaca toolsets are read-only and whose deny list blocks
+# mcp__alpaca__place_*.
+eval: deps
+	$(PYTHON) -m pytest -m eval tests/test_evals_live.py -v -s
+
+# Grade the newest trace set, optionally diffing a baseline sha. Free and
+# offline — it re-scores recorded traces and never runs a turn.
+#   make eval-report              # newest run
+#   make eval-report BASELINE=abc1234
+eval-report: deps
+	$(PYTHON) -m evals.report_cli $(BASELINE)

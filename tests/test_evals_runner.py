@@ -208,6 +208,23 @@ def test_each_trial_gets_a_fresh_db_and_journal(case, tmp_path):
     assert len({p.parent for p in dbs}) == 2
 
 
+def test_a_trial_given_a_workdir_never_writes_to_the_real_traces_dir(case,
+                                                                     tmp_path):
+    """Rig tests pass workdir= but not traces_root=. Without this rule every
+    `make test` run silently deposited junk traces into evals/traces/, where
+    `make eval-report` graded them as if they were a suite run and git would
+    have committed them. A workdir scopes the WHOLE trial, traces included."""
+    from evals.runner import DEFAULT_TRACES
+
+    before = set(DEFAULT_TRACES.rglob("*.json")) if DEFAULT_TRACES.exists() \
+        else set()
+    trace = run_trial("pm", case, 1, session=decide(), workdir=tmp_path)
+    after = set(DEFAULT_TRACES.rglob("*.json")) if DEFAULT_TRACES.exists() \
+        else set()
+    assert before == after, "trial leaked traces into the real traces dir"
+    assert (tmp_path / "traces" / trace.git_sha / "a01" / "1.json").exists()
+
+
 def test_run_trial_writes_the_trace_to_disk(case, tmp_path):
     trace = run_trial("pm", case, 3, session=decide(), workdir=tmp_path,
                       traces_root=tmp_path / "traces")

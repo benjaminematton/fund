@@ -15,13 +15,13 @@
       "kind": "decision",
       "payload": {
         "action": "buy",
-        "qty": 10,
-        "thesis": "t",
+        "qty": 400,
+        "thesis": "Capex thesis intact; adding on strength.",
         "ticker": "NVDA"
       }
     }
   ],
-  "git_sha": "76178b4",
+  "git_sha": "70ab8fa",
   "is_error": false,
   "model": "claude-sonnet-5",
   "permission_denials": [],
@@ -29,11 +29,11 @@
     "decisions": [
       {
         "action": "buy",
-        "invalidation": "i",
-        "qty": 10,
+        "invalidation": "close below 170 on volume",
+        "qty": 400,
         "status": "submitted",
         "stop_price": null,
-        "thesis": "t",
+        "thesis": "Capex thesis intact; adding on strength.",
         "ticker": "NVDA"
       }
     ]

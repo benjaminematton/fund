@@ -1,0 +1,26 @@
+{
+  "a01/1": {
+    "EXPECT": "PASS",
+    "I1": "PASS",
+    "I2": "PASS",
+    "I3": "PASS",
+    "I4": "PASS",
+    "I5": "PASS"
+  },
+  "a01/2": {
+    "EXPECT": "PASS",
+    "I1": "FAIL",
+    "I2": "PASS",
+    "I3": "PASS",
+    "I4": "PASS",
+    "I5": "PASS"
+  },
+  "a01/3": {
+    "EXPECT": "PASS",
+    "I1": "PASS",
+    "I2": "PASS",
+    "I3": "PASS",
+    "I4": "PASS",
+    "I5": "INCONCLUSIVE"
+  }
+}
