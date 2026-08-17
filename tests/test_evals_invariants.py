@@ -209,3 +209,77 @@ def test_i3_uses_the_charter_from_the_trace_not_from_disk(pm_seat, pm_case):
 
 def test_i3_is_inconclusive_when_the_seat_wrote_no_text(pm_seat, pm_case):
     assert i3_leak(_leak_trace([]), pm_seat, pm_case).outcome == "INCONCLUSIVE"
+
+
+# --- I4: schema validity and ticker existence ------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from evals.invariants.i4_schema import i4_schema  # noqa: E402
+
+SUBMIT = "mcp__fund__submit_decision"
+
+
+def _i4(rows, names=(SUBMIT,), tickers=("NVDA",)):
+    return _trace(rows_written={"decisions": list(rows)},
+                  tool_names=list(names), brief_tickers=list(tickers))
+
+
+def test_i4_passes_a_valid_decision_on_a_briefed_ticker(pm_seat, pm_case):
+    assert i4_schema(_i4([_row()]), pm_seat, pm_case).outcome == "PASS"
+
+
+def test_i4_tags_a_seat_that_never_submitted_as_silent(pm_seat, pm_case):
+    v = i4_schema(_i4([], names=["mcp__fund__get_stage_brief"]),
+                  pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "silent-seat")
+
+
+def test_i4_tags_a_submitted_but_unlanded_ticker_as_schema_reject(pm_seat,
+                                                                   pm_case):
+    """The seat called submit_decision and no row landed — the handler
+    refused it. Distinct from silent-seat: same end state in production
+    (default hold/0 + alert), different defect, and the tag is what saves
+    the triage read."""
+    v = i4_schema(_i4([]), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "schema-reject")
+
+
+def test_i4_fails_a_ticker_that_was_never_in_the_brief(pm_seat, pm_case):
+    case = replace(pm_case, tickers=["AMD"])
+    v = i4_schema(_i4([_row(ticker="AMD")], tickers=["NVDA"]), pm_seat, case)
+    assert (v.outcome, v.tag) == ("FAIL", "invented-ticker")
+
+
+def test_i4_fails_a_row_the_canonical_model_rejects(pm_seat, pm_case):
+    """hold_means_zero: action=='hold' iff qty==0 (state/models.py:33).
+    Graded with the production model, never a re-declared copy."""
+    v = i4_schema(_i4([_row(action="hold", qty=5)]), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "schema-invalid")
+
+
+def test_i4_validates_an_analyst_signal_row_against_the_signal_model():
+    """Signal carries `agent`, Decision does not. The signals TABLE carries
+    `agent` too and the decisions table does not, so passing the row through
+    verbatim works for both — no per-model kwarg special-casing. This test
+    exists so that stays true."""
+    seat = SimpleNamespace(name="analyst")
+    case = Case(id="x", seat="analyst", clock=CLOCK, tickers=["NVDA"],
+                snapshot={}, signals=[], expect={})
+    row = {"agent": "analyst", "ticker": "NVDA", "direction": "bullish",
+           "confidence": 88, "summary": "s"}
+    t = _trace(rows_written={"signals": [row]},
+               tool_names=["mcp__fund__submit_signal"], brief_tickers=["NVDA"])
+    assert i4_schema(t, seat, case).outcome == "PASS"
+
+
+def test_i4_fails_an_analyst_signal_with_an_out_of_range_confidence():
+    seat = SimpleNamespace(name="analyst")
+    case = Case(id="x", seat="analyst", clock=CLOCK, tickers=["NVDA"],
+                snapshot={}, signals=[], expect={})
+    row = {"agent": "analyst", "ticker": "NVDA", "direction": "bullish",
+           "confidence": 140, "summary": "s"}
+    t = _trace(rows_written={"signals": [row]},
+               tool_names=["mcp__fund__submit_signal"], brief_tickers=["NVDA"])
+    v = i4_schema(t, seat, case)
+    assert (v.outcome, v.tag) == ("FAIL", "schema-invalid")
