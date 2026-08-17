@@ -16,6 +16,9 @@ import asyncio
 from typing import Awaitable, Callable
 
 ALLOWED_TOOL_PREFIXES = ("mcp__fund__", "mcp__alpaca__")
+# The one call that actually executes a ticket. Kept in step with
+# agents/runtime.py's PLACE_PREFIX — the order gate hooks the same names.
+PLACE_PREFIX = "mcp__alpaca__place_"
 
 
 class ExecTurnViolation(Exception):
@@ -107,6 +110,7 @@ async def run_seat_turn(client, prompt: str, required: set[str], *,
 
 
 async def run_exec_turn(client, prompt: str, required: set[str], *,
+                        open_ticket_count: int = 0,
                         wait_timeout_s: float = 30.0, poll_s: float = 0.5,
                         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
                         ) -> list[str]:
@@ -121,17 +125,26 @@ async def run_exec_turn(client, prompt: str, required: set[str], *,
     tool_names, _ = await run_seat_turn(
         client, prompt, required, wait_timeout_s=wait_timeout_s,
         poll_s=poll_s, sleep=sleep)
-    check_tool_calls(tool_names)
+    check_tool_calls(tool_names, open_ticket_count)
     return tool_names
 
 
-def check_tool_calls(tool_names: list[str]) -> None:
-    """(a)/(b) Raise on zero tool calls, or any call outside the two globs.
+def check_tool_calls(tool_names: list[str], open_ticket_count: int = 0) -> None:
+    """(a)/(b)/(c) Raise on zero tool calls, any call outside the two globs, or
+    a turn that never attempted a placement while tickets were open.
 
     (a) A turn that touched nothing is a silent no-op, not a success — the
     seat exists to execute open tickets. (b) Any name outside
     ALLOWED_TOOL_PREFIXES is off-mandate; this asserts on calls ATTEMPTED and
-    is invariant to the permission layer."""
+    is invariant to the permission layer.
+
+    (c) is the first live day's lesson (2026-08-17). The seat read
+    list_open_tickets, never reached a place_* call, and (a) passed it because
+    it HAD called a tool. A turn holding an authorised ticket that never even
+    attempts to place it is the same silent no-op (a) exists to catch, one
+    step further in. This asserts on the ATTEMPT, not the outcome: a denied or
+    broker-rejected placement is a different failure, reported elsewhere, and
+    must not be conflated with never trying."""
     if not tool_names:
         raise ExecTurnViolation(
             "exec turn made zero tool calls — silent no-op is a hard failure, "
@@ -141,3 +154,9 @@ def check_tool_calls(tool_names: list[str]) -> None:
     if off:
         raise ExecTurnViolation(
             f"exec turn called tool(s) outside {ALLOWED_TOOL_PREFIXES}: {off}")
+    if open_ticket_count > 0 and not any(
+            t.startswith(PLACE_PREFIX) for t in tool_names):
+        raise ExecTurnViolation(
+            f"exec turn attempted no {PLACE_PREFIX}* call with "
+            f"{open_ticket_count} open ticket(s) — reading the tickets and "
+            f"stopping is not execution; called {tool_names}")

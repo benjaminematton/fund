@@ -67,3 +67,44 @@ def test_toolsearch_is_hard_failure():
     # ToolSearch is a built-in the seat must never reach for.
     with pytest.raises(ExecTurnViolation):
         check_tool_calls(["ToolSearch", "mcp__fund__list_open_tickets"])
+
+
+# --- (c) open tickets demand an ATTEMPT (first live day, 2026-08-17) --------
+
+def test_reading_the_tickets_and_stopping_is_not_execution():
+    """THE first-live-day failure. The exec seat called list_open_tickets,
+    never reached a place_* call, and (a) passed it because it HAD called a
+    tool. The turn billed four turns, the stage checkpointed done, and the
+    only signal was the end-of-day audit noticing a stranded decision."""
+    with pytest.raises(ExecTurnViolation) as e:
+        check_tool_calls(["mcp__fund__list_open_tickets"], open_ticket_count=1)
+    assert "no mcp__alpaca__place_* call" in str(e.value)
+    assert "1 open ticket" in str(e.value)
+    # the names are named, so the log says what it DID do
+    assert "mcp__fund__list_open_tickets" in str(e.value)
+
+
+def test_an_attempted_placement_satisfies_the_check_even_if_it_was_denied():
+    """(c) asserts on the ATTEMPT, not the outcome. A placement the order gate
+    denied, or the broker rejected, is a DIFFERENT failure with its own alert
+    — conflating the two would make a correctly-blocked order look like a lazy
+    seat, and would fire twice for one incident."""
+    check_tool_calls(["mcp__fund__list_open_tickets",
+                      "mcp__alpaca__place_stock_order"], open_ticket_count=1)
+
+
+def test_no_open_tickets_means_no_placement_is_required():
+    """A hold day: the gate approved nothing, so a turn that only reads is
+    correct and must stay silent."""
+    check_tool_calls(["mcp__fund__list_open_tickets"], open_ticket_count=0)
+    check_tool_calls(["mcp__fund__list_open_tickets"])          # default
+
+
+def test_the_older_two_checks_still_bite_with_tickets_open():
+    """(c) is additive — it must not shadow (a) or (b)."""
+    with pytest.raises(ExecTurnViolation) as zero:
+        check_tool_calls([], open_ticket_count=1)
+    assert "zero tool calls" in str(zero.value)
+    with pytest.raises(ExecTurnViolation) as off:
+        check_tool_calls(["Bash"], open_ticket_count=1)
+    assert "outside" in str(off.value)

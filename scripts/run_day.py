@@ -58,6 +58,7 @@ import yaml                                                        # noqa: E402
 
 import audit_day                                                   # noqa: E402
 from agents.exec_turn import check_tool_calls, run_seat_turn       # noqa: E402
+from gate.tickets import open_tickets                              # noqa: E402
 from agents.runtime import record_turn_result                      # noqa: E402
 from agents.seats import build_seat_options, load_seat_config      # noqa: E402
 from agents.wallclock import WallClock                             # noqa: E402
@@ -233,23 +234,31 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
                    f"{seat}_turn_failed — {type(exc).__name__}: {exc};"
                    " stage default applies (default is HOLD)")
             return
-        log_turn_result(seat, result)
+        log_turn_result(seat, result, names)
         record_cost_guarded(conn, clock, run_date, seat, result)
         if seat == "exec":
             try:
-                check_tool_calls(names)
+                # counted AFTER the turn: a ticket the seat consumed is no
+                # longer open, so only genuinely unexecuted ones can accuse it
+                check_tool_calls(names, len(open_tickets(conn, iso(clock.now()))))
             except Exception as exc:
                 _alert(conn, clock, f"exec_turn_violation — {exc}")
 
     return run
 
 
-def log_turn_result(seat: str, result) -> None:
+def log_turn_result(seat: str, result, tool_names=None) -> None:
     """num_turns right-sizes each seat's max_turns (HANDOFF-LIVE §7) and is
     persisted nowhere, so log it explicitly rather than leaving the SDK's own
-    stdout formatting as the owner's only capture path."""
+    stdout formatting as the owner's only capture path.
+
+    The tool-call list is logged for the same reason and costs nothing: on
+    2026-08-17 an exec turn billed four turns, placed no order, and left no
+    record of what it HAD called — diagnosing it took introspecting the
+    broker's MCP schema. One line here would have made it a grep."""
     log(f"{seat} turn done: num_turns={getattr(result, 'num_turns', 'n/a')}"
-        f" est_cost_usd={getattr(result, 'total_cost_usd', 'n/a')}")
+        f" est_cost_usd={getattr(result, 'total_cost_usd', 'n/a')}"
+        f" tools={list(tool_names) if tool_names is not None else 'n/a'}")
 
 
 def record_cost_guarded(conn, clock, run_date: str, seat: str, result) -> None:

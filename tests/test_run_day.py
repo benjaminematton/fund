@@ -418,6 +418,28 @@ def test_a_result_without_num_turns_still_logs(capsys):
     assert "num_turns=" in capsys.readouterr().out
 
 
+def test_the_tool_calls_a_turn_made_are_logged(capsys):
+    """First live day (2026-08-17): an exec turn billed 4 turns, placed no
+    order, and left NO record of what it had called — the diagnosis needed
+    introspecting the broker's MCP schema to infer it. One line here makes the
+    next one a grep."""
+    run_day_script.log_turn_result(
+        "exec", _Result(turns=4),
+        ["mcp__fund__list_open_tickets", "mcp__alpaca__place_stock_order"])
+    out = capsys.readouterr().out
+    assert "mcp__fund__list_open_tickets" in out
+    assert "mcp__alpaca__place_stock_order" in out
+
+
+def test_a_turn_whose_tools_were_never_captured_says_so(capsys):
+    """'n/a' rather than an empty list: a turn we failed to observe must not
+    read as a turn that called nothing — that is the exact distinction the
+    exec guard's (a) check turns into a hard failure."""
+    run_day_script.log_turn_result("analyst", _Result(turns=3))
+    out = capsys.readouterr().out
+    assert "tools=n/a" in out and "tools=[]" not in out
+
+
 # --- make_turn: a seat failure degrades to HOLD, it does not abort the day --
 
 def _turn(conn, clock, seat="analyst", **over):
