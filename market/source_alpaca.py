@@ -3,10 +3,19 @@ Env: ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_PAPER_TRADE=true (always)."""
 from __future__ import annotations
 import math
 import os
+from datetime import timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
+
+# Alpaca's free data plan excludes the most recent ~15 minutes of SIP data: a
+# bars request ending at "now" 403s with "subscription does not permit
+# querying recent SIP data" (measured 2026-08-14). Shifting the window back
+# keeps the consolidated tape rather than dropping to a single venue's feed,
+# which would change the prices every number in this repo is derived from.
+SIP_DELAY = timedelta(minutes=16)
+
 
 def _paper_guard() -> bool:
     if os.environ.get("ALPACA_PAPER_TRADE", "").lower() != "true":
@@ -84,10 +93,17 @@ class AlpacaSource:
         return _clock_dict(self._trading.get_clock())
 
     def close_frame(self, tickers: list[str], end, days: int = 90):
-        import pandas as pd
+        """Daily closes for `tickers`, ending SIP_DELAY before `end`.
+
+        The shift is unconditional and applied to the CALLER's end — never to
+        a wall-clock read, so the injected Clock stays the only source of
+        time. Safe to apply to a historical end too: these are 1Day bars, and
+        moving the end back 16 minutes cannot drop a bar that already closed.
+        """
+        end = end - SIP_DELAY
         bars = self._data.get_stock_bars(StockBarsRequest(
             symbol_or_symbols=tickers, timeframe=TimeFrame.Day,
-            start=end - pd.Timedelta(days=days * 2), end=end)).df
+            start=end - timedelta(days=days * 2), end=end)).df
         return _reshape_close_frame(bars, tickers, days)
 
     def account_state(self) -> dict:
