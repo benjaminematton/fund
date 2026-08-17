@@ -22,10 +22,18 @@ from typing import Callable
 
 from evals.cases import Case
 from evals.config import load_eval_seat
+from evals.expectations import case_expectations
+from evals.invariants import REGISTRY
 from evals.trace import Trace
 from evals.verdict import INCONCLUSIVE, Verdict
 
 Invariant = Callable[[Trace, object, Case], Verdict]
+
+
+def full_registry() -> dict[str, Invariant]:
+    """The Tier S invariants plus the case's own expectation. Callers wanting
+    a subset pass their own dict — grade_trace takes any mapping."""
+    return {**REGISTRY, "EXPECT": case_expectations}
 
 
 @dataclass

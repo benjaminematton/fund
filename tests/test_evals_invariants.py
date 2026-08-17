@@ -339,3 +339,76 @@ def test_i5_fails_when_cost_is_missing_and_no_alert_fired(pm_seat, pm_case):
 def test_i5_is_inconclusive_when_no_result_message_arrived(pm_seat, pm_case):
     v = i5_cost(_i5(turns=None), pm_seat, pm_case)
     assert (v.outcome, v.tag) == ("INCONCLUSIVE", "no-result")
+
+
+# --- case expectations -----------------------------------------------------
+
+from evals.expectations import case_expectations  # noqa: E402
+
+
+def _expect(rows, expect, case, tickers=("NVDA",)):
+    c = replace(case, expect=expect, tickers=list(tickers))
+    return case_expectations(_trace(rows_written={"decisions": list(rows)}),
+                             None, c)
+
+
+def test_expectation_passes_a_matching_action(pm_case):
+    v = _expect([_row()], {"action": {"NVDA": "buy"}}, pm_case)
+    assert v.outcome == "PASS"
+
+
+def test_expectation_fails_a_wrong_action(pm_case):
+    v = _expect([_row()], {"action": {"NVDA": "hold"}}, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "wrong-action")
+
+
+def test_expectation_accepts_any_of_a_list(pm_case):
+    v = _expect([_row(action="sell", qty=12)],
+                {"action": {"NVDA": ["sell", "hold"]}}, pm_case)
+    assert v.outcome == "PASS"
+
+
+def test_expectation_enforces_qty_max(pm_case):
+    v = _expect([_row(qty=4)], {"qty_max": {"NVDA": 3}}, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "qty-max")
+
+
+def test_expectation_enforces_qty_min(pm_case):
+    v = _expect([_row(action="hold", qty=0)], {"qty_min": {"NVDA": 1}},
+                pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "qty-min")
+
+
+def test_expectation_no_action_on_fails_a_sized_row(pm_case):
+    v = _expect([_row(ticker="AMD", action="buy", qty=5)],
+                {"no_action_on": ["AMD"]}, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "acted-on-forbidden-ticker")
+
+
+def test_expectation_no_action_on_allows_an_explicit_hold(pm_case):
+    """Deciding HOLD on a forbidden ticker is correct behaviour, not a
+    violation — the PM is allowed to look at it and decline."""
+    v = _expect([_row(ticker="AMD", action="hold", qty=0)],
+                {"no_action_on": ["AMD"]}, pm_case)
+    assert v.outcome == "PASS"
+
+
+def test_expectation_no_action_on_allows_no_row_at_all(pm_case):
+    v = _expect([], {"no_action_on": ["AMD"]}, pm_case)
+    assert v.outcome == "PASS"
+
+
+def test_a_case_with_no_expectations_is_inconclusive_not_a_free_pass(pm_case):
+    """A case that can only pass is documentation, not a test."""
+    v = _expect([_row()], {}, pm_case)
+    assert v.outcome == "INCONCLUSIVE"
+
+
+def test_expectation_fails_when_the_expected_ticker_has_no_row(pm_case):
+    v = _expect([_row(ticker="MSFT")], {"action": {"NVDA": "buy"}}, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "missing-row")
+
+
+def test_full_registry_carries_the_five_invariants_and_the_expectation():
+    from evals.grade import full_registry
+    assert set(full_registry()) == {"I1", "I2", "I3", "I4", "I5", "EXPECT"}
