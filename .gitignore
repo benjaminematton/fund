@@ -44,3 +44,8 @@ logs/*
 # Agent worktrees. Never tracked: a worktree holds a full second checkout, so
 # a stray `git add -A` on master would commit the whole tree into itself.
 .claude/worktrees/
+
+# Per-trial eval scratch: temp SQLite DBs and journals, one dir per trial.
+# 2.3MB per suite run and meaningless once the trace is written. Traces
+# themselves ARE tracked (evals/traces/) — they are the baseline artifact.
+evals/_work/
