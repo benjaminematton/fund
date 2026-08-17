@@ -68,7 +68,7 @@ live-paper: live-day
 # and PM, whose Alpaca toolsets are read-only and whose deny list blocks
 # mcp__alpaca__place_*.
 eval: deps
-	$(PYTHON) -m pytest -m eval tests/test_evals_live.py -v -s
+	$(PYTHON) scripts/eval_suite.py $(CASES)
 
 # Grade the newest trace set, optionally diffing a baseline sha. Free and
 # offline — it re-scores recorded traces and never runs a turn.
