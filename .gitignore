@@ -40,3 +40,7 @@ logs/*
 # would grant one dev's Bash approvals to everyone's seats. Project-shared
 # settings (if ever needed) go in .claude/settings.json, reviewed like code.
 .claude/settings.local.json
+
+# Agent worktrees. Never tracked: a worktree holds a full second checkout, so
+# a stray `git add -A` on master would commit the whole tree into itself.
+.claude/worktrees/
