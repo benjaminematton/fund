@@ -6,6 +6,7 @@ so the same functions serve live SDK sessions and offline replay."""
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Callable
@@ -14,6 +15,8 @@ from gate.tickets import validate_order
 from orchestrator.clock import Clock, iso
 from slackkit.outbox import append_event
 from state.transition import try_transition
+
+log = logging.getLogger(__name__)
 
 PLACE_PREFIX = "mcp__alpaca__place_"
 
@@ -28,6 +31,17 @@ def _cached(conn_factory):
             box["c"] = conn_factory()
         return box["c"]
     return get
+
+
+def _deny_alert_text(tool_input, reason) -> str:
+    """Name the ticker, the reason and the 8-char ticket id. The input of a
+    DENIED order is untrusted by construction — a malformed-input deny is the
+    normal case — so every field degrades to '?' and this never raises."""
+    ti = tool_input if isinstance(tool_input, dict) else {}
+    symbol, coid = ti.get("symbol"), ti.get("client_order_id")
+    ticker = symbol if isinstance(symbol, str) and symbol else "?"
+    ticket = coid[:8] if isinstance(coid, str) and coid else "?"
+    return f"⛔ ORDER DENIED {ticker} (ticket {ticket}) — {reason}"
 
 
 def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
@@ -47,11 +61,26 @@ def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
             ok, reason = False, f"gate error: {exc}"  # internal error allow
         if ok:
             return {}
-        return {"hookSpecificOutput": {
+        denial = {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }}
+        # A deny is runbook abort criterion #1, so it must be OBSERVABLE: the
+        # alert projects to #risk and reddens scripts/audit_day.py. Built
+        # before the append and swallowed on failure — an UNRECORDABLE deny is
+        # still a deny; observability must never open the gate (invariant 4).
+        try:
+            append_event(conn(), "alert", {
+                "text": _deny_alert_text(input_data.get("tool_input"), reason)},
+                iso(clock.now()))
+        except Exception as exc:      # logged, never silent: if this path is
+            log.error(               # broken, denies go dark again and the
+                "order gate: DENIED %s but could not record the alert —"
+                " %s: %s; the denial still stands",
+                _deny_alert_text(input_data.get("tool_input"), reason),
+                type(exc).__name__, exc)
+        return denial
 
     return order_gate
 

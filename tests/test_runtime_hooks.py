@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 
 from agents.runtime import (make_decision_recorder, make_order_gate,
                             make_order_recorder, record_cost,
@@ -47,6 +48,87 @@ def test_order_gate_fails_closed_on_internal_error(sim_clock):
                      "tool_input": order()}, "t1", None))
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "db down" in _deny_reason(out)
+
+
+DENIAL = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                 "permissionDecision": "deny",
+                                 "permissionDecisionReason": None}}
+
+
+def _denial(reason):
+    out = {"hookSpecificOutput": dict(DENIAL["hookSpecificOutput"])}
+    out["hookSpecificOutput"]["permissionDecisionReason"] = reason
+    return out
+
+
+def test_order_gate_deny_appends_one_alert_naming_ticker_reason_and_ticket(
+        fund_db, sim_clock):
+    """D1: runbook abort criterion #1 is 'a hook deny on a live order', but on
+    the first live day a deny wrote NOTHING — it was invisible in #risk and in
+    the audit. Every deny must append exactly one alert naming the ticker, the
+    reason, and the 8-char ticket id, and must still deny identically."""
+    gate = make_order_gate(lambda: fund_db, sim_clock)  # no ticket seeded
+    out = _run(gate({"tool_name": "mcp__alpaca__place_stock_order",
+                     "tool_input": order()}, "t1", None))
+    reason = _deny_reason(out)
+    assert out == _denial(reason)          # recording changed nothing returned
+    assert "no gate ticket" in reason
+    alerts = _alerts(fund_db)
+    assert len(alerts) == 1
+    assert "NVDA" in alerts[0]
+    assert TID[:8] in alerts[0]
+    assert reason in alerts[0]
+    assert fund_db.execute(
+        "SELECT created_at FROM events").fetchone()["created_at"] == NOW
+
+
+def test_order_gate_allowed_order_appends_no_alert(fund_db, sim_clock):
+    """Recording is deny-only: an allowed order and a non-place tool stay silent
+    or #risk fills with noise and the audit reddens on every good day."""
+    _seed(fund_db)
+    gate = make_order_gate(lambda: fund_db, sim_clock)
+    assert _run(gate({"tool_name": "mcp__alpaca__place_stock_order",
+                      "tool_input": order()}, "t1", None)) == {}
+    assert _run(gate({"tool_name": "mcp__fund__list_open_tickets",
+                      "tool_input": {}}, "t2", None)) == {}
+    assert _alerts(fund_db) == []
+
+
+def test_order_gate_deny_alert_survives_malformed_tool_input(fund_db, sim_clock):
+    """A malformed-input deny is the normal case: symbol/client_order_id may be
+    missing or non-string. The alert must still be emitted, never raise."""
+    gate = make_order_gate(lambda: fund_db, sim_clock)
+    for bad in ({}, {"symbol": None, "client_order_id": 42}, None):
+        out = _run(gate({"tool_name": "mcp__alpaca__place_stock_order",
+                         "tool_input": bad}, "t1", None))
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert len(_alerts(fund_db)) == 3
+
+
+class _NoEventWrites:
+    """Reads like the real DB; every events INSERT explodes."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, *args):
+        if "INTO events" in sql:
+            raise sqlite3.OperationalError("disk I/O error")
+        return self._conn.execute(sql, *args)
+
+    def commit(self):
+        return self._conn.commit()
+
+
+def test_order_gate_deny_survives_an_unrecordable_alert(fund_db, sim_clock):
+    """An unrecordable deny is still a deny: if the append itself raises, the
+    denial must be returned unchanged (never let observability open the gate)."""
+    gate = make_order_gate(lambda: _NoEventWrites(fund_db), sim_clock)
+    out = _run(gate({"tool_name": "mcp__alpaca__place_stock_order",
+                     "tool_input": order()}, "t1", None))
+    assert out == _denial(_deny_reason(out))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert _alerts(fund_db) == []
 
 
 def test_order_recorder_writes_once_and_projects(fund_db, sim_clock):
