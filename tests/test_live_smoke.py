@@ -34,6 +34,17 @@ def _alpaca_get(path):
         return json.loads(r.read())
 
 
+def _latest_trade_price(symbol: str) -> float:
+    """Last trade from the market-data host (a different host from PAPER, so
+    it does not go through _alpaca_get)."""
+    req = urllib.request.Request(
+        f"https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest",
+        headers={"APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"],
+                 "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET_KEY"]})
+    with urllib.request.urlopen(req) as r:
+        return float(json.loads(r.read())["trade"]["p"])
+
+
 def _alpaca_delete(path):
     req = urllib.request.Request(PAPER + path, method="DELETE", headers={
         "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"],
@@ -225,3 +236,109 @@ def test_schema_pin_place_stock_order_takes_a_flat_stop_leg():
     # the fields the gate also reads on every order
     for field in ("client_order_id", "symbol", "side", "qty", "order_class"):
         assert field in props, f"place_stock_order lost {field!r}"
+
+
+def test_a_stopped_ticket_places_with_a_flat_stop_leg(tmp_path):
+    """The path the 2026-08-17 outage lived on, end to end against the real
+    broker.
+
+    Everything about a STOPPED ticket was undeliverable that day: the gate
+    validated a nested `stop_loss: {stop_price}` the tool has never exposed,
+    the seat could not satisfy both the gate and the broker, and no order was
+    ever placed. The other smoke seeds stop_price NULL, so it exercises the
+    plain path only — this class of failure could recur under a fully green
+    `pytest -m live` run.
+
+    This is the ONLY test that proves charter -> seat -> flat
+    stop_loss_stop_price -> order gate -> broker actually connects. It places
+    a REAL 1-share paper order with a resting stop and cleans up after
+    itself."""
+    for var in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ANTHROPIC_API_KEY"):
+        if not os.environ.get(var):
+            pytest.skip(f"{var} not set — load .env first")
+
+    from datetime import timedelta
+
+    from agents.exec_turn import run_exec_turn
+    from agents.trader import build_trader_options, load_seat_config
+    from agents.wallclock import WallClock
+    from gate.tickets import create_ticket
+    from orchestrator.clock import iso
+    from state.db import connect
+
+    # A stop far BELOW the market: it must rest unfilled, never turn this into
+    # an accidental exit. Priced off the live quote so it cannot go stale.
+    price = _latest_trade_price("AAPL")
+    stop_price = round(price * 0.70, 2)          # 30% below: rests, never fires
+
+    clock = WallClock()
+    db_path = tmp_path / "live-smoke-stop.sqlite"
+    conn = connect(db_path)
+    now = iso(clock.now())
+    ticket_id = str(uuid.uuid4())
+    cur = conn.execute(
+        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+        " invalidation, stop_price, status, created_at) VALUES"
+        " (?, 'AAPL', 'buy', 1, 'live smoke: stopped ticket', 'n/a', ?,"
+        " 'approved', ?)", (now[:10], stop_price, now))
+    conn.commit()
+    create_ticket(conn, id=ticket_id, decision_id=cur.lastrowid,
+                  ticker="AAPL", side="buy", max_qty=1, stop_price=stop_price,
+                  expires_at_iso=iso(clock.now() + timedelta(minutes=45)),
+                  now_iso=now)
+
+    async def run_turn():
+        from claude_agent_sdk import ClaudeSDKClient
+        opts = build_trader_options(
+            load_seat_config("agents/config/exec.yaml"), db_path, clock)
+        async with ClaudeSDKClient(options=opts) as client:
+            return await run_exec_turn(
+                client,
+                "Execution stage: execute all open tickets per your charter.",
+                {"alpaca", "fund"}, open_ticket_count=1)
+
+    tool_calls = asyncio.run(run_turn())
+    assert any(t.startswith("mcp__alpaca__place_") for t in tool_calls), (
+        f"seat never attempted a placement: {tool_calls}")
+
+    # THE assertion: the order reached the broker at all. On 2026-08-17 this
+    # is where it died — the gate denied every shape the seat could send.
+    order = _alpaca_get(
+        f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
+    assert order.get("client_order_id") == ticket_id, order
+
+    # ...carrying the ticket's stop, as a real oto leg the broker accepted.
+    # Polled: on an oto the child is created held and can lag the parent in
+    # the API by a moment, so an immediate read is a false negative.
+    assert order.get("order_class") == "oto", order.get("order_class")
+    leg_stops = []
+    for _ in range(10):
+        order = _alpaca_get(
+            f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
+        leg_stops = [float(l["stop_price"]) for l in (order.get("legs") or [])
+                     if l.get("stop_price")]
+        if leg_stops:
+            break
+        time.sleep(2)
+    assert stop_price in leg_stops, (
+        f"ticket stop {stop_price} not on the order's legs: {leg_stops}")
+
+    # ...and the recorder mirrored it, so the DB tells the truth about it
+    row = conn.execute("SELECT * FROM orders WHERE client_order_id = ?",
+                       (ticket_id,)).fetchone()
+    assert row is not None, "recorder did not write the order row"
+
+    # cleanup: cancel anything still working, then flatten the share if filled
+    for _ in range(20):
+        o = _alpaca_get(
+            f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
+        if o["status"] in ("filled", "canceled", "rejected", "expired"):
+            break
+        time.sleep(3)
+    for leg in (o.get("legs") or []):
+        if leg["status"] not in ("filled", "canceled", "rejected", "expired"):
+            _alpaca_delete(f"/v2/orders/{leg['id']}")
+    if o["status"] not in ("filled", "canceled", "rejected", "expired"):
+        _alpaca_delete(f"/v2/orders/{o['id']}")
+    if o["status"] == "filled":
+        _alpaca_delete("/v2/positions/AAPL")
