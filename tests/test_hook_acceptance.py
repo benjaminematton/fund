@@ -56,7 +56,7 @@ def test_stop_ticket_yields_oto_order(fund_db, sim_clock):
     assert json.loads(outcomes[-1]["result"])["data"]["status"] == "filled"
     placed = broker.place_attempts[0]
     assert placed["order_class"] == "oto"
-    assert placed["stop_loss"] == {"stop_price": 168.0}
+    assert placed["stop_loss_stop_price"] == "168.0"
 
 
 def test_stopless_ticket_yields_plain_order(fund_db, sim_clock):
@@ -65,4 +65,5 @@ def test_stopless_ticket_yields_plain_order(fund_db, sim_clock):
     outcomes = _replay(fund_db, sim_clock, broker, "happy_market.jsonl")
     assert json.loads(outcomes[-1]["result"])["data"]["status"] == "filled"
     placed = broker.place_attempts[0]
-    assert "stop_loss" not in placed and placed.get("order_class") is None
+    assert placed.get("stop_loss_stop_price") is None
+    assert placed.get("order_class") is None

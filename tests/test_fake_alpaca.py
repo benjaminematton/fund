@@ -50,10 +50,10 @@ def test_duplicate_client_order_id_422_and_original_untouched():
 def test_oto_stop_leg_shape_recorded():
     b = _broker()
     resp = b.place_order(order(order_class="oto",
-                               stop_loss={"stop_price": 168.0}))
+                               stop_loss_stop_price="168.0"))
     assert resp["order_class"] == "oto"
-    assert resp["stop_loss"] == {"stop_price": 168.0}
-    assert b.place_attempts[0]["stop_loss"] == {"stop_price": 168.0}
+    assert resp["stop_loss_stop_price"] == "168.0"
+    assert b.place_attempts[0]["stop_loss_stop_price"] == "168.0"
 
 
 def test_bracket_without_take_profit_is_422():
@@ -63,7 +63,7 @@ def test_bracket_without_take_profit_is_422():
     but no order is stored."""
     b = _broker()
     resp = b.place_order(order(order_class="bracket",
-                               stop_loss={"stop_price": 168.0}))
+                               stop_loss_stop_price="168.0"))
     assert resp["status_code"] == 422 and "take_profit" in resp["error"]
     assert b.get_order_by_client_order_id(order()["client_order_id"]) is None
 

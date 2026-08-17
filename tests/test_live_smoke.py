@@ -152,3 +152,76 @@ def test_alpaca_source_account_state_and_close_frame():
     frame = src.close_frame(["NVDA", "SPY"], end=pd.Timestamp.now(tz="UTC"))
     assert len(frame) >= 60
     assert not frame.tail(5).isna().any().any()
+
+
+# --- schema pin: the real place_stock_order parameter surface ---------------
+#
+# 2026-08-17, first live day: the gate validated a NESTED stop leg
+# (`stop_loss: {stop_price: ...}`) that the real MCP tool has never exposed —
+# it takes FLAT `stop_loss_stop_price` / `stop_loss_limit_price`. Every
+# offline test agreed with the gate because FakeAlpaca and the recordings
+# encoded the same wrong assumption, so a ticket carrying a stop_price was
+# undeliverable in production and nothing could catch it. This pins the real
+# surface: schema drift now fails loudly here instead of silently at 09:35.
+
+STOP_LEG_FIELDS = ("stop_loss_stop_price", "stop_loss_limit_price",
+                   "take_profit_limit_price")
+
+
+def _place_stock_order_schema() -> dict:
+    """tools/list the real alpaca-mcp-server and return place_stock_order's
+    JSON schema. Read-only: initialize + list, no tool is ever called."""
+    import subprocess
+
+    def send(proc, msg):
+        proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+
+    env = {**os.environ, "ALPACA_TOOLSETS": "account,trading,stock-data"}
+    proc = subprocess.Popen(
+        ["uvx", "alpaca-mcp-server"], env=env, text=True, bufsize=1,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                               "clientInfo": {"name": "schema-pin", "version": "1"}}})
+        proc.stdout.readline()
+        send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized",
+                    "params": {}})
+        send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        tools = json.loads(proc.stdout.readline())["result"]["tools"]
+    finally:
+        proc.kill()
+    for t in tools:
+        if t["name"] == "place_stock_order":
+            return t["inputSchema"]
+    raise AssertionError(
+        f"alpaca-mcp-server exposes no place_stock_order; got {[t['name'] for t in tools]}")
+
+
+def test_place_stock_order_takes_a_flat_stop_leg_not_a_nested_one():
+    """gate/tickets.py validate_order reads these exact names. If Alpaca ever
+    renames them, or reintroduces a nested object, the gate silently stops
+    matching real orders — which is precisely the 2026-08-17 failure."""
+    props = _place_stock_order_schema().get("properties", {})
+
+    missing = [f for f in STOP_LEG_FIELDS if f not in props]
+    assert not missing, (
+        f"place_stock_order no longer exposes {missing} — gate/tickets.py "
+        f"validates against these names. Present: {sorted(props)}")
+
+    # the shape the gate used to assume, and must never assume again
+    assert "stop_loss" not in props, (
+        "place_stock_order now exposes a nested 'stop_loss' object; "
+        "validate_order was rewritten to the flat fields on 2026-08-17")
+    assert "take_profit" not in props
+
+    # flat legs arrive as strings, like every other numeric in this API
+    for field in STOP_LEG_FIELDS:
+        types = props[field].get("anyOf") or [props[field]]
+        assert any(t.get("type") == "string" for t in types), (
+            f"{field} is no longer a string: {props[field]}")
+
+    # the fields the gate also reads on every order
+    for field in ("client_order_id", "symbol", "side", "qty", "order_class"):
+        assert field in props, f"place_stock_order lost {field!r}"

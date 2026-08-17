@@ -83,7 +83,13 @@ class FakeAlpaca:
             "filled_qty": args["qty"] if instant else 0,
             "filled_avg_price": px if instant else None,
             "order_class": args.get("order_class", ""),
-            "stop_loss": args.get("stop_loss"),
+            # FLAT exit legs, exactly as the real place_stock_order exposes
+            # them (schema-pinned in tests/test_live_smoke.py). The nested
+            # `stop_loss: {stop_price}` this fake used to mirror never existed
+            # at the broker — it agreed with the gate and both were wrong.
+            "stop_loss_stop_price": args.get("stop_loss_stop_price"),
+            "stop_loss_limit_price": args.get("stop_loss_limit_price"),
+            "take_profit_limit_price": args.get("take_profit_limit_price"),
         }
         self.orders[coid] = order
         return dict(order)

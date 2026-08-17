@@ -76,6 +76,30 @@ def _as_share_count(qty):
     return None
 
 
+# Every exit-leg parameter the real place_stock_order exposes. A ticket with
+# no stop_price must carry NONE of them — naming them all means a take-profit
+# smuggled onto an unstopped ticket is denied too, not just a stop.
+_STOP_LEG_KEYS = ("stop_loss_stop_price", "stop_loss_limit_price",
+                  "take_profit_limit_price")
+
+
+def _as_price(value):
+    """Price from a float/int or a numeric STRING; None otherwise. The Alpaca
+    MCP place tool sends every numeric as a string ("210.0"), so the string
+    form is the normal case here, not the edge case. Rejects bool and
+    unparseable input — a stop we cannot read is a stop we cannot verify."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def validate_order(conn: sqlite3.Connection, tool_input,
                    now_iso: str) -> tuple[bool, str]:
     """The five acceptance checks + malformed-input denial (invariant 4)."""
@@ -102,17 +126,26 @@ def validate_order(conn: sqlite3.Connection, tool_input,
                        f"{tool_input.get('qty')!r}")
     if qty > t["max_qty"]:
         return False, f"qty {qty} exceeds ticket max_qty {t['max_qty']}"
-    stop_leg = tool_input.get("stop_loss")
+    # The stop leg is FLAT — `stop_loss_stop_price`, a string, exactly as the
+    # real place_stock_order exposes it. It is NOT a nested
+    # `stop_loss: {stop_price: ...}` object: that shape never existed at the
+    # broker, so before 2026-08-17 every ticket carrying a stop_price was
+    # undeliverable (the gate denied the real shape and the MCP server
+    # rejected the assumed one). tests/test_live_smoke.py's schema pin holds
+    # these names to the server's actual surface.
+    legs = {k: tool_input.get(k) for k in _STOP_LEG_KEYS
+            if tool_input.get(k) is not None}
     if t["stop_price"] is None:
-        if stop_leg is not None:
-            return False, "ticket has no stop_price; order must not carry a stop leg"
+        if legs:
+            return False, ("ticket has no stop_price; order must not carry a "
+                           f"stop leg, got {sorted(legs)}")
     else:
-        leg_price = stop_leg.get("stop_price") if isinstance(stop_leg, dict) else None
-        if not isinstance(leg_price, (int, float)) or isinstance(leg_price, bool) \
-                or float(leg_price) != float(t["stop_price"]):
-            return False, (f"stop leg {leg_price!r} != ticket stop_price "
-                           f"{t['stop_price']} — the order must carry the"
-                           " ticket's stop")
+        leg_price = _as_price(tool_input.get("stop_loss_stop_price"))
+        if leg_price is None or leg_price != float(t["stop_price"]):
+            return False, (
+                f"stop_loss_stop_price {tool_input.get('stop_loss_stop_price')!r}"
+                f" != ticket stop_price {t['stop_price']} — the order must"
+                " carry the ticket's stop")
         # A stop exit places at Alpaca as order_class 'oto' carrying the single
         # stop leg — NOT 'bracket' (bracket 422s: it requires a take_profit leg
         # the ticket has no field for). Fail-fast on the unplaceable class

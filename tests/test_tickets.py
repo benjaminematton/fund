@@ -65,7 +65,7 @@ def test_validate_happy_path_plain(fund_db):
 def test_validate_happy_path_oto(fund_db):
     _seed(fund_db, stop_price=168.0)
     ok, reason = validate_order(
-        fund_db, order(order_class="oto", stop_loss={"stop_price": 168.0}), NOW)
+        fund_db, order(order_class="oto", stop_loss_stop_price="168.0"), NOW)
     assert ok, reason
 
 
@@ -108,14 +108,14 @@ def test_deny_wrong_symbol(fund_db):
 def test_deny_stop_leg_mismatch(fund_db):
     _seed(fund_db, stop_price=168.0)
     ok, reason = validate_order(
-        fund_db, order(order_class="oto", stop_loss={"stop_price": 150.0}), NOW)
+        fund_db, order(order_class="oto", stop_loss_stop_price="150.0"), NOW)
     assert not ok and "stop" in reason
 
 
 def test_deny_stop_leg_on_stopless_ticket(fund_db):
     _seed(fund_db)  # stop_price NULL
     ok, reason = validate_order(
-        fund_db, order(order_class="oto", stop_loss={"stop_price": 168.0}), NOW)
+        fund_db, order(order_class="oto", stop_loss_stop_price="168.0"), NOW)
     assert not ok and "stop" in reason
 
 
@@ -133,7 +133,7 @@ def test_deny_bracket_order_class_when_stop(fund_db):
     unplaceable class rather than pass it to the broker (invariant 4)."""
     _seed(fund_db, stop_price=168.0)
     ok, reason = validate_order(
-        fund_db, order(order_class="bracket", stop_loss={"stop_price": 168.0}), NOW)
+        fund_db, order(order_class="bracket", stop_loss_stop_price="168.0"), NOW)
     assert not ok and "oto" in reason
 
 
@@ -153,3 +153,50 @@ def test_deny_malformed_or_mismatched_input(fund_db, bad):
 def test_deny_non_dict_input(fund_db):
     ok, _ = validate_order(fund_db, "buy NVDA lol", NOW)
     assert not ok
+
+
+# --- 2026-08-17: the stop leg is FLAT, and the nested shape is not a stop ---
+
+def test_the_nested_stop_leg_is_not_accepted_as_a_stop(fund_db):
+    """THE first-live-day bug, as a test. The gate used to read a nested
+    `stop_loss: {stop_price: ...}` that the real place_stock_order has never
+    exposed. Both sides of the mismatch were undeliverable: the gate denied
+    the broker's real flat shape, and the broker rejected the gate's assumed
+    nested one, so a ticket carrying a stop_price could not be filled at all
+    while the whole offline suite stayed green.
+
+    The nested object must now read as NO stop leg — the order is denied for
+    missing the ticket's stop, never silently approved on a key the broker
+    would ignore."""
+    _seed(fund_db, stop_price=168.0)
+    ok, reason = validate_order(
+        fund_db, order(order_class="oto", stop_loss={"stop_price": 168.0}), NOW)
+    assert not ok
+    assert "stop_loss_stop_price" in reason
+
+
+def test_a_flat_stop_leg_is_read_from_a_string_like_the_real_tool_sends(fund_db):
+    """Every numeric the Alpaca MCP place tool sends is a STRING, stop prices
+    included — the float form is the courtesy case, not the real one. Both
+    must compare equal to the ticket's REAL-typed stop_price."""
+    _seed(fund_db, stop_price=168.0)
+    for value in ("168.0", "168", 168.0, 168):
+        ok, reason = validate_order(
+            fund_db, order(order_class="oto", stop_loss_stop_price=value), NOW)
+        assert ok, f"{value!r} rejected: {reason}"
+    for value in ("168.01", "", "abc", None, True):
+        ok, _ = validate_order(
+            fund_db, order(order_class="oto", stop_loss_stop_price=value), NOW)
+        assert not ok, f"{value!r} was accepted as the ticket's stop"
+
+
+def test_a_stopless_ticket_refuses_every_exit_leg_not_just_the_stop(fund_db):
+    """A take-profit smuggled onto an unstopped ticket is as much an
+    unauthorised exit as a stop is; the gate names every leg the real tool
+    exposes rather than only the one that caused the outage."""
+    _seed(fund_db)  # stop_price NULL
+    for leg in ("stop_loss_stop_price", "stop_loss_limit_price",
+                "take_profit_limit_price"):
+        ok, reason = validate_order(fund_db, order(**{leg: "168.0"}), NOW)
+        assert not ok, f"{leg} was allowed on a stopless ticket"
+        assert leg in reason
