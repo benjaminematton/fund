@@ -8,6 +8,9 @@ max_budget_usd: 0.50
 # degrades safely to neutral/0, but demo day deserves a real signal, so this
 # leaves headroom until a live ResultMessage.num_turns says otherwise.
 # max_budget_usd above stays the hard backstop.
+# MEASURED 2026-08-17 (first clean live day, 2 tickers): 7 turns, $0.0504.
+# Nothing truncated. Held at 16 for the 3-ticker watchlist (~9 expected) —
+# a clipped turn is no measurement, not a smaller one.
 max_turns: 16
 alpaca_toolsets: "stock-data,news,account"   # READ-ONLY (invariant 2)
 tools: ["mcp__fund__*", "mcp__alpaca__*"]

@@ -2,6 +2,7 @@ seat: pm
 model: claude-sonnet-5
 fallback_model: claude-sonnet-5
 max_budget_usd: 0.75
+# MEASURED 2026-08-17: 5 turns, $0.1161 (the dearest seat — Sonnet).
 max_turns: 10
 alpaca_toolsets: "account,stock-data"   # READ-ONLY (invariant 2)
 tools: ["mcp__fund__*", "mcp__alpaca__*"]

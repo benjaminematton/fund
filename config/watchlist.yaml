@@ -6,10 +6,21 @@
 # sector is rejected fail-closed by the gate and would burn a seat turn for a
 # guaranteed HOLD.
 #
-# provisional — right-size from first live ResultMessage
-# (2 tickers, not the spec-P1 cap of 3: the first supervised live day leaves
-# headroom under the analyst's turn budget rather than guessing how the SDK
-# counts turns. Widen once a real ResultMessage.num_turns is in hand.)
+# Right-sized 2026-08-17 from the first CLEAN live day's real ResultMessage,
+# not a guess: at 2 tickers the analyst used 7 turns of 16, the PM 5, the exec
+# 3, total est. $0.1997 against the $0.50/day bound. Nothing was truncated, so
+# those are real measurements rather than ceilings.
+#
+# 3 is the spec-P1 cap. Expected turn cost at 3: the analyst's work is one
+# fixed brief call plus roughly two calls per ticker, so ~9 of 16 — still well
+# under, which is why max_turns stays 16 rather than tightening toward the
+# observed number. A ceiling that clips a turn does not yield a smaller
+# measurement, it yields no measurement (2026-08-17 postmortem, §7).
+#
+# AAPL is the third name deliberately: it makes all three holdings tech, so a
+# full-size position in each would breach the 60% post-trade sector cap — the
+# gate's resize path, which no live day has exercised yet.
 tickers:
   - NVDA
   - MSFT
+  - AAPL

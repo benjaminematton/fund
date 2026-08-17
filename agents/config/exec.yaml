@@ -3,6 +3,9 @@ seat: exec
 model: claude-haiku-4-5-20251001
 fallback_model: claude-sonnet-5
 max_budget_usd: 1.00        # BUDGET_FAST_SEAT
+# MEASURED 2026-08-17: 3 turns, $0.0332 (list_open_tickets + place_stock_order).
+# The failed run that morning took 4 — the extra turn was the placement it
+# could not make.
 max_turns: 12
 alpaca_toolsets: "account,trading,stock-data"   # ONLY seat with trading (invariant 2)
 # Capability surface (PREVENTER — see agents/exec_turn.py). `tools` is
