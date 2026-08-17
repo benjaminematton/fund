@@ -283,3 +283,59 @@ def test_i4_fails_an_analyst_signal_with_an_out_of_range_confidence():
                tool_names=["mcp__fund__submit_signal"], brief_tickers=["NVDA"])
     v = i4_schema(t, seat, case)
     assert (v.outcome, v.tag) == ("FAIL", "schema-invalid")
+
+
+# --- I5: turns, cost, step repetition --------------------------------------
+
+from evals.invariants.i5_cost import i5_cost  # noqa: E402
+
+BRIEF = "mcp__fund__get_stage_brief"
+
+
+def _i5(**over):
+    args = dict(turns=5, cost_usd=0.116,
+                tool_names=[BRIEF, "mcp__fund__submit_decision"], alerts=[])
+    args.update(over)
+    return _trace(**args)
+
+
+def test_i5_passes_a_turn_inside_both_ceilings(pm_seat, pm_case):
+    assert i5_cost(_i5(), pm_seat, pm_case).outcome == "PASS"
+
+
+def test_i5_fails_a_turn_over_the_turn_ceiling(pm_seat, pm_case):
+    v = i5_cost(_i5(turns=pm_seat.max_turns + 1), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "turn-ceiling")
+
+
+def test_i5_fails_a_turn_over_the_cost_ceiling(pm_seat, pm_case):
+    v = i5_cost(_i5(cost_usd=pm_seat.max_cost_usd + 0.01), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "cost-ceiling")
+
+
+def test_i5_fails_a_redundant_stage_brief(pm_seat, pm_case):
+    v = i5_cost(_i5(tool_names=[BRIEF, BRIEF]), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "step-repetition")
+
+
+def test_i5_is_inconclusive_when_cost_is_missing_but_the_alert_fired(
+        pm_seat, pm_case):
+    """The SDK not populating total_cost_usd is API weather, and production
+    handles it honestly by alerting. Not the seat's failure."""
+    alerts = [{"id": 1, "kind": "alert",
+               "payload": {"text": "cost_unavailable pm — turn completed"}}]
+    v = i5_cost(_i5(cost_usd=None, alerts=alerts), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("INCONCLUSIVE", "cost-missing")
+
+
+def test_i5_fails_when_cost_is_missing_and_no_alert_fired(pm_seat, pm_case):
+    """agents/runtime.py:247 REQUIRES the alert when the estimate is absent.
+    A missing cost with no alert means the cost pillar is broken silently —
+    a real invariant violation, not weather."""
+    v = i5_cost(_i5(cost_usd=None, alerts=[]), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("FAIL", "cost-missing-without-alert")
+
+
+def test_i5_is_inconclusive_when_no_result_message_arrived(pm_seat, pm_case):
+    v = i5_cost(_i5(turns=None), pm_seat, pm_case)
+    assert (v.outcome, v.tag) == ("INCONCLUSIVE", "no-result")
