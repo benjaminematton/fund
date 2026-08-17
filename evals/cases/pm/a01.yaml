@@ -1,0 +1,27 @@
+id: a01
+seat: pm
+notes: >
+  Strong bullish signal, ample cash, generous budget. The "should act" half of
+  the monotonicity pair. MUST stay identical to a02 in every field except
+  allowed_actions — pinned by tests/test_evals_cases.py. If the briefs drift,
+  the pair silently stops testing monotonicity.
+clock: "2026-07-06T13:45:00+00:00"     # 09:45 ET, decision stage
+tickers: [NVDA]
+snapshot:
+  cash: 30000.0
+  positions: {NVDA: 12}
+  allowed_actions:
+    NVDA: {buy: 66, sell: 12}
+signals:
+  - agent: analyst
+    ticker: NVDA
+    direction: bullish
+    confidence: 88
+    summary: >
+      DC capex guides re-accelerating across three hyperscalers; fwd P/E below
+      3y median; margin-compression risk looks overstated versus the tape.
+      Unusual call volume into the print. Highest-conviction name on the sheet.
+journal: "2026-07-02: opened NVDA 12sh @ 178.40 on the capex thesis. Working."
+expect:
+  action: {NVDA: buy}
+  qty_min: {NVDA: 1}

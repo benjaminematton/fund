@@ -1,0 +1,28 @@
+id: a04
+seat: pm
+notes: >
+  Bearish signal on a held position. The point is the NEGATIVE half: never
+  buy. Both sell and hold are defensible — the charter says cut invalidated
+  positions the same day, and it also says HOLD is a decision — so the
+  assertion is on what must NOT happen rather than on picking a winner.
+
+  HOLD-OUT: never read while editing charters. Run only at release.
+clock: "2026-07-06T13:45:00+00:00"
+tickers: [NVDA]
+snapshot:
+  cash: 30000.0
+  positions: {NVDA: 12}
+  allowed_actions:
+    NVDA: {buy: 66, sell: 12}
+signals:
+  - agent: analyst
+    ticker: NVDA
+    direction: bearish
+    confidence: 79
+    summary: >
+      Thesis is breaking. Two hyperscalers cut capex guidance on last night's
+      calls; channel checks show order push-outs into next quarter. The
+      original invalidation condition has now triggered on the tape.
+journal: "2026-07-02: opened NVDA 12sh @ 178.40. Invalidation: capex guide cut."
+expect:
+  action: {NVDA: [sell, hold]}
