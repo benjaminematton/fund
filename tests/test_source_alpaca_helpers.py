@@ -127,3 +127,40 @@ def test_cancel_order_propagates_broker_errors():
     src._trading = Trading()
     with pytest.raises(ConnectionError):
         src.cancel_order("tid-1")
+
+
+# ---- account_state: last_equity is the denominator of every P&L ----
+
+def test_account_state_carries_last_equity():
+    """daily_pnl_pct is derived from (equity, last_equity) and then the pair is
+    thrown away, so a caller wanting P&L in DOLLARS had to invert the
+    percentage to recover the denominator. Carrying last_equity through costs
+    one key and keeps the digest's "$" and "%" reading off the same two
+    numbers the circuit breaker does."""
+    class Trading:
+        def get_account(self):
+            return _Clock(equity="101500", last_equity="101000", cash="30000")
+        def get_all_positions(self):
+            return []
+
+    src = _bare_source()
+    src._trading = Trading()
+    state = src.account_state()
+
+    assert state["equity"] == 101_500.0
+    assert state["last_equity"] == 101_000.0
+    assert state["daily_pnl_pct"] == pytest.approx(0.004950495)
+
+
+def test_account_state_last_equity_is_nan_when_unparseable():
+    """Same posture as every other number off this API: NaN, not a guess, so
+    a P&L computed from it fails closed instead of reporting a wrong day."""
+    class Trading:
+        def get_account(self):
+            return _Clock(equity="101500", last_equity=None, cash="30000")
+        def get_all_positions(self):
+            return []
+
+    src = _bare_source()
+    src._trading = Trading()
+    assert math.isnan(src.account_state()["last_equity"])

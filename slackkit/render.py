@@ -43,6 +43,13 @@ def _render_digest(payload: dict) -> tuple[str, str]:
     return ("#pnl", payload["text"])
 
 
+def _render_pnl(payload: dict) -> tuple[str, str]:
+    """Post-close P&L vs SPY. Same channel as the digest, deliberately a
+    different kind: run_close's already-posted guard matches on kind='digest',
+    so sharing the kind would make a re-fired close skip its own digest."""
+    return ("#pnl", payload["text"])
+
+
 def _render_alert(payload: dict) -> tuple[str, str]:
     return ("#risk", payload["text"])
 
@@ -60,6 +67,7 @@ RENDERERS: dict[str, Callable[[dict], tuple[str, str]]] = {
     "gate_approved": _render_gate_approved,
     "gate_rejected": _render_gate_rejected,
     "digest": _render_digest,
+    "pnl": _render_pnl,
     "alert": _render_alert,
     "projection_error": _render_projection_error,
 }

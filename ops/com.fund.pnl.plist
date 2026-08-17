@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The second fire of the trading day: 16:35 ET, Mon-Fri. Posts P&L $ and % vs
+  SPY to #pnl — the half of the contracts §8 digest that cannot be computed at
+  09:35, when run_day's own close stage fires.
+
+  scripts/close_pnl.py posts nothing at all when SPY's last daily bar is not
+  today's, so weekday-only scheduling is sufficient: a holiday leaves the
+  benchmark on the previous session and the job exits 0 in silence. A re-fire
+  is idempotent (events table, kind='pnl' + run_date).
+
+  WHY 16:35 AND NOT 16:15, which is the hour specs/design.md §3 names:
+  market/source_alpaca.py's close_frame shifts its end back SIP_DELAY (16 min)
+  to stay off Alpaca's free-plan SIP blackout. A 16:15 fire therefore asks for
+  bars ending 15:59 — inside the session, before the closing auction has
+  written the day's bar — and the same-session guard would reject it, posting
+  nothing every single day. Do not move this earlier without changing
+  SIP_DELAY, which is measured, not chosen.
+
+  BEFORE LOADING, replace /ABSOLUTE/PATH/TO/fund with this checkout's real
+  path (launchd does not expand ~ or relative paths), then:
+
+      cp ops/com.fund.pnl.plist ~/Library/LaunchAgents/
+      launchctl load  ~/Library/LaunchAgents/com.fund.pnl.plist
+      launchctl list | grep com.fund.pnl          # verify it is registered
+      launchctl unload ~/Library/LaunchAgents/com.fund.pnl.plist   # to stop
+
+  TIMEZONE: StartCalendarInterval fires on the machine's LOCAL time, and no
+  env var changes that. Hour 16 / Minute 35 below is correct only on a Mac set
+  to America/New_York. The machine this fund runs on is set to
+  America/Los_Angeles, so ITS installed copy must use Hour 13, not 16:
+  13:35 PT == 16:35 ET. That offset is stable through DST (both zones shift
+  together) but NOT if the machine's timezone changes — re-derive the Hour if
+  it ever moves. The committed file keeps Hour 16 because it is the ET-machine
+  template, exactly as com.fund.daily.plist keeps Hour 9.
+
+  SECRETS: never inline keys here (this file is committed). The job sources
+  .env, which is not.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fund.pnl</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>set -a; . /ABSOLUTE/PATH/TO/fund/.env; set +a; exec /ABSOLUTE/PATH/TO/fund/.venv/bin/python3 /ABSOLUTE/PATH/TO/fund/scripts/close_pnl.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/PATH/TO/fund</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>35</integer></dict>
+  </array>
+
+  <!-- Never on load/reboot: a P&L line is posted because a session closed,
+       never because the laptop woke up. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/PATH/TO/fund/logs/close_pnl.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PATH/TO/fund/logs/close_pnl.err.log</string>
+</dict>
+</plist>

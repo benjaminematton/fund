@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper schema-pin
+.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -59,3 +59,10 @@ live-day: deps
 
 # Alias kept for the specs/acceptance.md name.
 live-paper: live-day
+
+# The day's second fire: P&L $ and % vs SPY to #pnl, after the close has
+# settled. Real Alpaca paper + real Slack, no LLM seats. Must run at/after
+# 16:16 ET — close_frame's SIP_DELAY shift means an earlier run asks for a bar
+# the closing auction has not written, and the job correctly posts nothing.
+close-pnl: deps
+	$(PYTHON) scripts/close_pnl.py

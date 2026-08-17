@@ -59,6 +59,11 @@ def test_new_event_kinds_render():
         "reason": "gate_error"}) == ("#risk", "⛔ NVDA buy — gate_error")
     assert render("alert", {"text": "x"})[0] == "#risk"
     assert render("digest", {"text": "x"})[0] == "#pnl"
+    # distinct kind from 'digest', same channel: run_close's
+    # already-posted guard matches on kind='digest', so reusing it for the
+    # post-close P&L would make a re-fired close think its own digest had
+    # already gone out.
+    assert render("pnl", {"text": "x"})[0] == "#pnl"
     assert render("projection_error", {"event_id": 3, "kind": "bogus"})[0] == "#risk"
 
 def test_drain_dead_letters_bad_event_and_continues(fund_db, sim_clock):

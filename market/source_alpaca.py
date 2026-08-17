@@ -111,6 +111,11 @@ class AlpacaSource:
         pos = self._trading.get_all_positions()
         return {
             "equity": _safe_float(a.equity), "cash": _safe_float(a.cash),
+            # last_equity is carried, not just consumed by _pnl_pct: the EOD
+            # digest reports P&L in dollars as well as percent, and inverting
+            # the percentage to recover the denominator would report a figure
+            # derived from a different pair of numbers than the gate's.
+            "last_equity": _safe_float(a.last_equity),
             "daily_pnl_pct": _pnl_pct(a.equity, a.last_equity),
             "positions": {p.symbol: int(float(p.qty)) for p in pos},
             "prices": {p.symbol: float(p.current_price) for p in pos},
