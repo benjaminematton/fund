@@ -283,3 +283,12 @@ The canonical schemas, content-addressed ids (`spec_id`/`config_hash`/`run_key`)
 - Gate approval: `✅ TICKET <id[:8]> <side> <TICKER> ≤<max_qty> expires <HH:MM>` in `#risk`; rejection: `⛔ <TICKER> <side> — <reason>`.
 - Fill: `🧾 <TICKER> <side> <filled_qty>@<avg_price> (ticket <id[:8]>)` in `#trade-log`, threaded to the decision message.
 - EOD digest fields: P&L $ and % vs SPY, positions table, decisions + outcomes, est. inference cost.
+
+  Under the compressed MVF schedule this is **two messages to `#pnl`, at two times**, because the fund's actions and the fund's outcome do not happen at the same time. `run_day` — including its `close` stage — runs at 09:35 ET, where `daily_pnl_pct` is ten minutes of session and `close_frame` (end − `SIP_DELAY` = 09:24, pre-open) returns the *previous* session's SPY bar.
+
+  | Time | Emitter | Event kind | Fields |
+  |---|---|---|---|
+  | ~09:40 ET | `run_close` (`orchestrator/daily.py`) | `digest` | decisions + outcomes, fills, est. inference cost |
+  | 16:35 ET | `scripts/close_pnl.py` | `pnl` | P&L $ and % vs SPY, alpha, equity |
+
+  Distinct event kinds on purpose: `run_close`'s already-posted guard matches on `kind='digest'`, so sharing one kind would make a re-fired close skip its own digest. The P&L half computes from `account_state` (`equity`, `last_equity`) and `close_frame` (SPY's last two closes) — **no stored series**; a since-inception NAV curve would need one, since the broker exposes only today and yesterday. When the full design §3 schedule is restored (16:15 close), the two collapse back into one message.
