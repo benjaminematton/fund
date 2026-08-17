@@ -16,9 +16,15 @@
       launchctl unload ~/Library/LaunchAgents/com.fund.daily.plist   # to stop
 
   TIMEZONE: StartCalendarInterval fires on the machine's LOCAL time, and no
-  env var changes that. Hour 9 / Minute 35 is correct only on a Mac set to
-  America/New_York. On a machine in another zone, set the machine's timezone
-  or shift Hour accordingly — and re-check after every DST change.
+  env var changes that. Hour 9 / Minute 35 below is correct only on a Mac set
+  to America/New_York. On a machine in another zone, set the machine's
+  timezone or shift Hour accordingly — and re-check after every DST change.
+
+  INSTALLED 2026-08-17 on a machine set to America/Los_Angeles, so the copy in
+  ~/Library/LaunchAgents uses Hour 6, not 9: 06:35 PT == 09:35 ET. That offset
+  is stable through DST (both zones shift together), but it is NOT stable if
+  the machine's timezone changes — re-derive the Hour if it ever moves. The
+  committed file keeps Hour 9 because it is the ET-machine template.
 
   SECRETS: never inline keys here (this file is committed). The job sources
   .env, which is not.
