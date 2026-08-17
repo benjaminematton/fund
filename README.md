@@ -152,6 +152,28 @@ machine set to America/New_York — cron's `TZ=` line does honour it.
 Market holidays and early closes need no schedule change: the run exits 0 on
 the broker's clock.
 
+**A LaunchAgent cannot wake a sleeping Mac.** `StartCalendarInterval` fires on
+the next wake instead, so a laptop asleep at 09:35 ET runs the day whenever you
+open it — or not at all, if that is after the close. This is fail-safe, not
+fail-silent (the `market_is_open` guard still holds), but it is not a schedule.
+On a Mac, pair the agent with a wake:
+
+```bash
+sudo pmset repeat wakeorpoweron MTWRF 06:30:00   # 5 min before a 06:35 local fire
+pmset -g sched                                    # verify it registered
+```
+
+You also stay logged in: a LaunchAgent runs in your user session, not as a
+daemon. A laptop is a poor host for this — the first trip with the lid shut is
+a day that silently does not happen.
+
+**Run it on exactly ONE host, ever.** `acquire_lock` uses `flock`, which is
+machine-local, so a second host does not see the first one's lock. Each would
+keep its own SQLite, mint its own tickets, and place its own orders —
+`client_order_id` idempotency cannot help, because the ids differ. That is a
+real double-trade. Unload the agent on the old machine before enabling a new
+one.
+
 ## Cost
 
 Runtime is Haiku-tier for the analyst and exec seats, Sonnet-tier for the PM
@@ -181,9 +203,27 @@ and nothing else.
 
 Phase 1 (execution plumbing) and the MVF slice (risk gate, market features,
 fund MCP tools, analyst + PM seats, daily loop, fill-poll, digest, audit,
-schedule) are built and green offline: **518 tests, purity lint clean**.
-The first supervised live trading day is the remaining acceptance box — see
-`HANDOFF-LIVE.md` and `specs/acceptance.md` §4.
+schedule) are built and green offline: **556 tests, purity lint clean**.
+
+**Live since 2026-08-17.** All nine MVF acceptance boxes are ticked
+(`docs/superpowers/specs/2026-08-12-mvf-scope.md` §4). That day's clean run:
+
+    analyst  NVDA bullish 72 · MSFT neutral 40      7 turns   $0.0504
+    pm       NVDA buy 80 @ stop 215 · MSFT hold     5 turns   $0.1161
+    exec     filled 80 @ 227.09, oto + stop leg     3 turns   $0.0332
+    AUDIT CLEAN 2026-08-17, zero alerts             total     $0.1997
+
+The first run that morning FAILED and the postmortem is worth reading before
+trusting anything here: the gate validated a nested stop-leg shape the broker
+has never exposed, so every ticket carrying a stop was undeliverable — and the
+whole offline suite was green over it, because the fixtures encoded the same
+wrong assumption. Fixture and code agreed with each other and both disagreed
+with Alpaca. `make schema-pin` now asks the real server before every live day;
+no offline test can catch that class of bug. The failed run's red audit is kept
+in `state/fund-2026-08-17-incident.sqlite`.
+
+Next: the resolutions/reflection loop (decisions currently produce no scored
+outcomes, so `calibration/` has never been fed), then the second analyst seat.
 
 ## Map of the repo
 
