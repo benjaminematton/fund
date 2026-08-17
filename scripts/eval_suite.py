@@ -74,6 +74,11 @@ def main(argv: list[str]) -> int:
     if turns:
         print(f"turns: mean {sum(turns) / len(turns):.2f}, max {max(turns)}")
 
+    # Tier M: measured, never blocking. Compare against the baseline run —
+    # a DROP is the signal, not any single vague invalidation.
+    from evals.metrics import stop_discipline
+    print(f"stop discipline: {stop_discipline(traces)}")
+
     for r in results:
         for v in r.verdicts:
             if v.outcome != "PASS":
