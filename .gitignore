@@ -49,3 +49,6 @@ logs/*
 # 2.3MB per suite run and meaningless once the trace is written. Traces
 # themselves ARE tracked (evals/traces/) — they are the baseline artifact.
 evals/_work/
+
+# snapshots pulled from the VM (runtime state, never code)
+backups-from-vm/

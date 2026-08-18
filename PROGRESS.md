@@ -14,11 +14,10 @@ Update it when a milestone lands or an open item closes — not per commit.
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
 | **Live since** | 2026-08-17 — first clean end-to-end day |
-| **HEAD** | `352165d` |
-| **Tests** | 574 offline, green; purity lint clean |
+| **Tests** | 700 offline green on arm64; **699 + 1 known failure on x86_64** — see below |
 | **Watchlist** | NVDA, MSFT, AAPL |
 | **Open position** | NVDA 80 @ 227.09, live stop at 215 |
-| **Scheduled on** | this Mac (Pacific) — `com.fund.daily` loaded |
+| **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
 
 ### The live day, as recorded
 
@@ -37,27 +36,47 @@ honest record. No DB surgery was performed on it.
 
 ## What runs unattended
 
-Two launchd jobs. **Both must live on the same host as `state/fund.sqlite`, and
-only one host may run either** — `flock` is machine-local, and two hosts means
-two ticket-id namespaces, so idempotency will not dedupe duplicate orders.
+Three systemd timers on the droplet. **Only one host may hold a live schedule**
+— `flock` is machine-local and ticket-id namespaces are per-database, so two
+hosts means genuine duplicate orders that `client_order_id` cannot dedupe.
 
-| job | fires | does | installed? |
-|---|---|---|---|
-| `com.fund.daily` | 09:35 ET Mon–Fri | full trading day, self-audits | ✅ loaded |
-| `com.fund.pnl` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY | ❌ **not installed** |
+| unit | fires | does |
+|---|---|---|
+| `fund-daily.timer` | 09:35 ET Mon–Fri | full trading day, self-audits |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY |
+| `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot |
+| `fund-alert@.service` | on any of the above failing | posts the failure to `#risk` |
 
-`StartCalendarInterval` uses **machine local time**. The committed plists in
-`ops/` are the ET-machine templates (Hour 9 / Hour 16); this Mac is Pacific, so
-its installed copies use Hour 6 / Hour 13. Re-derive on any host move, and
-re-check after every DST change.
+The timezone is pinned **in the `OnCalendar` expression** as well as on the
+host, so the schedule survives a host timezone change. `Persistent=false`
+reproduces the old plists' `RunAtLoad=false`: a day starts because the market
+opened, never because the host booted. No `Restart=` anywhere — invariant 4's
+default is HOLD.
 
 16:35 (not 16:15) is measured, not chosen: `close_frame` shifts its end back
 `SIP_DELAY` (16 min), so a 16:15 fire asks for 15:59 — before the closing
 auction writes the bar.
 
-The Mac must be awake at fire time. `sudo pmset repeat wakeorpoweron MTWRF
-06:30:00` wakes from sleep on AC power; it does not reliably power on from a
-full shutdown on Apple Silicon. Sleep it, don't shut it down.
+Full layout, cutover and rollback procedure: `ops/README.md`.
+
+### The Mac after cutover
+
+`com.fund.pull-backups` is the **only** fund launchd job that should exist here.
+`com.fund.daily.plist` was moved out of `~/Library/LaunchAgents` to
+`~/fund-rollback/`, and `.env` was renamed to `.env.MIGRATED-TO-VM` — two
+independent barriers, because `launchctl unload` is session-scoped and
+`~/Library/LaunchAgents` reloads at every login. Unloading alone would have let
+the fund resurrect here days later while the droplet was live.
+
+### Alerting
+
+`run_day.py:25-34` documents a pre-Slack window that posts nothing on failure,
+justified because "the exit is non-zero with a descriptive stderr message, so
+it is a visible failure, just not a Slack one." That premise assumed a human at
+the machine. On a droplet it is false, so systemd `OnFailure=` restores it —
+verified against a start failure, which is the case the script itself cannot
+cover. Known gap: if the Slack token is what broke, the alert cannot post
+either.
 
 ---
 
@@ -72,6 +91,8 @@ full shutdown on Apple Silicon. Sleep it, don't shut it down.
 | 2026-08-17 | four observability defects closed (`f94c4d7`, `a26581d`, `9d909e9`) |
 | 2026-08-17 | **first clean live day**; MVF acceptance met (`8ee168f`) |
 | 2026-08-17 | EOD P&L vs SPY added as a second digest message (`92600bc`, `352165d`) |
+| 2026-08-18 | eval rig for the LLM seats merged (`191fd18`, `5196282`) |
+| 2026-08-18 | **moved off the Mac** onto a DigitalOcean droplet on an ET clock; systemd timers, Slack failure alerting, nightly verified snapshots |
 
 ### The one that mattered
 
@@ -93,17 +114,31 @@ move.
 
 **Now**
 
-- [ ] Push 2 unpushed commits (`92600bc`, `352165d`)
-- [ ] Install `ops/com.fund.pnl.plist` — without it there is no P&L digest
-- [ ] `sudo pmset repeat wakeorpoweron MTWRF 06:30:00` (needs sudo — Benjamin)
-- [ ] **Move the run to a VM** (decided 2026-08-17). Debian box,
-      `TZ=America/New_York` — which permanently kills the plist-Hour, DST, and
-      sleep/wake traps. Note `CLAUDE.md`'s `docker compose up` describes files
-      that **do not exist**; there is no Dockerfile and no compose file, so this
-      is a fresh deploy, not a lift-and-shift. Size it small: all three seats are
-      remote API calls, local compute is ~zero. Cutover rule — unload
-      `com.fund.daily` here **first**; two hosts means two ticket-id namespaces
-      and idempotency will not catch the duplicate orders.
+- [ ] **`test_golden` is arm64-only — re-record it portably.** The golden
+      `data_snapshot_hash` cannot be reproduced on x86_64, so `make test` is
+      699/700 on the droplet. Root cause, measured not guessed: `rng.uniform`
+      computes `low + (high-low)*x`, and arm64 and x86_64 contract that into FMA
+      differently, so `vol[0]` differs by **1 ULP at the very first draw**
+      (`0x1.6974569e58a45p-6` vs `...44p-6`) and 2520 iterations amplify it. The
+      RNG integer stream is identical and the `DIP_PCT` branch is *not* the
+      culprit — kick counts match exactly (4837) on both.
+      **Verified fix:** quantizing the market makes hashes bit-identical at 8dp
+      or coarser (10dp and finer still diverge); `close.round(6)` in
+      `tests/synthetic.py` is one line. The work is the re-record: 16 pinned
+      values across two tests, and the fixture's *meaning* must survive — golden
+      params must still pass G2/G3 and `FAIL_PARAMS` must still fail on `wfe`.
+      Deferred deliberately on 2026-08-18: `fundbt/` is unwired from the daily
+      cycle, so this cannot affect trading.
+- [ ] **`FUND_HOST_ID` guard** in `run_day.py` — refuse to run when the DB
+      records a different last-writing host. Turns the one-host invariant from
+      procedural into enforced. Today only two manual barriers protect it.
+- [ ] **Pin the MCP server version.** `agents/seats.py:49` hardcodes
+      `uvx alpaca-mcp-server` with no version, so it resolves *latest* at run
+      time — an upstream release could move a tool-schema field name unattended,
+      which is the 2026-08-17 outage class. `make schema-pin` only defends when
+      run. The cache is pre-warmed on the droplet; the version is not pinned.
+- [ ] Verify `launchctl list | grep fund` still shows only `pull-backups`
+      **after a real logout/login** — the unload alone does not survive one.
 
 **Next branches** — each belongs in a **new chat**, per the standing rule that
 new implementation branches get fresh context.
