@@ -10,20 +10,29 @@ from slack_sdk.errors import SlackApiError
 from .port import PermanentPostError
 
 # Slack error codes that no retry can fix: the bot was never invited, the
-# channel is gone or archived, the token is bad. Everything else (rate limits,
-# 5xx, network) is transient and must keep its retry semantics.
+# channel is gone or archived, the token is bad, or the Block Kit payload is
+# malformed/oversized — Slack rejects that message identically forever, so it
+# must dead-letter rather than stop the drain for a retry that cannot help.
+# Everything else (rate limits, 5xx, network) is transient and must keep its
+# retry semantics. Block codes per api.slack.com/methods/chat.postMessage.
 PERMANENT_ERRORS = frozenset({"not_in_channel", "channel_not_found",
-                              "invalid_auth", "is_archived"})
+                              "invalid_auth", "is_archived",
+                              "invalid_blocks", "invalid_blocks_format",
+                              "msg_blocks_too_long"})
 
 
 class RealSlack:
     def __init__(self, token: str) -> None:
         self._client = WebClient(token=token)
 
-    def post(self, channel: str, text: str, thread_ts: str | None = None) -> str:
+    def post(self, channel: str, text: str, thread_ts: str | None = None,
+             blocks: list[dict] | None = None) -> str:
+        # blocks is omitted rather than sent as None: Slack treats an explicit
+        # null as a payload to validate and rejects it.
+        extra = {"blocks": blocks} if blocks else {}
         try:
             resp = self._client.chat_postMessage(channel=channel, text=text,
-                                                 thread_ts=thread_ts)
+                                                 thread_ts=thread_ts, **extra)
         except SlackApiError as exc:
             code = (exc.response or {}).get("error")
             if code in PERMANENT_ERRORS:

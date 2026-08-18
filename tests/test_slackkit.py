@@ -25,7 +25,7 @@ GATE_NO = {"ticker": "NVDA", "side": "buy", "reason": "no_headroom"}
 
 
 def test_render_fill_matches_contracts_s8():
-    channel, text = render("fill", FILL)
+    channel, text, _ = render("fill", FILL)
     assert channel == "#trade-log"
     assert text == ("*Execution Trader* · 🧾 bought *67 NVDA* at *$180.14*"
                     " — $12,069.38\nTicket `a3f90000`")
@@ -37,7 +37,7 @@ def test_a_sell_fill_says_sold_not_sell():
 
 
 def test_signal_names_the_seat_and_quotes_the_summary():
-    channel, text = render("signal", SIGNAL)
+    channel, text, _ = render("signal", SIGNAL)
     assert channel == "#research"
     assert text == ("*Research Analyst* · *NVDA* · bullish, conviction 72/100\n"
                     "> upgraded to Buy on datacenter demand")
@@ -49,7 +49,7 @@ def test_an_unmapped_seat_falls_back_to_its_raw_name():
 
 
 def test_decision_reads_as_an_instruction_not_a_verdict_line():
-    channel, text = render("decision", DECISION)
+    channel, text, _ = render("decision", DECISION)
     assert channel == "#trading-floor"
     assert text == ("*Portfolio Manager* · *NVDA* — buy 80 shares\n"
                     "> datacenter demand is not priced in")
@@ -62,14 +62,14 @@ def test_a_hold_decision_does_not_claim_a_share_count():
 
 
 def test_gate_approval_spells_out_the_cap_and_labels_the_ticket():
-    channel, text = render("gate_approved", GATE_OK)
+    channel, text, _ = render("gate_approved", GATE_OK)
     assert channel == "#risk"
     assert text == ("*Risk Gate* · ✅ *buy NVDA* approved for up to *67 shares*\n"
                     "Ticket `a3f90000` · expires 16:00 ET")
 
 
 def test_gate_rejection_explains_the_reason_code_in_english():
-    channel, text = render("gate_rejected", GATE_NO)
+    channel, text, _ = render("gate_rejected", GATE_NO)
     assert channel == "#risk"
     assert text == ("*Risk Gate* · ⛔ *buy NVDA* blocked\n"
                     "> Sector exposure is already at its cap — no room for"
@@ -105,7 +105,147 @@ def test_every_gate_reason_code_has_an_english_gloss():
 
 
 def test_alert_is_labelled_so_it_is_not_mistaken_for_a_gate_post():
-    assert render("alert", {"text": "boom"}) == ("#risk", "⚠️ *Alert* · boom")
+    assert render("alert", {"text": "boom"})[:2] == ("#risk", "⚠️ *Alert* · boom")
+
+
+# --- Block Kit (tier 2) -----------------------------------------------------
+
+BLOCK_KINDS = [("signal", SIGNAL), ("decision", DECISION),
+               ("gate_approved", GATE_OK), ("gate_rejected", GATE_NO),
+               ("fill", FILL), ("alert", {"text": "boom"})]
+
+
+@pytest.mark.parametrize("kind,payload", BLOCK_KINDS)
+def test_a_post_with_blocks_still_carries_text(kind, payload):
+    """A blocks-only message shows as BLANK in push notifications and to
+    screen readers. text is the fallback Slack renders there, so it must stay
+    populated for every kind that gains blocks."""
+    post = render(kind, payload)
+    assert post.blocks, f"{kind} gained no blocks"
+    assert post.text.strip(), f"{kind} has blocks but no text fallback"
+
+
+@pytest.mark.parametrize("kind,payload", BLOCK_KINDS)
+def test_blocks_are_well_formed_block_kit(kind, payload):
+    """Structural guard: Slack rejects the whole message on a malformed
+    block, and that rejection is permanent — the event would be lost from the
+    projection forever. Cheaper to catch here."""
+    for block in render(kind, payload).blocks:
+        assert block["type"] in {"section", "context", "divider"}, block
+        if block["type"] == "section":
+            assert set(block) <= {"type", "text", "fields"}
+            if "text" in block:
+                assert block["text"]["type"] == "mrkdwn"
+                assert block["text"]["text"].strip()
+            for field in block.get("fields", []):
+                assert field["type"] == "mrkdwn" and field["text"].strip()
+            assert len(block.get("fields", [])) <= 10
+        if block["type"] == "context":
+            assert 1 <= len(block["elements"]) <= 10
+            for el in block["elements"]:
+                assert el["type"] == "mrkdwn" and el["text"].strip()
+
+
+@pytest.mark.parametrize("kind,payload", BLOCK_KINDS)
+def test_no_block_text_exceeds_slacks_limit(kind, payload):
+    """Slack caps section text at 3000 chars and rejects the message with
+    msg_blocks_too_long above it — permanent, so the post would dead-letter.
+    A 4000-char PM thesis is not a hypothetical."""
+    big = {k: ("x" * 4000 if isinstance(v, str) and k in
+               ("summary", "thesis", "text") else v) for k, v in payload.items()}
+    for block in render(kind, big).blocks:
+        for chunk in ([block["text"]] if "text" in block else []) + \
+                     block.get("fields", []) + block.get("elements", []):
+            assert len(chunk["text"]) <= 3000, f"{kind}: {len(chunk['text'])} chars"
+
+
+def test_fill_blocks_state_price_and_notional_as_fields():
+    blocks = render("fill", FILL).blocks
+    fields = [f["text"] for b in blocks for f in b.get("fields", [])]
+    assert any("$180.14" in f for f in fields)
+    assert any("$12,069.38" in f for f in fields)
+    context = [e["text"] for b in blocks if b["type"] == "context"
+               for e in b["elements"]]
+    assert any("Execution Trader" in c and "a3f90000" in c for c in context)
+
+
+def test_gate_approval_blocks_state_the_cap_and_the_expiry_as_fields():
+    blocks = render("gate_approved", GATE_OK).blocks
+    fields = [f["text"] for b in blocks for f in b.get("fields", [])]
+    assert any("67 shares" in f for f in fields)
+    assert any("16:00 ET" in f for f in fields)
+
+
+def test_signal_blocks_quote_the_summary_and_credit_the_seat():
+    blocks = render("signal", SIGNAL).blocks
+    assert any("> upgraded to Buy on datacenter demand" in b["text"]["text"]
+               for b in blocks if b["type"] == "section")
+    assert any("Research Analyst" in e["text"] for b in blocks
+               if b["type"] == "context" for e in b["elements"])
+
+
+@pytest.mark.parametrize("kind", ["digest", "pnl", "projection_error"])
+def test_prose_kinds_post_as_plain_text_with_no_blocks(kind):
+    """digest/pnl carry text composed in daily.py and close_pnl.py, and
+    projection_error is already prose. None means the port posts text only."""
+    payload = {"text": "x"} if kind != "projection_error" else {
+        "event_id": 3, "kind": "bogus"}
+    assert render(kind, payload).blocks is None
+
+
+def test_outbox_hands_blocks_to_the_port(fund_db):
+    slack = FakeSlack()
+    append_event(fund_db, "fill", FILL, NOW)
+    assert drain(fund_db, slack, NOW) == 1
+    post = slack.posts["#trade-log"][0]
+    assert post["blocks"] == render("fill", FILL).blocks
+    assert post["text"] == render("fill", FILL).text
+
+
+def test_outbox_posts_prose_kinds_with_no_blocks(fund_db):
+    slack = FakeSlack()
+    append_event(fund_db, "digest", {"text": "day 1"}, NOW)
+    assert drain(fund_db, slack, NOW) == 1
+    assert slack.posts["#pnl"][0]["blocks"] is None
+
+
+def test_real_slack_treats_a_malformed_block_payload_as_permanent():
+    """Slack rejects the whole message and will reject it identically on
+    every retry, so it must dead-letter rather than stop the drain forever."""
+    from slack_sdk.errors import SlackApiError
+
+    from slackkit.port import PermanentPostError
+    from slackkit.real import RealSlack
+
+    for code in ("invalid_blocks", "invalid_blocks_format",
+                 "msg_blocks_too_long"):
+        slack = RealSlack("xoxb-not-a-real-token")
+
+        def _raise(**kwargs):
+            raise SlackApiError("boom", {"ok": False, "error": code})
+
+        slack._client.chat_postMessage = _raise
+        with pytest.raises(PermanentPostError) as exc:
+            slack.post("#risk", "hi", blocks=[{"type": "divider"}])
+        assert code in str(exc.value)
+
+
+def test_real_slack_sends_blocks_and_omits_them_when_absent():
+    from slackkit.real import RealSlack
+
+    slack = RealSlack("xoxb-not-a-real-token")
+    sent = []
+
+    def _capture(**kwargs):
+        sent.append(kwargs)
+        return {"ts": "1.0"}
+
+    slack._client.chat_postMessage = _capture
+    slack.post("#risk", "hi", blocks=[{"type": "divider"}])
+    slack.post("#risk", "plain")
+    assert sent[0]["blocks"] == [{"type": "divider"}]
+    assert sent[0]["text"] == "hi"          # fallback always goes with them
+    assert "blocks" not in sent[1] or sent[1]["blocks"] is None
 
 
 def test_render_unknown_kind_raises():
@@ -183,7 +323,8 @@ class _FlakySlack:
         self.remaining = failures
         self.posts: list[tuple[str, str]] = []
 
-    def post(self, channel: str, text: str, thread_ts: str | None = None) -> str:
+    def post(self, channel: str, text: str, thread_ts: str | None = None,
+             blocks: list[dict] | None = None) -> str:
         if self.remaining:
             self.remaining -= 1
             raise RuntimeError("slack outage")

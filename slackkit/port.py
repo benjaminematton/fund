@@ -4,7 +4,13 @@ from typing import Protocol
 
 
 class SlackPort(Protocol):
-    def post(self, channel: str, text: str, thread_ts: str | None = None) -> str: ...
+    def post(self, channel: str, text: str, thread_ts: str | None = None,
+             blocks: list[dict] | None = None) -> str:
+        """`blocks` is Block Kit layout; `text` is NOT optional alongside it.
+        Slack renders text — not blocks — in push notifications and to screen
+        readers, so a blocks-only message arrives blank there. Every caller
+        passes both; `blocks=None` posts text alone."""
+        ...
 
 
 class PermanentPostError(Exception):

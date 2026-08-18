@@ -85,12 +85,12 @@ def drain(conn: sqlite3.Connection, slack, now_iso: str) -> int:
             break
         for row in rows:
             try:
-                channel, text = render(row["kind"], json.loads(row["payload"]))
+                post = render(row["kind"], json.loads(row["payload"]))
             except Exception as exc:
                 _dead_letter(conn, row, now_iso, exc)
                 continue
             try:
-                slack.post(channel, text)
+                slack.post(post.channel, post.text, blocks=post.blocks)
             except PermanentPostError as exc:
                 _dead_letter(conn, row, now_iso, exc)
                 continue

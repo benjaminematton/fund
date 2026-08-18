@@ -245,10 +245,25 @@ def test_golden_day(tmp_path):
     assert (o["client_order_id"], o["status"]) == (TID, "filled")
     assert (o["filled_qty"], o["filled_avg_price"]) == (66, 180.14)
 
+    # The whole projected message, text and Block Kit both: the golden day's
+    # observable output at the Slack boundary. text is asserted alongside
+    # blocks because Slack renders text — not blocks — in push notifications
+    # and to screen readers.
     assert sim.slack.posts["#trade-log"] == [
         {"ts": sim.slack.posts["#trade-log"][0]["ts"],
          "text": "*Execution Trader* · 🧾 bought *66 NVDA* at *$180.14*"
-                 " — $11,889.24\nTicket `a3f90000`", "thread_ts": None}]
+                 " — $11,889.24\nTicket `a3f90000`",
+         "thread_ts": None,
+         "blocks": [
+             {"type": "section",
+              "text": {"type": "mrkdwn", "text": "🧾 bought *66 NVDA*"}},
+             {"type": "section",
+              "fields": [{"type": "mrkdwn", "text": "*Price*\n$180.14"},
+                         {"type": "mrkdwn", "text": "*Notional*\n$11,889.24"}]},
+             {"type": "context",
+              "elements": [{"type": "mrkdwn",
+                            "text": "Execution Trader · Ticket `a3f90000`"}]},
+         ]}]
     assert [p["max_qty"] for p in _event_payloads(sim, "gate_approved")] == [66]
 
     # every turn that ran recorded its cost, and the digest reports the sum

@@ -282,6 +282,10 @@ Bodies are Slack **mrkdwn** and are written for a human skimming the channel, no
 
 Rendering adds nothing the event payload does not already carry (invariant 6). Seat labels and reason glosses are constants of `render.py`; `<notional>` is `filled_qty × avg_price`. No renderer reads the database.
 
+`render()` returns a `Post(channel, text, blocks)`. **`text` is populated for every kind, blocks or not** — Slack renders `text`, not `blocks`, in push notifications and to screen readers, so a blocks-only message arrives blank there. The templates below are that `text`. `blocks` is Block Kit layout for the six event kinds a human reads mid-day (signal, decision, gate approval/rejection, fill, alert) and `None` for `digest`, `pnl` and `projection_error`, whose text is already prose composed elsewhere; `SlackPort.post` omits the argument entirely when it is `None`.
+
+Block bodies use only `section`, `section` + `fields`, and `context`, and every text element is clipped to 3000 chars (`render.TEXT_LIMIT`). Over that, Slack rejects the message with `msg_blocks_too_long`, which `slackkit/real.py` classifies as **permanent** alongside `invalid_blocks` and `invalid_blocks_format` — a malformed payload fails identically on every retry, so it dead-letters rather than stopping the drain forever. Clipping keeps a long thesis from ever reaching that path.
+
 - Signal: `*<Seat>* · *<TICKER>* · <direction>, conviction <confidence>/100` + `> <summary>` in `#research` thread.
 - Critique: `CRITIQUE <TICKER>: CLEAR` or `CRITIQUE <TICKER>: <n> OBJECTION(S)` + numbered one-sentence objections, as a reply in the ticker's debate thread.
 - Gate approval: `*Risk Gate* · ✅ *<side> <TICKER>* approved for up to *<max_qty> shares*` + `Ticket \`<id[:8]>\` · expires <HH:MM> ET` in `#risk`.

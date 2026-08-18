@@ -144,7 +144,7 @@ class _RecordingSlack:
     def __init__(self):
         self.posts = []
 
-    def post(self, channel, text, thread_ts=None):
+    def post(self, channel, text, thread_ts=None, blocks=None):
         self.posts.append((channel, text, thread_ts))
         return "ts-1"
 

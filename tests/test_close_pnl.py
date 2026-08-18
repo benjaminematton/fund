@@ -89,7 +89,7 @@ def test_a_re_fire_still_drains_an_event_slack_never_took(fund_db, clock):
     lost line — the second run posts the row it already has rather than
     appending a second one."""
     class _DeadSlack:
-        def post(self, channel, text, thread_ts=None):
+        def post(self, channel, text, thread_ts=None, blocks=None):
             raise ConnectionError("slack down")
 
     close_pnl.post_eod_pnl(fund_db, _DeadSlack(), _Source(), clock)

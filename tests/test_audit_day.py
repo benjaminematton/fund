@@ -25,7 +25,8 @@ class FailingSlack:
     1: a real outage through drain()'s except path, rather than a doctored
     DB. Records nothing, because it delivers nothing."""
 
-    def post(self, channel: str, text: str, thread_ts: str | None = None) -> str:
+    def post(self, channel: str, text: str, thread_ts: str | None = None,
+             blocks: list[dict] | None = None) -> str:
         raise RuntimeError("slack outage")
 
 

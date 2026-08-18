@@ -8,7 +8,42 @@ reads the database."""
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, NamedTuple
+
+
+class Post(NamedTuple):
+    """What one event projects to. `text` is always populated — Slack renders
+    it, not `blocks`, in push notifications and to screen readers, so blocks
+    without text arrive blank there. `blocks` is None for kinds whose text is
+    already prose composed elsewhere."""
+    channel: str
+    text: str
+    blocks: list[dict] | None = None
+
+
+# Slack rejects a message whose section/field/context text exceeds this, with
+# msg_blocks_too_long — a PERMANENT error, so an over-long thesis would be
+# dead-lettered and lost from the projection instead of retried. Clip instead.
+TEXT_LIMIT = 3000
+
+
+def _md(text: str) -> dict:
+    if len(text) > TEXT_LIMIT:
+        text = text[:TEXT_LIMIT - 1] + "…"
+    return {"type": "mrkdwn", "text": text}
+
+
+def _section(text: str) -> dict:
+    return {"type": "section", "text": _md(text)}
+
+
+def _fields(*pairs: tuple[str, str]) -> dict:
+    return {"type": "section",
+            "fields": [_md(f"*{label}*\n{value}") for label, value in pairs]}
+
+
+def _context(*parts: str) -> dict:
+    return {"type": "context", "elements": [_md(" · ".join(parts))]}
 
 # The seat that emitted the post, in the words a human uses for it. An
 # unmapped seat falls back to its raw name rather than raising — a new seat
@@ -42,69 +77,91 @@ def _order(side: str, qty: int) -> str:
     return "hold" if side == "hold" else f"{side} {qty} shares"
 
 
-def _render_fill(payload: dict) -> tuple[str, str]:
-    qty, price = payload["filled_qty"], payload["filled_avg_price"]
+def _render_fill(payload: dict) -> Post:
+    qty, price, ticker = (payload["filled_qty"], payload["filled_avg_price"],
+                          payload["ticker"])
     verb = "bought" if payload["side"] == "buy" else "sold"
-    return ("#trade-log",
-            f"*{SEATS['exec']}* · 🧾 {verb} *{qty} {payload['ticker']}* at "
-            f"*${price:.2f}* — ${qty * price:,.2f}\n"
-            f"Ticket `{payload['ticket_id'][:8]}`")
+    ticket = payload["ticket_id"][:8]
+    return Post("#trade-log",
+                f"*{SEATS['exec']}* · 🧾 {verb} *{qty} {ticker}* at "
+                f"*${price:.2f}* — ${qty * price:,.2f}\nTicket `{ticket}`",
+                [_section(f"🧾 {verb} *{qty} {ticker}*"),
+                 _fields(("Price", f"${price:.2f}"),
+                         ("Notional", f"${qty * price:,.2f}")),
+                 _context(SEATS["exec"], f"Ticket `{ticket}`")])
 
 
-def _render_signal(payload: dict) -> tuple[str, str]:
-    return ("#research",
-            f"*{_seat(payload['agent'])}* · *{payload['ticker']}* · "
-            f"{payload['direction']}, conviction {payload['confidence']}/100\n"
-            f"> {payload['summary']}")
+def _render_signal(payload: dict) -> Post:
+    seat, ticker = _seat(payload["agent"]), payload["ticker"]
+    headline = (f"{payload['direction']}, conviction "
+                f"{payload['confidence']}/100")
+    return Post("#research",
+                f"*{seat}* · *{ticker}* · {headline}\n> {payload['summary']}",
+                [_section(f"*{ticker}* · {headline}"),
+                 _section(f"> {payload['summary']}"),
+                 _context(seat)])
 
 
-def _render_decision(payload: dict) -> tuple[str, str]:
-    return ("#trading-floor",
-            f"*{SEATS['pm']}* · *{payload['ticker']}* — "
-            f"{_order(payload['action'], payload['qty'])}\n"
-            f"> {payload['thesis']}")
+def _render_decision(payload: dict) -> Post:
+    ticker = payload["ticker"]
+    order = _order(payload["action"], payload["qty"])
+    return Post("#trading-floor",
+                f"*{SEATS['pm']}* · *{ticker}* — {order}\n"
+                f"> {payload['thesis']}",
+                [_section(f"*{ticker}* — {order}"),
+                 _section(f"> {payload['thesis']}"),
+                 _context(SEATS["pm"])])
 
 
-def _render_gate_approved(payload: dict) -> tuple[str, str]:
-    return ("#risk",
-            f"*Risk Gate* · ✅ *{payload['side']} {payload['ticker']}* "
-            f"approved for up to *{payload['max_qty']} shares*\n"
-            f"Ticket `{payload['ticket_id'][:8]}` · "
-            f"expires {payload['expires_hhmm']} ET")
+def _render_gate_approved(payload: dict) -> Post:
+    side, ticker = payload["side"], payload["ticker"]
+    ticket, expires = payload["ticket_id"][:8], payload["expires_hhmm"]
+    return Post("#risk",
+                f"*Risk Gate* · ✅ *{side} {ticker}* approved for up to "
+                f"*{payload['max_qty']} shares*\n"
+                f"Ticket `{ticket}` · expires {expires} ET",
+                [_section(f"✅ *{side} {ticker}* approved"),
+                 _fields(("Up to", f"{payload['max_qty']} shares"),
+                         ("Expires", f"{expires} ET")),
+                 _context("Risk Gate", f"Ticket `{ticket}`")])
 
 
-def _render_gate_rejected(payload: dict) -> tuple[str, str]:
-    reason = payload["reason"]
+def _render_gate_rejected(payload: dict) -> Post:
+    side, ticker, reason = payload["side"], payload["ticker"], payload["reason"]
     gloss = REASONS.get(reason, "")
-    return ("#risk",
-            f"*Risk Gate* · ⛔ *{payload['side']} {payload['ticker']}* blocked\n"
-            f"> {gloss + ' ' if gloss else ''}(`{reason}`)")
+    why = f"> {gloss + ' ' if gloss else ''}(`{reason}`)"
+    return Post("#risk",
+                f"*Risk Gate* · ⛔ *{side} {ticker}* blocked\n{why}",
+                [_section(f"⛔ *{side} {ticker}* blocked"),
+                 _section(why),
+                 _context("Risk Gate")])
 
 
-def _render_digest(payload: dict) -> tuple[str, str]:
-    return ("#pnl", payload["text"])
+def _render_digest(payload: dict) -> Post:
+    return Post("#pnl", payload["text"])
 
 
-def _render_pnl(payload: dict) -> tuple[str, str]:
+def _render_pnl(payload: dict) -> Post:
     """Post-close P&L vs SPY. Same channel as the digest, deliberately a
     different kind: run_close's already-posted guard matches on kind='digest',
     so sharing the kind would make a re-fired close skip its own digest."""
-    return ("#pnl", payload["text"])
+    return Post("#pnl", payload["text"])
 
 
-def _render_alert(payload: dict) -> tuple[str, str]:
+def _render_alert(payload: dict) -> Post:
     """Labelled so an alert is not mistaken for a gate post: #risk carries
     both, and they demand different reactions."""
-    return ("#risk", f"⚠️ *Alert* · {payload['text']}")
+    text = f"⚠️ *Alert* · {payload['text']}"
+    return Post("#risk", text, [_section(text)])
 
 
-def _render_projection_error(payload: dict) -> tuple[str, str]:
-    return ("#risk",
-            f"⚠️ projection error: event {payload['event_id']} "
-            f"kind {payload['kind']} could not render")
+def _render_projection_error(payload: dict) -> Post:
+    return Post("#risk",
+                f"⚠️ projection error: event {payload['event_id']} "
+                f"kind {payload['kind']} could not render")
 
 
-RENDERERS: dict[str, Callable[[dict], tuple[str, str]]] = {
+RENDERERS: dict[str, Callable[[dict], Post]] = {
     "fill": _render_fill,
     "signal": _render_signal,
     "decision": _render_decision,
@@ -117,7 +174,7 @@ RENDERERS: dict[str, Callable[[dict], tuple[str, str]]] = {
 }
 
 
-def render(kind: str, payload: dict) -> tuple[str, str]:
+def render(kind: str, payload: dict) -> Post:
     """unknown kind raises here; drain() dead-letters it so one bad event
     cannot jam the queue (MVF review C2)."""
     renderer = RENDERERS.get(kind)
