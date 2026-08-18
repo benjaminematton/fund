@@ -86,6 +86,21 @@ def main(argv: list[str]) -> int:
                       f" [{v.tag}] {v.detail[:120]}")
     if label:
         print(f"traces: evals/traces/{label}/")
+
+    # A trial that never completed a turn is a RIG failure, not seat data: uvx
+    # missing from systemd's PATH, the MCP server refusing to connect, no API
+    # key. `make preflight` gates a deploy on this exit code, so returning 0
+    # here hands back a green checkmark for the exact 2026-08-18 class it
+    # exists to catch — the same shape as a market-closed rehearsal that exits
+    # early and proves nothing. Consistent with the `return 2` guards above:
+    # non-zero means the rig could not run, never that a seat judged badly.
+    # Verdict FAILs stay exit 0 on purpose — `make eval` measures judgment, and
+    # a case the seat fails is a result, not an error.
+    errored = [t for t in traces if t.is_error]
+    if errored:
+        print(f"{len(errored)}/{len(traces)} trials never completed a turn —"
+              " rig or environment failure, not a seat result", file=sys.stderr)
+        return 1
     return 0
 
 
