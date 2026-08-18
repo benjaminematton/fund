@@ -8,16 +8,58 @@ Update it when a milestone lands or an open item closes — not per commit.
 
 ---
 
-## Status — 2026-08-17
+## Status — 2026-08-18
 
 | | |
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
 | **Live since** | 2026-08-17 — first clean end-to-end day |
-| **Tests** | 700 offline green on arm64; **699 + 1 known failure on x86_64** — see below |
+| **Tests** | 709 offline green on arm64; **708 + 1 known failure on x86_64** — see below |
 | **Watchlist** | NVDA, MSFT, AAPL |
 | **Open position** | NVDA 80 @ 227.09, live stop at 215 |
 | **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
+
+### 2026-08-18 — a lost day, and what it bought
+
+The timer fired correctly at 09:35 and both seats failed:
+`ExecTurnViolation: required MCP server(s) not connected after 30.0s`. `uv`
+installs to `~/.local/bin`, which is not on systemd's default `PATH`, and
+`agents/seats.py:49` hardcodes `uvx alpaca-mcp-server`. Fixed by
+`Environment=PATH=` on the daily and pnl units.
+
+**The system behaved correctly.** Default HOLD held — zero tickets, zero orders,
+the NVDA position untouched. The unit exited 1, `OnFailure` fired, and the alert
+reached `#risk` in 73 seconds. One day of opportunity was lost; nothing was
+unsafe.
+
+**Validation, not the code, was the failure.** Every manual check used
+`su - fund` — a login shell, which sources the profile and finds `uvx`; systemd
+does not. And the timer→service rehearsal ran with the market closed, so
+`run_day.py` exited on the broker clock before any seat started: it passed
+*while concealing the defect*. A rehearsal that exits early is worse than none,
+because it produces a green checkmark. Same shape as 2026-08-17, where fixtures
+and code agreed with each other and both disagreed with the broker.
+
+Four things landed in response:
+
+- **`make preflight`** — runs a real seat turn through `systemd-run` under the
+  unit's exact `PATH`/`HOME`/`EnvironmentFile`. Exercises `uvx` → MCP →
+  Anthropic → seat the way the timer will. ~2 min, ~$0.31, places no orders.
+  Mandatory after any host, unit, or environment change.
+- **A written deploy procedure** (`ops/README.md`). It was wrong twice, and
+  *running* it is what exposed both: the pull must run as `fund` (root has
+  neither the deploy key nor ownership of the tree), and
+  `/etc/systemd/system/fund-*` are **copies**, so a pull updates `ops/` while
+  the old unit keeps firing behind a clean `git status` and a matching `HEAD`.
+- **Alerts that state the consequence**, plus `FUND_ALERT_MENTION` so a failure
+  pings regardless of Slack client settings. The headline deliberately makes no
+  claim about positions: a failure *after* an order lands exits identically, so
+  the script cannot know, and an alert asserting unverified safety is worse than
+  a terse one.
+- **A heartbeat** closing the one gap `OnFailure` structurally cannot see — a
+  unit that never runs produces no failure to react to, so a disabled timer, a
+  reboot across 09:35 with `Persistent=false`, or a powered-off droplet were
+  *silent*, indistinguishable from a quiet day.
 
 ### The live day, as recorded
 
@@ -45,7 +87,16 @@ hosts means genuine duplicate orders that `client_order_id` cannot dedupe.
 | `fund-daily.timer` | 09:35 ET Mon–Fri | full trading day, self-audits |
 | `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY |
 | `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot |
-| `fund-alert@.service` | on any of the above failing | posts the failure to `#risk` |
+| `fund-alert@.service` | on any of the above failing | posts the failure to `#risk`, mentioning the operator |
+| healthchecks.io `fund-daily` | **when a 09:35 ping does not arrive** | alerts `#risk` + email at 10:20 ET |
+
+The watchdog is off-box on purpose: a dead droplet cannot run its own. It is fed
+by `ExecStartPost` on `fund-daily.service`, so a ping means the day *completed*;
+the `-` prefix is fail-safe in the right direction — a failed ping cannot fail
+the trading day it reports on, and a ping that never lands makes the watchdog
+alert. Errors there can only cause a false alarm, never silence. The check must
+be in **cron** mode (`35 9 * * 1-5`); the default simple period mode would make
+Friday's ping set Saturday's deadline and page every weekend.
 
 The timezone is pinned **in the `OnCalendar` expression** as well as on the
 host, so the schedule survives a host timezone change. `Persistent=false`
@@ -116,7 +167,7 @@ move.
 
 - [ ] **`test_golden` is arm64-only — re-record it portably.** The golden
       `data_snapshot_hash` cannot be reproduced on x86_64, so `make test` is
-      699/700 on the droplet. Root cause, measured not guessed: `rng.uniform`
+      708/709 on the droplet. Root cause, measured not guessed: `rng.uniform`
       computes `low + (high-low)*x`, and arm64 and x86_64 contract that into FMA
       differently, so `vol[0]` differs by **1 ULP at the very first draw**
       (`0x1.6974569e58a45p-6` vs `...44p-6`) and 2520 iterations amplify it. The
@@ -137,6 +188,10 @@ move.
       time — an upstream release could move a tool-schema field name unattended,
       which is the 2026-08-17 outage class. `make schema-pin` only defends when
       run. The cache is pre-warmed on the droplet; the version is not pinned.
+      **Sharpened by 2026-08-18:** that day proved this same line can break the
+      fund from the environment side. `make preflight` now catches a moved schema
+      the morning after an upstream release, but only if someone runs it — a pin
+      needs no one to remember.
 - [ ] Verify `launchctl list | grep fund` still shows only `pull-backups`
       **after a real logout/login** — the unload alone does not survive one.
 
