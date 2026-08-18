@@ -14,7 +14,7 @@ Update it when a milestone lands or an open item closes — not per commit.
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
 | **Live since** | 2026-08-17 — first clean end-to-end day |
-| **Tests** | 709 offline green on arm64; **708 + 1 known failure on x86_64** — see below |
+| **Tests** | 769 offline green on arm64 at `92ad9f3`; **768 + 1 known failure on x86_64** — see below |
 | **Watchlist** | NVDA, MSFT, AAPL |
 | **Open position** | NVDA 80 @ 227.09, live stop at 215 |
 | **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
@@ -60,6 +60,43 @@ Four things landed in response:
   unit that never runs produces no failure to react to, so a disabled timer, a
   reboot across 09:35 with `Persistent=false`, or a powered-off droplet were
   *silent*, indistinguishable from a quiet day.
+
+### 2026-08-18 — the projection made readable, and one channel per job
+
+The fund's Slack posts were written for whoever wrote them. `⛔ AAPL buy —
+no_headroom` and `✅ TICKET c37bb3d5 buy AAPL ≤71` are log lines: they name a
+fact without saying what happened or whether it mattered. Three commits
+replaced them — mrkdwn prose (`02a6848`), Block Kit layout for the six mid-day
+posts (`b7bc91e`), and a laid-out digest and P&L (`3ae9073`). Every
+`Rejected()` code in `gate/` now has an English gloss, and a static test fails
+if a new code is added without one.
+
+The workspace was reorganised to match:
+
+- **`#fund-ops`** now carries host, systemd and deploy failures. A droplet that
+  failed to boot and a position that breached a limit are different
+  emergencies with different readers; interleaving them in `#risk` trains you
+  to skim both.
+- **`#new-channel` and `#social` archived.** Both were Slack defaults. The
+  first had been the rehearsal dumping ground before `#fund-staging` existed.
+- `ops/staging-env.example` still pointed rehearsals at it, so that was fixed
+  *before* archiving (`92ad9f3`). Order mattered: Slack answers an archived
+  channel with `is_archived`, which `RealSlack` classifies as permanent and
+  `drain()` dead-letters — a staging day built from that template would have
+  lost its whole projection with no error at post time.
+
+Slack scopes now include `chat:write.customize`, `channels:manage`,
+`channels:join` and `channels:history`. **Reinstalling to add a scope does not
+rotate the bot token** — confirmed twice; `/etc/fund/env` was untouched both
+times.
+
+**Still open: per-agent identity.** Seats are labelled inside the message text
+(`Research Analyst`, `Portfolio Manager`). Every post still arrives from one
+bot with one avatar, so you cannot tell speakers apart at a glance. The scope
+for it is granted and the plumbing mirrors what `blocks` already did —
+`Post` → `port` → `real`/`fake` → `outbox`, plus `RemappedSlack` in
+`scripts/run_day.py`, which must widen in lockstep or staging silently loses
+identity while production keeps it.
 
 ### The live day, as recorded
 
@@ -144,6 +181,8 @@ either.
 | 2026-08-17 | EOD P&L vs SPY added as a second digest message (`92600bc`, `352165d`) |
 | 2026-08-18 | eval rig for the LLM seats merged (`191fd18`, `5196282`) |
 | 2026-08-18 | **moved off the Mac** onto a DigitalOcean droplet on an ET clock; systemd timers, Slack failure alerting, nightly verified snapshots |
+| 2026-08-18 | Slack posts rewritten for a person — mrkdwn, then Block Kit (`02a6848`, `b7bc91e`, `3ae9073`) |
+| 2026-08-18 | workspace cut to one channel per job; host failures split into `#fund-ops` (`92ad9f3`) |
 
 ### The one that mattered
 
