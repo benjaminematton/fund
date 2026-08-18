@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Mac-side backup pull. Fires daily at 19:00 local and does nothing when the
+  Mac is asleep or off the network. Replace /ABSOLUTE/PATH/TO/fund and
+  DROPLET_IP before loading.
+
+  This is the ONLY fund launchd job that should exist on this Mac after the VM
+  cutover. If com.fund.daily ever reappears in ~/Library/LaunchAgents, two
+  hosts hold a live schedule and duplicate orders follow — client_order_id
+  idempotency cannot catch them, because the ticket-id namespaces differ.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fund.pull-backups</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>FUND_DROPLET=fund@DROPLET_IP FUND_LOCAL_BACKUPS=/ABSOLUTE/PATH/TO/fund/backups-from-vm exec /ABSOLUTE/PATH/TO/fund/ops/pull-backups.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/tmp/fund-pull-backups.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/fund-pull-backups.err.log</string>
+</dict>
+</plist>
