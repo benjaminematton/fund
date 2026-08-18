@@ -126,7 +126,7 @@ All state→Slack projection flows through the `events` outbox table (contracts 
 
 ### Alpaca (paper) via MCP
 
-Official `alpacahq/alpaca-mcp-server` (`uvx alpaca-mcp-server`), `ALPACA_PAPER_TRADE=true` everywhere. `ALPACA_TOOLSETS` does server-side whitelisting per seat (§2 table) — only the Execution Trader's config includes `trading`. Layered on top:
+Official `alpacahq/alpaca-mcp-server`, launched by `uvx` at a version pinned in `ALPACA_MCP_SPEC` (`agents/seats.py`) — never bare, which would resolve latest unattended at 09:35. `ALPACA_PAPER_TRADE=true` everywhere. `ALPACA_TOOLSETS` does server-side whitelisting per seat (§2 table) — only the Execution Trader's config includes `trading`. Layered on top:
 
 1. `disallowed_tools=["mcp__alpaca__place_*", ...]` for every non-exec seat (SDK-level deny).
 2. A `PreToolUse` hook on the trader validating every order against an unexpired gate ticket (exact symbol/side, qty ≤ max_qty, stop leg == ticket `stop_price` when present, `client_order_id` == ticket id). Hooks run before allow rules — nothing bypasses them.
@@ -244,7 +244,7 @@ options = ClaudeAgentOptions(
     permission_mode="dontAsk",
     setting_sources=["project"],                                # load CLAUDE.md
     mcp_servers={
-        "alpaca": {"command": "uvx", "args": ["alpaca-mcp-server"],
+        "alpaca": {"command": "uvx", "args": [ALPACA_MCP_SPEC],   # pinned, never bare
                    "env": {"ALPACA_PAPER_TRADE": "true",
                            "ALPACA_TOOLSETS": "account,trading,stock-data"}},
         "fund":  fund_tools_server,   # in-process: submit_* tools (analyst/PM seats)

@@ -102,6 +102,40 @@ worth noting because it is the failure mode that hides: miss it and staging
 loses identity while production keeps it, so the rehearsal is the thing that
 breaks.
 
+### 2026-08-18 — the broker server pinned to a version
+
+`agents/seats.py` now launches `alpaca-mcp-server@2.2.1` instead of whatever
+`uvx` resolved that morning. Chosen because it is the version the droplet's warm
+uvx cache already holds *and* PyPI's latest (released 2026-08-10), so the pin
+records today's behaviour rather than changing it — pinning forward would have
+put a cold download inside the 09:35 launch path, a new failure mode introduced
+by a change whose whole purpose was removing one. Verified by resolving the spec
+`--offline` on the droplet: it returns 2.2.1, and a deliberately wrong pin
+(`@2.1.1`) fails offline, which is what proves the pin is honoured rather than
+ignored.
+
+**The guard was pointing at the wrong server.**
+`tests/test_live_smoke.py` — the schema pin, the one defence against the
+2026-08-17 outage class — launched its own hardcoded `uvx alpaca-mcp-server`
+rather than going through `agents/seats.py`. Pinning only production would have
+left `make schema-pin` validating *latest* while the fund ran 2.2.1: the check
+and the checked drifting apart silently, on the next upstream release. Both now
+import one `ALPACA_MCP_SPEC` constant, so they cannot disagree. Today they
+resolve identically (38 tools, flat `stop_loss_*` strings on both), which is why
+this was invisible.
+
+**Two more copies of the same drift, caught in review.** `ops/README.md`
+pre-warmed the cache with bare `uvx alpaca-mcp-server`, and the cutover check
+did too. On the next upstream release those warm a version the seats never
+launch — putting the cold download back inside 09:35, the exact failure the pin
+exists to remove. Both now derive `ALPACA_MCP_SPEC` from the source rather than
+naming a version that rots.
+
+What the pin changes about `make schema-pin`: it no longer warns early that
+upstream moved a field, because upstream can no longer move under the fund
+unattended. It now gates the *bump* — run it when raising the pin, which is the
+only way the version can change.
+
 ### The live day, as recorded
 
 All 7 checkpoints `done`, audit clean.
@@ -226,15 +260,6 @@ move.
 - [ ] **`FUND_HOST_ID` guard** in `run_day.py` — refuse to run when the DB
       records a different last-writing host. Turns the one-host invariant from
       procedural into enforced. Today only two manual barriers protect it.
-- [ ] **Pin the MCP server version.** `agents/seats.py:49` hardcodes
-      `uvx alpaca-mcp-server` with no version, so it resolves *latest* at run
-      time — an upstream release could move a tool-schema field name unattended,
-      which is the 2026-08-17 outage class. `make schema-pin` only defends when
-      run. The cache is pre-warmed on the droplet; the version is not pinned.
-      **Sharpened by 2026-08-18:** that day proved this same line can break the
-      fund from the environment side. `make preflight` now catches a moved schema
-      the morning after an upstream release, but only if someone runs it — a pin
-      needs no one to remember.
 - [ ] Verify `launchctl list | grep fund` still shows only `pull-backups`
       **after a real logout/login** — the unload alone does not survive one.
 
@@ -276,8 +301,8 @@ new implementation branches get fresh context.
 - **No agent judgment is tested.** 574 tests cover plumbing. Edit
   `charters/pm.md` or `charters/analyst.md` right now and every test stays
   green. This is the gap the eval closes.
-- **`mcp_servers` is hardcoded** at `agents/seats.py:49` — the Alpaca server is
-  always `uvx alpaca-mcp-server` with real credentials. Market data and news
+- **`mcp_servers` is hardcoded** at `agents/seats.py:61` — the Alpaca server is
+  always `uvx` at `ALPACA_MCP_SPEC` with real credentials. Market data and news
   cannot be faked without adding a seam.
 - **No NAV history.** The broker exposes only today and yesterday; the digest
   reports daily P&L, not a since-inception curve. Deliberate — it would need

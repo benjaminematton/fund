@@ -87,12 +87,16 @@ cd /opt/fund && make deps       # must be make deps, NOT uv venv:
 make test                       # offline, no keys needed
 ```
 
-Pre-warm the tool cache, or the first `uvx alpaca-mcp-server` download lands
-inside the 09:35 critical path:
+Pre-warm the tool cache, or the first `uvx` download lands inside the 09:35
+critical path. Warm **the pinned spec**, never bare `alpaca-mcp-server`: bare
+warms whatever is latest today, which leaves the version the seats actually
+launch cold, and puts the download back in the launch path the moment upstream
+ships a release. Deriving it from the source keeps this from rotting at the next
+bump.
 
 ```bash
 set -a; . /etc/fund/env; set +a
-uvx alpaca-mcp-server --help
+uvx "$(.venv/bin/python3 -c 'from agents.seats import ALPACA_MCP_SPEC as s; print(s)')" --help
 ```
 
 ### Secrets
@@ -199,8 +203,9 @@ places orders under a ticket-id namespace the new host has never seen.
 
 ```bash
 make test                       # offline suite
-make schema-pin                 # introspects the broker's REAL tool schema
-uvx alpaca-mcp-server --help    # broker tools reachable
+make schema-pin                 # the REAL tool schema, at the pinned version
+# broker tools reachable — the same pinned spec the seats launch, never bare
+uvx "$(.venv/bin/python3 -c 'from agents.seats import ALPACA_MCP_SPEC as s; print(s)')" --help
 python scripts/run_day.py       # market closed -> exit 0, writes nothing
 ```
 

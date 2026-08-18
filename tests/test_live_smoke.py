@@ -184,13 +184,15 @@ def _place_stock_order_schema() -> dict:
     JSON schema. Read-only: initialize + list, no tool is ever called."""
     import subprocess
 
+    from agents.seats import ALPACA_MCP_SPEC
+
     def send(proc, msg):
         proc.stdin.write(json.dumps(msg) + "\n")
         proc.stdin.flush()
 
     env = {**os.environ, "ALPACA_TOOLSETS": "account,trading,stock-data"}
     proc = subprocess.Popen(
-        ["uvx", "alpaca-mcp-server"], env=env, text=True, bufsize=1,
+        ["uvx", ALPACA_MCP_SPEC], env=env, text=True, bufsize=1,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",

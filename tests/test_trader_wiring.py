@@ -16,6 +16,27 @@ def test_seat_config_loads_and_pins_models():
     assert "trading" in cfg["alpaca_toolsets"]
 
 
+def test_alpaca_mcp_server_is_version_pinned(tmp_path):
+    """Bare `uvx alpaca-mcp-server` resolves LATEST at run time, unattended, at
+    09:35 on a host that trades — an upstream release moving a tool-schema field
+    is the 2026-08-17 outage class. Nothing else offline notices a revert to
+    bare, so this is the guard: the spec must name an exact version, and the
+    seat must actually launch that spec."""
+    import re
+
+    from agents.seats import ALPACA_MCP_SPEC
+    from agents.trader import build_trader_options, load_seat_config
+
+    assert re.fullmatch(r"alpaca-mcp-server@\d+\.\d+\.\d+", ALPACA_MCP_SPEC), (
+        f"ALPACA_MCP_SPEC must pin an exact version, got {ALPACA_MCP_SPEC!r}. "
+        "A bare or range spec resolves latest at run time.")
+
+    cfg = load_seat_config("agents/config/exec.yaml")
+    clock = SimClock(datetime(2026, 7, 6, 15, 30, tzinfo=timezone.utc))
+    opts = build_trader_options(cfg, tmp_path / "fund.sqlite", clock)
+    assert opts.mcp_servers["alpaca"]["args"] == [ALPACA_MCP_SPEC]
+
+
 def test_build_trader_options_is_paper_only_with_hooks(tmp_path):
     from agents.trader import build_trader_options, load_seat_config
 

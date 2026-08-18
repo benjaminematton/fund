@@ -16,6 +16,17 @@ from state.db import connect
 
 CHARTERS_DIR = Path(__file__).resolve().parents[1] / "charters"
 
+# PIN. Bare `uvx alpaca-mcp-server` resolves LATEST at run time — unattended, at
+# 09:35, on a host that trades. An upstream release moving a tool-schema field
+# name overnight is exactly the 2026-08-17 outage class, and `make schema-pin`
+# only defends when someone remembers to run it. Pinned to what the droplet's
+# warm uvx cache already resolves, so this makes today's behaviour explicit
+# rather than changing it — no cold fetch lands in the launch path.
+# tests/test_live_smoke.py's schema pin and ops/README.md's cache pre-warm both
+# derive THIS spec: the guard, the warm cache and the thing guarded cannot drift
+# apart. An upgrade is a deliberate commit with a green `make schema-pin`.
+ALPACA_MCP_SPEC = "alpaca-mcp-server@2.2.1"
+
 
 def load_seat_config(path: str | Path) -> dict:
     return yaml.safe_load(Path(path).read_text())
@@ -47,7 +58,7 @@ def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
         # charter. Per-seat via cfg; default [] never loads a dev file.
         setting_sources=cfg.get("setting_sources", []),
         mcp_servers={
-            "alpaca": {"command": "uvx", "args": ["alpaca-mcp-server"],
+            "alpaca": {"command": "uvx", "args": [ALPACA_MCP_SPEC],
                        "env": {"ALPACA_PAPER_TRADE": "true",     # invariant 1
                                "ALPACA_TOOLSETS": cfg["alpaca_toolsets"]}},
             "fund": build_fund_server(conn_factory, clock, cfg["seat"],
