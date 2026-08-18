@@ -118,9 +118,13 @@ HC_PING_URL=https://hc-ping.com/<uuid>
 
 ```
 SLACK_BOT_TOKEN=xoxb-...
-FUND_ALERT_CHANNEL=#risk
+FUND_ALERT_CHANNEL=#fund-ops
 FUND_ALERT_MENTION=<@U...>
 ```
+
+`#fund-ops`, not `#risk`: a host that failed to boot and a position that
+breached a limit are different emergencies with different readers, and mixing
+them trains you to skim both.
 
 `FUND_ALERT_MENTION` is optional but wanted. A Slack channel notification
 preference is per-device and resets on reinstall; a real `<@U...>` in the

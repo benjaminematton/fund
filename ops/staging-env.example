@@ -32,4 +32,4 @@ FUND_JOURNALS=/var/lib/fund/staging/journals
 
 # Every channel a day posts to, redirected somewhere harmless. run_day.py hard
 # stops on a malformed entry rather than silently posting a rehearsal to #pnl.
-SLACK_CHANNEL_OVERRIDES=#research=#new-channel,#trading-floor=#new-channel,#risk=#new-channel,#trade-log=#new-channel,#pnl=#new-channel
+SLACK_CHANNEL_OVERRIDES=#research=#fund-staging,#trading-floor=#fund-staging,#risk=#fund-staging,#trade-log=#fund-staging,#pnl=#fund-staging

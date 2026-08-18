@@ -93,8 +93,10 @@ curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
 ```
 
 > Rehearsing somewhere harmless? Set
-> `SLACK_CHANNEL_OVERRIDES=#pnl=#test-pnl,#risk=#test-risk,#trade-log=#test-trade-log,#research=#test-research,#trading-floor=#test-floor`
-> and every post is remapped. Unset it for the real run.
+> `SLACK_CHANNEL_OVERRIDES=#research=#fund-staging,#trading-floor=#fund-staging,#risk=#fund-staging,#trade-log=#fund-staging,#pnl=#fund-staging`
+> and every post is remapped. Unset it for the real run. On the droplet this is
+> already wired into `/etc/fund/staging-env`; use `make staging-day` rather than
+> hand-rolling it.
 
 ---
 
