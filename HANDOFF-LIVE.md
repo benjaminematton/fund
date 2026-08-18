@@ -450,9 +450,10 @@ the ceiling before widening the watchlist, not after.
 
 ```bash
 # schedule it (see README §Scheduling — replace the placeholder path first)
-cp ops/com.fund.daily.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.fund.daily.plist
-launchctl list | grep com.fund.daily
+sudo cp ops/fund-*.timer ops/fund-*.service "ops/fund-alert@.service" /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fund-daily.timer fund-pnl.timer fund-backup.timer
+systemctl list-timers 'fund-*' --no-pager
 ```
 
 Then check `logs/run_day.out.log` each morning, and the `#pnl` digest each

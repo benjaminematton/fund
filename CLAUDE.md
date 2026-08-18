@@ -18,7 +18,7 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 - `make sim-day` — full simulated trading day: injected clock, FakeSlack, recorded LLM decisions, **real** tool/gate/DB execution.
 - `make replay REC=<recording>` — replay a recorded day's LLM decisions against current code.
 - `make live-paper` — real Slack + Alpaca paper + real LLM calls (needs `.env`).
-- `docker compose up` — one service per seat + orchestrator.
+- `systemctl start fund-daily.service` — one trading day on the VM host. Schedule, cutover and rollback: `ops/README.md`.
 
 ## Architecture map
 
