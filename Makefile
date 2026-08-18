@@ -1,6 +1,7 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin preflight eval eval-report
+.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin preflight
+.PHONY: staging-day staging-reset eval eval-report
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -117,3 +118,22 @@ eval: deps
 #   make eval-report RUN=secondary BASELINE=control   # diff two runs
 eval-report: deps
 	$(PYTHON) -m evals.report_cli $(RUN) $(BASELINE)
+
+# A COMPLETE trading day against a scratch Alpaca account — real seats, real
+# gate, a real broker order — through the same systemd launch path the 09:35
+# timer uses. ~4 minutes, ~$0.23. Droplet only; needs /etc/fund/staging-env
+# (template: ops/staging-env.example).
+#
+# The fund's only end-to-end proof used to be a live fire, once per weekday. On
+# 2026-08-18 that cost a trading day. This closes the loop to minutes while the
+# market is open. ops/staging-day.sh REFUSES to run unless staging and
+# production resolve to different Alpaca accounts and different databases.
+staging-day:
+	ops/staging-day.sh
+
+# Flatten the scratch account and wipe the scratch DB so the next staging day
+# starts clean — otherwise run two and the second sees the first's positions,
+# changing what the gate allows. LIQUIDATES POSITIONS: reuses staging-day's
+# guard and refuses if it cannot prove the account is the scratch one.
+staging-reset:
+	ops/staging-reset.sh

@@ -371,6 +371,68 @@ To undo a bad deploy, `git checkout <previous-sha>` and run `make preflight`
 again. That is a *code* rollback and is always safe; rolling back **data** is a
 different operation, governed by the section below.
 
+## Staging: a full day on demand
+
+`make preflight` proves the launch path and a seat turn. It stops short of the
+gate and the exec seat, so until 2026-08-18 the only thing that exercised
+**order placement** was a live 09:35 fire — a 24-hour iteration loop, and one
+that had already cost a trading day.
+
+`make staging-day` runs a complete day — analyst, PM, gate, a real broker order,
+reconciliation, audit — against a **second Alpaca paper account**, through the
+same `systemd-run` launch path the timer uses. About 4 minutes, about $0.23,
+any time the market is open.
+
+```bash
+make staging-reset     # flatten the scratch account, wipe the scratch DB
+make staging-day       # the full day
+```
+
+### Setup, once
+
+Copy `ops/staging-env.example` to `/etc/fund/staging-env`, fill it in, then
+`chown fund:fund` and `chmod 600`. It needs a **second Alpaca paper account** —
+its own key pair, not production's.
+
+### Why a second account is not optional
+
+A rehearsal sharing production's account would place orders that change
+production's positions and buying power. The next real day would then size
+against state its own database never recorded, and no audit or reconciliation
+downstream can detect that — the broker and the source of truth simply disagree,
+with nothing marking the moment they diverged.
+
+So `ops/staging-day.sh` refuses to start unless it can prove, by querying both
+key pairs, that staging and production are **different account numbers** and
+**different `FUND_DB` paths**, and that `ALPACA_PAPER_TRADE=true` in staging
+too. `ops/staging-reset.sh` liquidates positions, so it reuses that same guard
+rather than carrying a copy — a divergent copy of a safety check is worse than
+no copy. Both refusals are pinned in `tests/test_ops_staging_day.py`.
+
+### What it does and does not prove
+
+Proves: `uvx` → MCP connect → analyst with live market data and news → PM →
+deterministic gate → exec seat placing a real order → reconciliation → audit,
+all under the unit's real `PATH`, `HOME` and `EnvironmentFile`.
+
+Does not prove: anything about *this* account's positions or cash, which differ
+from production's — so gate sizing and `allowed_actions` will differ too. A
+clean staging day means the machinery works, not that today's production
+decision would have been identical.
+
+Also bounded by market hours: `run_day.py` exits on the broker clock when the
+market is shut, so this is a 09:30–16:00 ET tool.
+
+### Housekeeping
+
+Positions accumulate across runs, which changes what the gate allows on the next
+one. Run `make staging-reset` first when you want a comparable baseline; skip it
+deliberately when you want to exercise the sell path.
+
+Staging posts every channel to a harmless one via `SLACK_CHANNEL_OVERRIDES`.
+`run_day.py` hard-stops on a malformed entry rather than risk posting a
+rehearsal to `#pnl`.
+
 ## Rollback
 
 **Only at a clean day boundary. Mid-day rollback is forbidden.** Once a day has

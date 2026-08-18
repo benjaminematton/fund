@@ -1,0 +1,35 @@
+# /etc/fund/staging-env — a SCRATCH environment for full-day rehearsals.
+#
+# Copy to /etc/fund/staging-env on the droplet, fill in the scratch values,
+# then: chown fund:fund /etc/fund/staging-env && chmod 600 /etc/fund/staging-env
+#
+# WHY THIS EXISTS. Before this file, the only end-to-end proof the fund worked
+# was a live 09:35 fire — a 24-hour iteration loop, and one that already cost a
+# trading day on 2026-08-18. A staging day runs the SAME code through the SAME
+# systemd launch path in ~4 minutes for ~$0.23, whenever the market is open.
+#
+# THE ONE RULE: the Alpaca keys below MUST belong to a DIFFERENT paper account
+# than /etc/fund/env. Sharing the account is the whole hazard — a rehearsal
+# order would change production's positions and buying power, and the next real
+# day would size against state its own database never recorded. `make
+# staging-day` refuses to run unless the two account numbers differ.
+
+# Same as production — the seats and the alerting are what we are testing.
+ANTHROPIC_API_KEY=sk-ant-...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_BOT_TOKEN_EXEC=xoxb-...
+SLACK_APP_TOKEN_EXEC=xapp-...
+
+# DIFFERENT from production. A second Alpaca paper account, its own key pair.
+ALPACA_API_KEY=PK...
+ALPACA_SECRET_KEY=...
+ALPACA_PAPER_TRADE=true          # invariant 1, non-negotiable, staging included
+
+# Scratch state. Separate file means separate checkpoints, so a staging day can
+# run on a date production has already closed, and separate ticket ids.
+FUND_DB=/var/lib/fund/staging/fund.sqlite
+FUND_JOURNALS=/var/lib/fund/staging/journals
+
+# Every channel a day posts to, redirected somewhere harmless. run_day.py hard
+# stops on a malformed entry rather than silently posting a rehearsal to #pnl.
+SLACK_CHANNEL_OVERRIDES=#research=#new-channel,#trading-floor=#new-channel,#risk=#new-channel,#trade-log=#new-channel,#pnl=#new-channel
