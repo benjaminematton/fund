@@ -59,6 +59,16 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 - Tests are the spec. A failing test means the implementation is wrong.
 - NEVER update a golden fixture, expected hash, or expected value to make a test pass. STOP and ask. No "deliberate re-record."
 
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues on `benjaminematton/fund`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
 ## Compact instructions
 
 When compacting, preserve verbatim: the test invariants above; which plan tasks are complete with commit shas; any deviation from `plans/phase-1a.md` / `plans/phase-1b.md` and why. Discard file reads, test output, and exploration traces.
