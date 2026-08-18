@@ -40,4 +40,13 @@ rm -f "$DB" "$DB-wal" "$DB-shm" "$(dirname "$DB")/run_day.lock"
 rm -rf "$JOURNALS"
 mkdir -p "$JOURNALS"
 
+# This script usually runs as root (via `make staging-reset`), but the day runs
+# as the unprivileged service user. A root-owned journals directory makes
+# run_day.py die with EACCES writing analyst.md — and it dies AFTER the analyst
+# and PM have already spent their turns, so the failure costs real money and
+# tells you nothing until the traceback. Restore the parent's ownership rather
+# than hardcoding a user, so this holds on any host.
+OWNER="$(stat -c '%U:%G' "$(dirname "$JOURNALS")" 2>/dev/null || stat -f '%Su:%Sg' "$(dirname "$JOURNALS")")"
+chown -R "$OWNER" "$JOURNALS"
+
 echo "staging-reset: done — next staging day starts clean"
