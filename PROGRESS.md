@@ -90,13 +90,17 @@ Slack scopes now include `chat:write.customize`, `channels:manage`,
 rotate the bot token** — confirmed twice; `/etc/fund/env` was untouched both
 times.
 
-**Still open: per-agent identity.** Seats are labelled inside the message text
-(`Research Analyst`, `Portfolio Manager`). Every post still arrives from one
-bot with one avatar, so you cannot tell speakers apart at a glance. The scope
-for it is granted and the plumbing mirrors what `blocks` already did —
-`Post` → `port` → `real`/`fake` → `outbox`, plus `RemappedSlack` in
-`scripts/run_day.py`, which must widen in lockstep or staging silently loses
-identity while production keeps it.
+**Per-agent identity landed** the same day (`f1bbbce`). Each seat posts under
+its own name and face — Nora (Analyst), Vic (PM), Dash (Execution), with Kai
+(Quant) and Ida (Critic) waiting on their charters. Machinery deliberately has
+no persona: the gate, the broker and the orchestrator post as the fund itself,
+because invariant 3 exists to keep the gate free of LLM code and a channel
+that gives it a face erases the one distinction a reader most needs.
+
+`RemappedSlack` in `scripts/run_day.py` widened in lockstep with the port —
+worth noting because it is the failure mode that hides: miss it and staging
+loses identity while production keeps it, so the rehearsal is the thing that
+breaks.
 
 ### The live day, as recorded
 
