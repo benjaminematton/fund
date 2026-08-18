@@ -247,7 +247,8 @@ def test_golden_day(tmp_path):
 
     assert sim.slack.posts["#trade-log"] == [
         {"ts": sim.slack.posts["#trade-log"][0]["ts"],
-         "text": "🧾 NVDA buy 66@180.14 (ticket a3f90000)", "thread_ts": None}]
+         "text": "*Execution Trader* · 🧾 bought *66 NVDA* at *$180.14*"
+                 " — $11,889.24\nTicket `a3f90000`", "thread_ts": None}]
     assert [p["max_qty"] for p in _event_payloads(sim, "gate_approved")] == [66]
 
     # every turn that ran recorded its cost, and the digest reports the sum
@@ -338,7 +339,8 @@ def test_gate_reject_day(tmp_path):
 
     assert _event_payloads(sim, "gate_rejected") == [
         {"ticker": "NVDA", "side": "buy", "reason": "gate_error"}]
-    assert "⛔ NVDA buy — gate_error" in [p["text"] for p in sim.slack.posts["#risk"]]
+    assert any("*buy NVDA* blocked" in p["text"] and "`gate_error`" in p["text"]
+               for p in sim.slack.posts["#risk"])
     assert _event_payloads(sim, "gate_approved") == []
     _assert_day_completed(sim)
 
@@ -362,7 +364,8 @@ def test_gate_reject_day_circuit_breaker(tmp_path):
 
     assert _event_payloads(sim, "gate_rejected") == [
         {"ticker": "NVDA", "side": "buy", "reason": "circuit_breaker"}]
-    assert "⛔ NVDA buy — circuit_breaker" in [p["text"] for p in sim.slack.posts["#risk"]]
+    assert any("*buy NVDA* blocked" in p["text"] and "`circuit_breaker`" in p["text"]
+               for p in sim.slack.posts["#risk"])
     assert _event_payloads(sim, "gate_approved") == []
     _assert_day_completed(sim)
 
@@ -403,8 +406,8 @@ def test_two_orders_same_day(tmp_path):
     trade_log = sim.slack.posts["#trade-log"]
     assert len(trade_log) == 2
     texts = {p["text"] for p in trade_log}
-    assert any("NVDA buy 66@180.14" in t for t in texts)
-    assert any("MSFT sell 40@505.00" in t for t in texts)
+    assert any("bought *66 NVDA* at *$180.14*" in t for t in texts)
+    assert any("sold *40 MSFT* at *$505.00*" in t for t in texts)
 
     assert sim.turns == {"research": 1, "decision": 1, "execution": 1}
     _assert_day_completed(sim)

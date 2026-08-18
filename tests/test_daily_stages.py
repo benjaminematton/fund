@@ -574,7 +574,9 @@ def test_execution_alerts_when_the_turn_placed_no_order(fund_db, sim_clock):
                            ).fetchone()["status"] == "done"
     posts = ctx.slack.posts["#risk"]         # projected to #risk, drained once
     assert len(posts) == 1
-    assert posts[0]["text"] == f"ticket {TID[:8]} open after exec turn — no order"
+    # the alert's wording is owned by test_slackkit; here it only has to carry
+    # the alert text the stage wrote
+    assert f"ticket {TID[:8]} open after exec turn — no order" in posts[0]["text"]
 
 
 def test_execution_stays_silent_when_the_ticket_has_an_order(fund_db, sim_clock):

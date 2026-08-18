@@ -46,7 +46,9 @@ def test_sim_ticket_to_order_to_fill_message(fund_db, sim_clock):
     assert len(rows) == 1 and rows[0]["client_order_id"] == TID
     msgs = slack.posts["#trade-log"]
     assert len(msgs) == 1
-    assert msgs[0]["text"] == "🧾 NVDA buy 67@180.14 (ticket a3f90000)"
+    # the fill message's format is owned by test_slackkit; this stage test
+    # only has to show the fill it recorded is the one that reached Slack
+    assert all(s in msgs[0]["text"] for s in ("67 NVDA", "$180.14", "a3f90000"))
     cp = fund_db.execute("SELECT status FROM checkpoints WHERE stage='execution'").fetchone()
     assert cp["status"] == "done"
     # invariant 6: a 'done' checkpoint must never coexist with an unposted

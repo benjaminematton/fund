@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from slackkit.fake import FakeSlack
@@ -10,11 +12,100 @@ FILL = {"ticker": "NVDA", "side": "buy", "filled_qty": 67,
         "filled_avg_price": 180.14,
         "ticket_id": "a3f90000-0000-4000-8000-000000000001"}
 
+SIGNAL = {"agent": "analyst", "ticker": "NVDA", "direction": "bullish",
+          "confidence": 72, "summary": "upgraded to Buy on datacenter demand"}
+
+DECISION = {"ticker": "NVDA", "action": "buy", "qty": 80,
+            "thesis": "datacenter demand is not priced in"}
+
+GATE_OK = {"ticket_id": "a3f90000-0000-4000-8000-000000000001", "side": "buy",
+           "ticker": "NVDA", "max_qty": 67, "expires_hhmm": "16:00"}
+
+GATE_NO = {"ticker": "NVDA", "side": "buy", "reason": "no_headroom"}
+
 
 def test_render_fill_matches_contracts_s8():
     channel, text = render("fill", FILL)
     assert channel == "#trade-log"
-    assert text == "🧾 NVDA buy 67@180.14 (ticket a3f90000)"
+    assert text == ("*Execution Trader* · 🧾 bought *67 NVDA* at *$180.14*"
+                    " — $12,069.38\nTicket `a3f90000`")
+
+
+def test_a_sell_fill_says_sold_not_sell():
+    text = render("fill", {**FILL, "side": "sell"})[1]
+    assert "sold *67 NVDA*" in text
+
+
+def test_signal_names_the_seat_and_quotes_the_summary():
+    channel, text = render("signal", SIGNAL)
+    assert channel == "#research"
+    assert text == ("*Research Analyst* · *NVDA* · bullish, conviction 72/100\n"
+                    "> upgraded to Buy on datacenter demand")
+
+
+def test_an_unmapped_seat_falls_back_to_its_raw_name():
+    text = render("signal", {**SIGNAL, "agent": "macro"})[1]
+    assert text.startswith("*macro* · ")
+
+
+def test_decision_reads_as_an_instruction_not_a_verdict_line():
+    channel, text = render("decision", DECISION)
+    assert channel == "#trading-floor"
+    assert text == ("*Portfolio Manager* · *NVDA* — buy 80 shares\n"
+                    "> datacenter demand is not priced in")
+
+
+def test_a_hold_decision_does_not_claim_a_share_count():
+    text = render("decision", {**DECISION, "action": "hold", "qty": 0})[1]
+    assert "*NVDA* — hold\n" in text
+    assert "0 shares" not in text
+
+
+def test_gate_approval_spells_out_the_cap_and_labels_the_ticket():
+    channel, text = render("gate_approved", GATE_OK)
+    assert channel == "#risk"
+    assert text == ("*Risk Gate* · ✅ *buy NVDA* approved for up to *67 shares*\n"
+                    "Ticket `a3f90000` · expires 16:00 ET")
+
+
+def test_gate_rejection_explains_the_reason_code_in_english():
+    channel, text = render("gate_rejected", GATE_NO)
+    assert channel == "#risk"
+    assert text == ("*Risk Gate* · ⛔ *buy NVDA* blocked\n"
+                    "> Sector exposure is already at its cap — no room for"
+                    " another share. (`no_headroom`)")
+
+
+def test_an_unglossed_reason_code_still_renders_rather_than_raising():
+    """A reason code minted after this map was written must degrade to the
+    bare code, not take the whole projection down (invariant 4)."""
+    text = render("gate_rejected", {**GATE_NO, "reason": "brand_new"})[1]
+    assert text.endswith("> (`brand_new`)")
+
+
+def test_every_gate_reason_code_has_an_english_gloss():
+    """Static guard: every Rejected("<code>") literal in the deterministic
+    gate reaches Slack as English, not as a bare identifier."""
+    import ast
+
+    from slackkit.render import REASONS
+
+    root = Path(__file__).resolve().parents[1]
+    codes = {"zero_qty"}   # minted in daily.py, not via Rejected()
+    for py in (root / "gate").rglob("*.py"):
+        for node in ast.walk(ast.parse(py.read_text(), filename=str(py))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "Rejected" and node.args):
+                arg = node.args[0]
+                assert isinstance(arg, ast.Constant) and isinstance(arg.value, str), (
+                    f"{py.relative_to(root)}:{node.lineno}: Rejected() reasons"
+                    f" must be string literals so this guard can see them")
+                codes.add(arg.value)
+    assert codes <= set(REASONS), f"gate reasons with no gloss: {codes - set(REASONS)}"
+
+
+def test_alert_is_labelled_so_it_is_not_mistaken_for_a_gate_post():
+    assert render("alert", {"text": "boom"}) == ("#risk", "⚠️ *Alert* · boom")
 
 
 def test_render_unknown_kind_raises():
@@ -43,20 +134,16 @@ def test_outbox_drain_posts_once_and_marks(fund_db):
     assert row["posted_at"] == NOW
 
 
-from pathlib import Path
 from slackkit.render import RENDERERS
 
 
 def test_new_event_kinds_render():
-    assert render("signal", {"agent": "analyst", "ticker": "NVDA",
-        "direction": "bullish", "confidence": 72, "summary": "s"})[0] == "#research"
-    assert render("decision", {"ticker": "NVDA", "action": "buy", "qty": 80,
-        "thesis": "t"})[0] == "#trading-floor"
-    assert render("gate_approved", {"ticket_id": "a3f90000-x", "side": "buy",
-        "ticker": "NVDA", "max_qty": 67, "expires_hhmm": "16:00"}) == (
-        "#risk", "✅ TICKET a3f90000 buy NVDA ≤67 expires 16:00")
-    assert render("gate_rejected", {"ticker": "NVDA", "side": "buy",
-        "reason": "gate_error"}) == ("#risk", "⛔ NVDA buy — gate_error")
+    """Channel routing per contracts §8. The message bodies have their own
+    tests above; this one guards only where each kind lands."""
+    assert render("signal", SIGNAL)[0] == "#research"
+    assert render("decision", DECISION)[0] == "#trading-floor"
+    assert render("gate_approved", GATE_OK)[0] == "#risk"
+    assert render("gate_rejected", GATE_NO)[0] == "#risk"
     assert render("alert", {"text": "x"})[0] == "#risk"
     assert render("digest", {"text": "x"})[0] == "#pnl"
     # distinct kind from 'digest', same channel: run_close's

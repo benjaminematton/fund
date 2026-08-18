@@ -278,10 +278,17 @@ The canonical schemas, content-addressed ids (`spec_id`/`config_hash`/`run_key`)
 
 ## 8. Slack message formats (projection only)
 
-- Signal: `[<agent>] <TICKER> — <DIRECTION> (<confidence>/100): <summary>` in `#research` thread.
+Bodies are Slack **mrkdwn** and are written for a human skimming the channel, not for a log reader: every post opens with the seat that emitted it in bold, prose goes in a blockquote, and reason codes are glossed in English before their bare code. `slackkit/render.py` is the implementation; `tests/test_slackkit.py` owns the exact strings — stage and sim tests assert on substance, not on these templates.
+
+Rendering adds nothing the event payload does not already carry (invariant 6). Seat labels and reason glosses are constants of `render.py`; `<notional>` is `filled_qty × avg_price`. No renderer reads the database.
+
+- Signal: `*<Seat>* · *<TICKER>* · <direction>, conviction <confidence>/100` + `> <summary>` in `#research` thread.
 - Critique: `CRITIQUE <TICKER>: CLEAR` or `CRITIQUE <TICKER>: <n> OBJECTION(S)` + numbered one-sentence objections, as a reply in the ticker's debate thread.
-- Gate approval: `✅ TICKET <id[:8]> <side> <TICKER> ≤<max_qty> expires <HH:MM>` in `#risk`; rejection: `⛔ <TICKER> <side> — <reason>`.
-- Fill: `🧾 <TICKER> <side> <filled_qty>@<avg_price> (ticket <id[:8]>)` in `#trade-log`, threaded to the decision message.
+- Gate approval: `*Risk Gate* · ✅ *<side> <TICKER>* approved for up to *<max_qty> shares*` + `Ticket \`<id[:8]>\` · expires <HH:MM> ET` in `#risk`.
+- Gate rejection: `*Risk Gate* · ⛔ *<side> <TICKER>* blocked` + `> <English gloss> (\`<reason>\`)`. An unglossed code degrades to `> (\`<reason>\`)` rather than raising — a reason minted after `render.REASONS` was written must not take the projection down. `tests/test_slackkit.py` statically guards that every `Rejected("<code>")` literal in `gate/` is glossed.
+- Decision: `*Portfolio Manager* · *<TICKER>* — <side> <qty> shares` (a `hold` renders as `hold`, with no share count) + `> <thesis>` in `#trading-floor`.
+- Fill: `*Execution Trader* · 🧾 <bought|sold> *<filled_qty> <TICKER>* at *$<avg_price>* — $<notional>` + `` Ticket `<id[:8]>` `` in `#trade-log`, threaded to the decision message.
+- Alert: `⚠️ *Alert* · <text>` in `#risk` — labelled because `#risk` carries both alerts and gate posts, and they demand different reactions. `digest` and `pnl` post their payload `text` verbatim; that text is composed in `orchestrator/daily.py` and `scripts/close_pnl.py`, not here.
 - EOD digest fields: P&L $ and % vs SPY, positions table, decisions + outcomes, est. inference cost.
 
   Under the compressed MVF schedule this is **two messages to `#pnl`, at two times**, because the fund's actions and the fund's outcome do not happen at the same time. `run_day` — including its `close` stage — runs at 09:35 ET, where `daily_pnl_pct` is ten minutes of session and `close_frame` (end − `SIP_DELAY` = 09:24, pre-open) returns the *previous* session's SPY bar.
