@@ -75,3 +75,29 @@ def test_payload_is_valid_json_despite_quotes_in_journal(tmp_path):
     proc, body = _run(tmp_path, 'he said "hi" and \\ backslashed', '{"ok":true}')
     assert proc.returncode == 0, proc.stderr
     assert 'he said "hi"' in body["text"]
+
+
+def test_redacts_secret_key_with_no_recognized_value_prefix(tmp_path):
+    """ALPACA_SECRET_KEY's value has none of the four known prefixes, so only
+    name-based redaction catches it — this is the reviewer's exact repro."""
+    proc, body = _run(tmp_path, "ALPACA_SECRET_KEY=aB3dEfGhIjKlMnOpQrSt9zZ", '{"ok":true}')
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"]
+    assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in text, f"leaked secret: {text}"
+    assert "REDACTED" in text
+
+
+def test_redacts_credential_name_case_insensitively(tmp_path):
+    proc, body = _run(tmp_path, "Alpaca_Secret_Key=aB3dEfGhIjKlMnOpQrSt9zZ", '{"ok":true}')
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"]
+    assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in text, f"leaked secret: {text}"
+    assert "REDACTED" in text
+
+
+def test_does_not_redact_ordinary_assignment_that_is_not_a_credential(tmp_path):
+    """Over-redaction would gut the alert's usefulness: a plain NAME=VALUE log
+    line whose NAME isn't credential-shaped must survive verbatim."""
+    proc, body = _run(tmp_path, "run_day: universe=NVDA,MSFT,AAPL", '{"ok":true}')
+    assert proc.returncode == 0, proc.stderr
+    assert "run_day: universe=NVDA,MSFT,AAPL" in body["text"]
