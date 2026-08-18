@@ -1,8 +1,10 @@
-# Kickoff prompts — fund repo × superpowers
+# Kickoff prompts — fund repo and superpowers
 
 Your doc pack IS the brainstorming output: a validated spec. So you enter the superpowers pipeline at step 2 (`writing-plans`), never re-brainstorm, and repeat plan → execute → review per phase. Prompts below are ready to paste.
 
-## Session 0 — repo assembly + orientation (once, before any planning)
+## Session 0 — repo assembly and orientation
+
+Run this session once, before any planning. Paste the following prompt:
 
 ```
 Read CLAUDE.md, then specs/design.md, specs/contracts.md, specs/acceptance.md,
@@ -20,7 +22,9 @@ Then do two things:
 
 Why: forces full-context reading before any plan exists, surfaces spec bugs while they're cheap, and audits the one pre-built component before anything depends on it.
 
-## Session 1 — plan Phase 1 (`writing-plans`)
+## Session 1 — plan Phase 1
+
+Paste the following prompt to plan Phase 1 with the `writing-plans` skill:
 
 ```
 Planning context: brainstorming is already done. The validated design lives in
@@ -45,7 +49,9 @@ Requirements for the plan:
 Stop after writing the plan. I will review it before execution.
 ```
 
-## Session 2 — execute (`executing-plans`)
+## Session 2 — execute
+
+Paste the following prompt to execute the plan with the `executing-plans` skill:
 
 ```
 Execute plans/phase-1.md with your executing-plans skill. Review checkpoint after
@@ -57,16 +63,18 @@ When the plan is complete: requesting-code-review, with special attention to
 invariant violations (gate purity, idempotency, paper-only, tool-call-only outputs).
 ```
 
-## Later phases — same loop, two adjustments
+## Later phases
 
-- **Phases 2–3** (desk, firm): tasks parallelize well (independent seats, charters, gate math vs. debate mechanics) → use `subagent-driven-development` instead of `executing-plans` at step 2. Keep the same plan-first prompt shape, swapping the phase number and scope line.
+Later phases run the same loop, with two adjustments:
+
+- **Phases 2–3** (desk, firm): tasks parallelize well (independent seats, charters, gate math vs. debate mechanics), so use `subagent-driven-development` instead of `executing-plans` at Session 2. Keep the same plan-first prompt shape, swapping the phase number and scope line.
 - **Phase 5** (the lab): scope line becomes "integration only — fundbt/, stratgate/, and calibration/ are pre-built and tested; extend, don't rewrite" and the plan must start from the Session-0 starter-kit audit findings.
 
-## Worktrees & branches
+## Worktrees and branches
 
 Fresh repo: work on `main` until Phase 1 lands, then one branch per phase with `finishing-a-development-branch` closing each. `using-git-worktrees` becomes worth it from Phase 2 on, when you may want a charter-tuning branch running alongside phase work.
 
-## Prompt principles baked in (so you can adapt them)
+## Principles behind these prompts
 
 These prompts share the following principles:
 

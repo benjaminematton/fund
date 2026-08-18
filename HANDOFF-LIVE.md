@@ -19,7 +19,7 @@ cd ~/Developer/fund          # this checkout
 set -a; source .env; set +a
 ```
 
-Now run the sanity check. **Do not proceed until every line reads OK.**
+Now run the preflight checks. **Do not proceed until every line reads OK.**
 
 ```bash
 echo "PAPER=${ALPACA_PAPER_TRADE}"                    # must print exactly: PAPER=true
@@ -49,7 +49,7 @@ curl -s -H "APCA-API-KEY-ID: $ALPACA_API_KEY" \
 ```
 
 Expect `"status": "ACTIVE"`, a non-zero `"equity"`, and — the one that matters —
-the account id should be the paper one you expect. If these credentials are
+the account id must be the paper account you expect. If these credentials are
 rejected by the paper endpoint, they are not paper credentials. **Stop.**
 
 And confirm the market is actually open right now:
@@ -70,11 +70,13 @@ The bot token must start with `xoxb-`. An `xapp-` app-level token cannot call
 audit fails on `undrained outbox events`. Nothing is lost — that post failure
 is transient, so the whole day's projection is still queued in SQLite and
 flushes on the next drain once the token is fixed. Fix the token, not the
-audit. (A *revoked* token is different: `invalid_auth` is permanent, and
+audit.
+
+**Warning:** A *revoked* token is different. `invalid_auth` is permanent, and
 permanent errors dead-letter — see the following paragraph.)
 
-**Invite the bot to all five channels the renderers post to — do this before
-anything else.** `not_in_channel` is permanent: those events dead-letter one
+**Warning:** Invite the bot to all five channels the renderers post to before
+anything else. `not_in_channel` is permanent: those events dead-letter one
 by one (audit: `dead-lettered outbox events`) and never reach Slack, while the
 other four channels keep delivering. An invite afterwards does not bring them
 back.
@@ -83,7 +85,7 @@ back.
 #research  #trading-floor  #risk  #trade-log  #pnl
 ```
 
-In each one: `/invite @<your-bot>`. Then verify — the printed list must
+In each one: `/invite @BOT_NAME`, where `BOT_NAME` is your bot's Slack handle. Then verify — the printed list must
 contain all five:
 
 ```bash
@@ -92,11 +94,11 @@ curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
   | python3 -c 'import json,sys; print(sorted("#"+c["name"] for c in json.load(sys.stdin)["channels"]))'
 ```
 
-> Rehearsing somewhere harmless? Set
+> **Note:** To rehearse in a channel where nothing matters, set
 > `SLACK_CHANNEL_OVERRIDES=#research=#fund-staging,#trading-floor=#fund-staging,#risk=#fund-staging,#trade-log=#fund-staging,#pnl=#fund-staging`
 > and every post is remapped. Unset it for the real run. On the droplet this is
 > already wired into `/etc/fund/staging-env`; use `make staging-day` rather than
-> hand-rolling it.
+> setting it by hand.
 
 ---
 
@@ -117,7 +119,7 @@ FakeAlpaca and the recordings encoded the *same* wrong assumption. Fixture and
 code agreed with each other and both disagreed with Alpaca. No offline test
 can catch that class of bug by construction; this one asks the server.
 
-If it fails, STOP — do not run the day. A schema change means `gate/tickets.py`
+**Warning:** If it fails, STOP — do not run the day. A schema change means `gate/tickets.py`
 and `charters/exec.md` are describing an order the broker will not accept.
 
 ---
@@ -129,7 +131,7 @@ and `charters/exec.md` are describing an order the broker will not accept.
 ```
 
 **What it does:** seeds one gate ticket, runs a REAL Execution Trader turn
-through the SDK, the seat calls `mcp__alpaca__place_stock_order` with the
+through the SDK. The seat calls `mcp__alpaca__place_stock_order` with the
 ticket id as `client_order_id`, the `PreToolUse` hook validates it against the
 ticket, the order round-trips on the paper account, and the `PostToolUse`
 recorder mirrors it into SQLite. Then it posts to Slack.
@@ -143,8 +145,8 @@ tests/test_live_smoke.py::test_alpaca_source_account_state_and_close_frame PASSE
 2 passed in ...
 ```
 
-Takes up to ~2 minutes: the first `uvx alpaca-mcp-server` start is slow, and
-the test polls the order for up to 90s.
+Takes up to about 2 minutes: the first `uvx alpaca-mcp-server` start is slow,
+and the test polls the order for up to 90 seconds.
 
 **Capture now — evidence for acceptance box §4.1:**
 
@@ -159,18 +161,18 @@ curl -s -H "APCA-API-KEY-ID: $ALPACA_API_KEY" \
 Then open the `#trade-log` message the test posted and **copy its permalink**
 (open the message's more-actions menu, then click **Copy link**).
 
-| Evidence | Ticks |
-|---|---|
-| `/tmp/live-smoke-fill.json` showing status `filled` (or `canceled`) with your `client_order_id` | §4.1 "1-share paper order round-trips" |
-| Slack permalink to the `#trade-log` post | §4.1 "fill in real Slack" |
+Record the following two pieces of evidence:
+
+- **`/tmp/live-smoke-fill.json`** showing status `filled` (or `canceled`) with your `client_order_id` — ticks §4.1 "1-share paper order round-trips".
+- **Slack permalink to the `#trade-log` post** — ticks §4.1 "fill in real Slack".
 
 A `canceled` status is acceptable ONLY if the market closed mid-test. During
 market hours, expect `filled`.
 
-### Then flatten it — do not skip this
+### Close the leftover AAPL share — do not skip this
 
-The smoke **buys** 1 share of AAPL and only cancels the order if it stays
-unfilled. During market hours it fills, and nothing in the test liquidates it.
+The smoke **buys** 1 share of AAPL and cancels the order only if it stays
+unfilled. During market hours the order fills, and nothing in the test liquidates the share.
 §2's universe is `watchlist ∪ positions`, so a leftover AAPL share makes the
 live day run **3 active tickers, not the 2** the reduced config specifies (§7)
 — on the exact run whose purpose is measuring per-seat turn consumption. Close
@@ -215,7 +217,7 @@ run_day: AUDIT CLEAN 2026-MM-DD
 
 and `echo $?` → `0`.
 
-Other legitimate outcomes:
+The following outcomes are also legitimate:
 
 - `run_day: market is closed — no stages run, nothing traded (exit 0)` — you
   ran it outside market hours. Not a failure; not a completed day either.
@@ -228,11 +230,11 @@ Other legitimate outcomes:
   day still completes, still posts a digest, and still prints `AUDIT CLEAN`:
   with no active tickers no seat turn is ever scheduled, so zero `costs` rows
   is that day's correct shape, not a violation. (A day that DID schedule turns
-  and recorded no cost still fails — see §6.2.)
+  and recorded no cost still fails — see §6, "The detail", item 2.)
 - A HOLD day. **This is a success.** The PM deciding HOLD on a boring day is
-  the designed behaviour, not a broken run.
+  the designed behavior, not a broken run.
 
-In Slack you should see: signals in `#research`, the PM's verdict in
+In Slack, verify: signals in `#research`, the PM's verdict in
 `#trading-floor`, a gate ticket or rejection in `#risk`, a fill in
 `#trade-log` if it traded, and the EOD digest in `#pnl`.
 
@@ -240,7 +242,7 @@ In Slack you should see: signals in `#research`, the PM's verdict in
 
 ## 3. The audit
 
-`make live-day` runs this itself, but run it again explicitly — it is the
+`make live-day` runs the audit itself, but run it again explicitly — its output is the
 written evidence:
 
 ```bash
@@ -275,14 +277,16 @@ it is labelled `est.` in the digest for exactly that reason.
 
 Note what that $0.50 is and is not. The per-seat `max_budget_usd` caps in
 `agents/config/*.yaml` sum to **$2.25 worst-case** (analyst $0.50 + pm $0.75 +
-exec $1.00); **expected spend is < $0.50/day**; the real figure is **measured
+exec $1.00); **expected spend is less than $0.50 per day**; the real figure is **measured
 after the first live day**. The caps are backstops against a runaway turn, not
 the expectation — so a day near $2.25 is an incident to investigate, and the
 $0.50 row in §5 is the number that actually gets ticked.
 
 ---
 
-## 5. What ticks what
+## 5. Evidence for each acceptance box
+
+The following table maps each piece of evidence to the acceptance box it ticks:
 
 | Evidence | Where it lands | Acceptance box (`docs/superpowers/specs/2026-08-12-mvf-scope.md` §4) |
 |---|---|---|
@@ -298,7 +302,7 @@ Paste all five into the commit message (or PR body) that ticks the boxes.
 
 ## 6. Abort criteria — read this before you need it
 
-**STOP, capture, report. Do not retry blind.** Re-running a live day after an
+**Warning:** STOP, capture, and report. Do not retry blind. Re-running a live day after an
 unexplained failure is how you turn one bad order into two.
 
 ### The card — every stop condition on one screen
@@ -307,7 +311,7 @@ unexplained failure is how you turn one bad order into two.
 |---|---|---|---|
 | 1 | Hook deny on a live order | `#risk`, run log | An order no ticket authorised. The gate held; the reason it had to is the bug |
 | 2 | Any audit line but `AUDIT CLEAN` | §3 terminal | Each line names its own shape. All counts are ET-day-scoped |
-| 3 | `run_day_failed — …` | `#risk` | Raised BEFORE the audit ran. DB is mid-flight; may be post-order |
+| 3 | `run_day_failed — …` | `#risk` | Raised BEFORE the audit ran. DB is mid-flight; an order might already exist |
 | 4 | An order you did not expect | `#trade-log`, broker | Wrong symbol, wrong side, or qty > ticket `max_qty` |
 | 5 | Paper guard fired | startup | Do NOT export and retry. Find out why it was wrong |
 
@@ -315,12 +319,12 @@ unexplained failure is how you turn one bad order into two.
 audit, checkpoints, decisions, orders, events, broker orders) and report with
 the artefacts attached.
 
-**Re-run ONLY if** it was a crash (killed / slept / network) AND the audit
+**Caution:** Re-run ONLY if the failure was a crash — killed, slept, or network — AND the audit
 shows stages at `running`/`pending` AND no order looks wrong. Checkpoint CAS
 resumes rather than repeats; `client_order_id` idempotency makes a re-placed
 order a broker 422, not a double fill. **When in doubt, do not.**
 
-**Two things that look like aborts and are not:**
+**The following two outcomes look like aborts but are not:**
 - A resumed day reporting `alert events raised: 1` — that is the original
   crash, correctly counted. Read the alert TEXT, not the count. A second,
   different alert (or count > 1) is new and real.
@@ -330,7 +334,7 @@ order a broker 422, not a double fill. **When in doubt, do not.**
 
 ### The detail
 
-Stop immediately on any of:
+Stop immediately if any of the following happens:
 
 1. **A hook deny on a live order.** The seat's `place_*` call came back denied
    by the `PreToolUse` gate. That means an order was attempted that no valid
@@ -341,7 +345,7 @@ Stop immediately on any of:
    `approved`, an order stuck `submitted`, an undrained outbox, a dead-lettered
    event *raised today*, an alert *raised today*, or no cost rows on a day that
    scheduled seat turns. Every count is scoped to the audited ET day, so
-   yesterday's alert never reds today — and the audit's own failure alert is
+   yesterday's alert never fails today's audit — and the audit's own failure alert is
    marked and excluded, so a re-fire cannot compound it.
 3. **`run_day_failed — …` in `#risk`.** Something raised between the DB
    connection and the audit: a stage body, the watchlist/sectors load, or the
@@ -379,7 +383,7 @@ repeats, and `client_order_id` idempotency means a re-placed order is
 
 **A resumed day will NOT print `AUDIT CLEAN`, even on a clean resume, and
 that is expected — do not read it as a fresh abort.** The crash's own
-`run_day_failed` alert (raised by `guarded()`'s except path, BEFORE the audit
+`run_day_failed` alert (raised by the except path of `guarded()`, BEFORE the audit
 ever ran) has no `audit_report` marker on it — only the audit's own
 after-the-fact failure alert carries that, and same-day scoping alone can't
 exclude a genuine alert raised earlier the same ET day. So the resumed run's
@@ -393,7 +397,7 @@ the resume.
 
 **One known non-safety violation to recognise:** if the ONLY audit line is
 `alert events raised: 1` and the alert text starts with `cost_unavailable`,
-the SDK simply did not populate `total_cost_usd` for that turn. The fund
+the SDK did not populate `total_cost_usd` for that turn. The fund
 records no cost row rather than a fake `0.00`. It is still a STOP-and-report —
 capture the `ResultMessage` (see §7) — but it is an accounting gap, not a
 trading fault.
@@ -410,7 +414,7 @@ The first live day deliberately runs **smaller than the design allows**:
 | Analyst `max_turns` | **16** | `agents/config/analyst.yaml` |
 
 Both carry the comment `provisional — right-size from first live
-ResultMessage`. The reason: the analyst charter budgets ≤4 tool calls per
+ResultMessage`. The reason is that the analyst charter budgets ≤4 tool calls per
 ticker, and how the SDK counts a tool call against `max_turns` cannot be
 determined offline. Exhausting the budget degrades safely (the ticker defaults
 to neutral/0), but demo day deserves a real signal — so there is headroom now
@@ -427,11 +431,16 @@ formatting:
 
 ```bash
 grep "turn done:" logs/run_day.out.log
-# run_day: analyst turn done: num_turns=11 est_cost_usd=0.0182
-# run_day: pm turn done: num_turns=6 est_cost_usd=0.0094
 ```
 
-Running interactively, the same lines are on the console. `total_cost_usd` is
+The output is similar to the following:
+
+```
+run_day: analyst turn done: num_turns=11 est_cost_usd=0.0182
+run_day: pm turn done: num_turns=6 est_cost_usd=0.0094
+```
+
+If you run the day interactively, the same lines appear on the console. `total_cost_usd` is
 also in the `costs` table (§4).
 
 Then, in a **follow-up commit**, right-size both values and drop the
@@ -450,8 +459,10 @@ the ceiling before widening the watchlist, not after.
 
 ## 8. After a clean day
 
+Before you copy anything, replace the placeholder path in the unit files, as
+described in README §Scheduling. Then install and enable the timers:
+
 ```bash
-# schedule it (see README §Scheduling — replace the placeholder path first)
 sudo cp ops/fund-*.timer ops/fund-*.service "ops/fund-alert@.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fund-daily.timer fund-pnl.timer fund-backup.timer

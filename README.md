@@ -2,7 +2,7 @@
 
 A multi-agent paper-trading firm on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
 Analyst and PM agents make a real decision each morning from live market data
-via their own tool calls. Between every LLM decision and every broker order
+through their own tool calls. Between every LLM decision and every broker order
 sits a **deterministic Python gate** that no agent can talk its way past.
 
 Agents decide inside a deterministic control envelope. That is the whole idea.
@@ -62,6 +62,8 @@ projection of it:
 Reading it in one line: **agents → MCP tools → deterministic gate → hook → broker**,
 with SQLite as the source of truth and Slack as a read-only projection of it.
 
+The following table lists each package, what it does, and whether it contains LLM code:
+
 | Package | Role | LLM code? |
 |---|---|---|
 | `scripts/run_day.py` | the live composition root — real clock, Slack, Alpaca, seats | wires it |
@@ -73,7 +75,7 @@ with SQLite as the source of truth and Slack as a read-only projection of it.
 | `slackkit/` | outbox, renderers, real/fake Slack ports | **no** |
 | `fundbt/` `stratgate/` `calibration/` | research stack: backtests, strategy gates G1–G4, analyst scoring | **no** |
 
-`gate/`, `stratgate/`, `calibration/`, `orchestrator/` and `state/` are held
+`gate/`, `stratgate/`, `calibration/`, `orchestrator/`, and `state/` are held
 LLM-free by an AST lint (`scripts/check_purity.py`) that runs in `make test`.
 
 ## What it does
@@ -83,28 +85,30 @@ LLM-free by an AST lint (`scripts/check_purity.py`) that runs in `make test`.
   choose HOLD on a boring day. Neither can place an order.
 - **A deterministic risk gate.** Volatility tiers, correlation multipliers, a
   cash cap, an 8-position limit, a 60% sector cap with resize, and a −3% daily
-  circuit breaker — one code path serves both the advisory pre-gate and the
+  circuit breaker. One code path serves both the advisory pre-gate and the
   enforcement pass, so what the PM was shown is what the gate enforces
   (`tests/test_sim_day.py::test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces`).
 - **A hook that cannot be argued with.** A `PreToolUse` hook denies any order
   without an open, unexpired gate ticket. Hooks run before permission rules;
-  the agent's only path to the broker goes through it.
+  the agent's only path to the broker goes through the hook.
 - **Idempotent execution.** `client_order_id` is always the ticket id, so a
   retry is 422-rejected by the broker rather than double-filled.
 - **Default HOLD, everywhere.** A missing analyst signal becomes neutral/0; a
   silent PM becomes hold/0 plus an alert; a NaN in the feed rejects the trade;
   an unreadable market clock skips the day. Every one of those is a test.
-- **Slack as the firm's UI.** Signals, gate verdicts, fills and the EOD digest
+- **Slack as the firm's UI.** Signals, gate verdicts, fills, and the end-of-day (EOD) digest
   are projected from an outbox with per-event dead-lettering.
 - **Structured output only.** Agents emit data through MCP tool schemas that
-  are advisory to the model (the pinned SDK has no `strict=True`); the
+  are advisory to the model, because the pinned SDK has no `strict=True`. The
   pydantic handler validates every safety-relevant constraint, so no code
-  anywhere parses a ticker, an action or a size out of free text.
+  anywhere parses a ticker, an action, or a size out of free text.
 - **Record/replay test suite.** 518 offline tests including six full simulated
-  day shapes that run the real gate, hooks, tools, DB and fill-poll against
+  day shapes that run the real gate, hooks, tools, DB, and fill-poll against
   recorded LLM decisions — no network, no API keys, $0 of inference.
 
 ## Run it
+
+The following targets cover the offline suite, a simulated day, and one real day:
 
 ```bash
 make test         # full offline suite + purity lint. No network, no keys.
@@ -112,7 +116,7 @@ make sim-day      # six simulated day shapes: real everything, recorded LLM
 make live-day     # ONE real day: real Slack + Alpaca paper + real LLM seats
 ```
 
-Live runs need `.env` (copy `.env.example`) loaded into the shell:
+Live runs need a `.env` file, copied from `.env.example`. Load it into the shell:
 
 ```bash
 set -a; source .env; set +a
@@ -131,10 +135,12 @@ criteria.
 ### Scheduling
 
 One fire per market day — no daemon. The day is a sequential process that
-exits; checkpoint CAS makes a re-fire resume rather than repeat.
+exits; a checkpoint compare-and-swap (CAS) makes a re-fire resume rather than repeat.
 
-**launchd (macOS).** Replace `/ABSOLUTE/PATH/TO/fund` in
-`ops/com.fund.daily.plist` with this checkout's path, then:
+#### Schedule with launchd (macOS)
+
+Replace `/ABSOLUTE/PATH/TO/fund` in `ops/com.fund.daily.plist` with this
+checkout's path, then run:
 
 ```bash
 cp ops/com.fund.daily.plist ~/Library/LaunchAgents/
@@ -143,7 +149,10 @@ launchctl list | grep com.fund.daily
 # stop with: launchctl unload ~/Library/LaunchAgents/com.fund.daily.plist
 ```
 
-**cron (alternative).**
+#### Schedule with cron
+
+If you don't use launchd, add the following crontab entry instead, replacing
+`/ABSOLUTE/PATH/TO/fund` with this checkout's path:
 
 ```cron
 TZ=America/New_York
@@ -152,7 +161,7 @@ TZ=America/New_York
 
 Both fire at 09:35 ET, Mon–Fri. launchd's `StartCalendarInterval` uses the
 machine's **local** time and ignores `TZ`, so the plist is correct only on a
-machine set to America/New_York — cron's `TZ=` line does honour it.
+machine set to America/New_York. In a crontab, the `TZ=` line does honor the time zone.
 Market holidays and early closes need no schedule change: the run exits 0 on
 the broker's clock.
 
@@ -167,7 +176,7 @@ sudo pmset repeat wakeorpoweron MTWRF 06:30:00   # 5 min before a 06:35 local fi
 pmset -g sched                                    # verify it registered
 ```
 
-You also stay logged in: a LaunchAgent runs in your user session, not as a
+You must also stay logged in: a LaunchAgent runs in your user session, not as a
 daemon. A laptop is a poor host for this — the first trip with the lid shut is
 a day that silently does not happen.
 
@@ -183,12 +192,12 @@ one.
 Runtime is Haiku-tier for the analyst and exec seats, Sonnet-tier for the PM
 (a strong tier for the PM is deliberate — `specs/design.md` §2), with per-seat
 `max_budget_usd` caps in
-`agents/config/*.yaml` — never hardcoded. Three seat turns at MVF's watchlist
+`agents/config/*.yaml` — never hardcoded. Three seat turns at the Minimum Viable Firm (MVF) watchlist
 size is the whole daily spend, and a HOLD day skips the execution turn
 entirely (zero tickets → no LLM call).
 
-The caps are **backstops, not the expectation**, and the two numbers are not
-the same number: **caps sum to $2.25 worst-case** (analyst $0.50 + pm $0.75 +
+The caps are **backstops, not the expectation**, and the caps and the
+expected spend are different numbers: **caps sum to $2.25 worst-case** (analyst $0.50 + pm $0.75 +
 exec $1.00); **expected spend is < $0.50/day**; **measured after the first
 live day**. What bounds the expectation is the watchlist size and each seat's
 `max_turns`, not the caps — a day that actually hits $2.25 is a runaway to
@@ -196,7 +205,7 @@ investigate, not a budget that was spent as designed.
 
 Every turn's cost is recorded to the `costs` table and summed into the EOD
 digest. `ResultMessage.total_cost_usd` is a **client-side estimate**, so it is
-labelled `est.` everywhere it is surfaced. When the SDK does not populate it,
+labeled `est.` everywhere it is surfaced. When the SDK does not populate it,
 the fund records no row and raises an alert rather than writing a `0.00` that
 would make real spend look free.
 
@@ -210,7 +219,7 @@ fund MCP tools, analyst + PM seats, daily loop, fill-poll, digest, audit,
 schedule) are built and green offline: **556 tests, purity lint clean**.
 
 **Live since 2026-08-17.** All nine MVF acceptance boxes are ticked
-(`docs/superpowers/specs/2026-08-12-mvf-scope.md` §4). That day's clean run:
+(`docs/superpowers/specs/2026-08-12-mvf-scope.md` §4). The following output shows that day's clean run:
 
     analyst  NVDA bullish 72 · MSFT neutral 40      7 turns   $0.0504
     pm       NVDA buy 80 @ stop 215 · MSFT hold     5 turns   $0.1161
@@ -226,8 +235,8 @@ with Alpaca. `make schema-pin` now asks the real server before every live day;
 no offline test can catch that class of bug. The failed run's red audit is kept
 in `state/fund-2026-08-17-incident.sqlite`.
 
-Next: the resolutions/reflection loop (decisions currently produce no scored
-outcomes, so `calibration/` has never been fed), then the second analyst seat.
+Next: the resolutions and reflection loop, then the second analyst seat.
+Decisions produce no scored outcomes, so `calibration/` has never been fed.
 
 ## Map of the repo
 
@@ -243,14 +252,14 @@ outcomes, so `calibration/` has never been fed), then the second analyst seat.
 
 ### Research stack
 
-`fundbt/` (backtest engine + trial registry), `stratgate/` (DSR/PSR/MinTRL/WFE
-statistics and the G2/G3 evaluators) and `calibration/` (Brier/BSS scoring →
-deterministic PM weights) are pre-built and tested. Rules they inherit:
+`fundbt/` (backtest engine + trial registry), `stratgate/` (deflated Sharpe (DSR), probabilistic Sharpe (PSR), minimum track record length (MinTRL) and walk-forward efficiency (WFE)
+statistics and the G2/G3 evaluators), and `calibration/` (Brier/BSS scoring →
+deterministic PM weights) are pre-built and tested. Those three packages inherit the following rules:
 
-- LLMs hypothesise; code validates. Nothing in those packages imports LLM code.
+- LLMs hypothesize; code validates. Nothing in those packages imports LLM code.
 - Default is REJECT: NaN/missing/malformed anywhere → the strategy does not advance.
 - Every backtest logs a trial row; family-wide N feeds the deflated Sharpe.
-- The holdout is consumed exactly once per spec, enforced by a PRIMARY KEY.
+- The holdout is consumed exactly once per spec, enforced by a `PRIMARY KEY` constraint.
 - Cost floors are constants, not parameters.
 
 Run a backtest only through the `run_backtest` tool — an unlogged trial

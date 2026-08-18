@@ -1,7 +1,7 @@
 # Progress
 
 Running record of where the fund actually stands. Read this first in a new
-session; `README.md` explains what the system *is*, this explains what it has
+session. `README.md` explains what the system *is*; this file explains what the system has
 *done* and what is *open*.
 
 Update it when a milestone lands or an open item closes — not per commit.
@@ -73,34 +73,34 @@ posts (`b7bc91e`), and a laid-out digest and P&L (`3ae9073`). Every
 `Rejected()` code in `gate/` now has an English gloss, and a static test fails
 if a new code is added without one.
 
-The workspace was reorganised to match:
+The workspace was reorganized to match:
 
-- **`#fund-ops`** now carries host, systemd and deploy failures. A droplet that
+- **`#fund-ops`** now carries host, systemd, and deploy failures. A droplet that
   failed to boot and a position that breached a limit are different
   emergencies with different readers; interleaving them in `#risk` trains you
   to skim both.
 - **`#new-channel` and `#social` archived.** Both were Slack defaults. The
   first had been the rehearsal dumping ground before `#fund-staging` existed.
-- `ops/staging-env.example` still pointed rehearsals at it, so that was fixed
+- `ops/staging-env.example` still pointed rehearsals at `#new-channel`, so that was fixed
   *before* archiving (`92ad9f3`). Order mattered: Slack answers an archived
   channel with `is_archived`, which `RealSlack` classifies as permanent and
   `drain()` dead-letters — a staging day built from that template would have
   lost its whole projection with no error at post time.
 
 Slack scopes now include `chat:write.customize`, `channels:manage`,
-`channels:join` and `channels:history`. **Reinstalling to add a scope does not
+`channels:join`, and `channels:history`. **Reinstalling to add a scope does not
 rotate the bot token** — confirmed twice; `/etc/fund/env` was untouched both
 times.
 
 **Per-agent identity landed** the same day (`f1bbbce`). Each seat posts under
 its own name and face — Nora (Analyst), Vic (PM), Dash (Execution), with Kai
 (Quant) and Ida (Critic) waiting on their charters. Machinery deliberately has
-no persona: the gate, the broker and the orchestrator post as the fund itself,
-because invariant 3 exists to keep the gate free of LLM code and a channel
+no persona: the gate, the broker, and the orchestrator post as the fund itself,
+because invariant 3 exists to keep the gate free of LLM code. A channel
 that gives it a face erases the one distinction a reader most needs.
 
 `RemappedSlack` in `scripts/run_day.py` widened in lockstep with the port —
-worth noting because it is the failure mode that hides: miss it and staging
+this is the failure mode that hides: miss the widening and staging
 loses identity while production keeps it, so the rehearsal is the thing that
 breaks.
 
@@ -108,16 +108,16 @@ breaks.
 
 `agents/seats.py` now launches `alpaca-mcp-server@2.2.1` instead of whatever
 `uvx` resolved that morning. Chosen because it is the version the droplet's warm
-uvx cache already holds *and* PyPI's latest (released 2026-08-10), so the pin
-records today's behaviour rather than changing it — pinning forward would have
+`uvx` cache already holds *and* PyPI's latest (released 2026-08-10), so the pin
+records today's behavior rather than changing it — pinning forward would have
 put a cold download inside the 09:35 launch path, a new failure mode introduced
 by a change whose whole purpose was removing one. Verified by resolving the spec
 `--offline` on the droplet: it returns 2.2.1, and a deliberately wrong pin
-(`@2.1.1`) fails offline, which is what proves the pin is honoured rather than
+(`@2.1.1`) fails offline, which is what proves the pin is honored rather than
 ignored.
 
 **The guard was pointing at the wrong server.**
-`tests/test_live_smoke.py` — the schema pin, the one defence against the
+`tests/test_live_smoke.py` — the schema pin, the one defense against the
 2026-08-17 outage class — launched its own hardcoded `uvx alpaca-mcp-server`
 rather than going through `agents/seats.py`. Pinning only production would have
 left `make schema-pin` validating *latest* while the fund ran 2.2.1: the check
@@ -128,7 +128,7 @@ this was invisible.
 
 **Two more copies of the same drift, caught in review.** `ops/README.md`
 pre-warmed the cache with bare `uvx alpaca-mcp-server`, and the cutover check
-did too. On the next upstream release those warm a version the seats never
+did too. On the next upstream release, those two steps warm a version the seats never
 launch — putting the cold download back inside 09:35, the exact failure the pin
 exists to remove. Both now derive `ALPACA_MCP_SPEC` from the source rather than
 naming a version that rots.
@@ -140,10 +140,10 @@ only way the version can change.
 
 ### The live day, as recorded
 
-All 7 checkpoints `done`, audit clean.
+All seven checkpoints reached `done` and the audit was clean. The stages produced the following:
 
 - **analyst** → 2 signals (NVDA bullish 72%, MSFT bearish 40%)
-- **pm** → 2 decisions: NVDA buy 80 w/ stop 215; MSFT hold 0
+- **pm** → 2 decisions: NVDA buy 80 with stop 215; MSFT hold 0
 - **gate** → 1 ticket, `max_qty` 80, stop 215
 - **exec** → 1 order, filled 80 @ 227.09, `oto` with a flat stop leg
 
@@ -185,11 +185,11 @@ default is HOLD.
 `SIP_DELAY` (16 min), so a 16:15 fire asks for 15:59 — before the closing
 auction writes the bar.
 
-Full layout, cutover and rollback procedure: `ops/README.md`.
+Full layout, cutover, and rollback procedure: `ops/README.md`.
 
 ### The Mac after cutover
 
-`com.fund.pull-backups` is the **only** fund launchd job that should exist here.
+`com.fund.pull-backups` must be the **only** fund launchd job on the Mac.
 `com.fund.daily.plist` was moved out of `~/Library/LaunchAgents` to
 `~/fund-rollback/`, and `.env` was renamed to `.env.MIGRATED-TO-VM` — two
 independent barriers, because `launchctl unload` is session-scoped and
@@ -210,7 +210,7 @@ by construction, not by anyone remembering.
 `run_day.py:25-34` documents a pre-Slack window that posts nothing on failure,
 justified because "the exit is non-zero with a descriptive stderr message, so
 it is a visible failure, just not a Slack one." That premise assumed a human at
-the machine. On a droplet it is false, so systemd `OnFailure=` restores it —
+the machine. On a droplet that premise is false, so systemd `OnFailure=` restores the missing alert —
 verified against a start failure, which is the case the script itself cannot
 cover. Known gap: if the Slack token is what broke, the alert cannot post
 either.
@@ -244,7 +244,7 @@ The entire offline suite was green over a total outage, because
 `tests/fake_alpaca.py` and the recordings encoded the *same* wrong assumption as
 the code. Fixture and code agreed with each other and both disagreed with
 Alpaca. That is why `make schema-pin` exists and why it is step §0b of the
-runbook: it introspects the live server's schema and fails if the field names
+`HANDOFF-LIVE.md` runbook: it introspects the live server's schema and fails if the field names
 move.
 
 ---
@@ -257,11 +257,11 @@ move.
       `data_snapshot_hash` cannot be reproduced on x86_64, so `make test` is
       708/709 on the droplet. Root cause, measured not guessed: `rng.uniform`
       computes `low + (high-low)*x`, and arm64 and x86_64 contract that into FMA
-      differently, so `vol[0]` differs by **1 ULP at the very first draw**
+      differently, so `vol[0]` differs by **one unit in the last place (ULP) at the very first draw**
       (`0x1.6974569e58a45p-6` vs `...44p-6`) and 2520 iterations amplify it. The
       RNG integer stream is identical and the `DIP_PCT` branch is *not* the
       culprit — kick counts match exactly (4837) on both.
-      **Verified fix:** quantizing the market makes hashes bit-identical at 8dp
+      **Verified fix:** quantizing the market makes hashes bit-identical at 8 decimal places
       or coarser (10dp and finer still diverge); `close.round(6)` in
       `tests/synthetic.py` is one line. The work is the re-record: 16 pinned
       values across two tests, and the fixture's *meaning* must survive — golden
@@ -276,7 +276,7 @@ new implementation branches get fresh context.
       injection case at the PM boundary.
 - [ ] **Union asymmetry** in the price-history exclusion (ledgered ruling,
       2026-08-17)
-- [ ] **Resolutions / reflection loop** — nothing currently closes the feedback
+- [ ] **Resolutions and reflection loop** — nothing closes the feedback
       cycle from outcome back into analyst calibration
 - [ ] **Second analyst seat** — the debate mechanic in the design has one voice
 - [ ] README demo recording
@@ -291,7 +291,7 @@ new implementation branches get fresh context.
       `equity × vol_tier × corr_mult ≥ price` (`gate/risk.py:87-91`). At $100
       the budget is $20–27, so the current watchlist rejects `no_headroom`
       every single day, and fitting the money would mean swapping to sub-$10
-      high-vol names — i.e. modifying the system in order to demonstrate it.
+      high-vol names — that is, modifying the system to demonstrate it.
       At ~$1,200 NVDA and AAPL clear, and the live system is **identical** to
       the one with a clean-day record. Downside is bounded by the balance.
 
@@ -340,7 +340,7 @@ new implementation branches get fresh context.
 
 ## Eval scoping
 
-The three seats, what each can reach, what each writes:
+The following table lists the three seats, what each can reach, and what each writes:
 
 | | analyst | pm | exec |
 |---|---|---|---|
@@ -361,7 +361,7 @@ bars, quotes. For more information, see the "Known limitations" section.
 
 That split sets the order of work:
 
-- **PM evals need zero new plumbing** — its entire decision input is the brief,
+- **PM evals need zero new plumbing** — the PM's entire decision input is the brief,
   and you own all of it.
 - **Analyst evals need the MCP seam built first**, because its evidence comes
   off the network.
