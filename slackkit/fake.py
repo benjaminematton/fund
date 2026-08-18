@@ -15,11 +15,13 @@ class FakeSlack:
         self._ts = 0
 
     def post(self, channel: str, text: str, thread_ts: str | None = None,
-             blocks: list[dict] | None = None) -> str:
+             blocks: list[dict] | None = None, username: str | None = None,
+             icon_emoji: str | None = None) -> str:
         if channel in self.permanent_failures:
             raise PermanentPostError(f"{channel}: not_in_channel")
         self._ts += 1
         ts = f"{self._ts}.000000"
         self.posts.setdefault(channel, []).append(
-            {"ts": ts, "text": text, "thread_ts": thread_ts, "blocks": blocks})
+            {"ts": ts, "text": text, "thread_ts": thread_ts, "blocks": blocks,
+             "username": username, "icon_emoji": icon_emoji})
         return ts

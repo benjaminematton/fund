@@ -282,7 +282,20 @@ Bodies are Slack **mrkdwn** and are written for a human skimming the channel, no
 
 Rendering adds nothing the event payload does not already carry (invariant 6). Seat labels and reason glosses are constants of `render.py`; `<notional>` is `filled_qty × avg_price`. No renderer reads the database.
 
-`render()` returns a `Post(channel, text, blocks)`. **`text` is populated for every kind, blocks or not** — Slack renders `text`, not `blocks`, in push notifications and to screen readers, so a blocks-only message arrives blank there. The templates below are that `text`. `blocks` carries Block Kit layout for every kind except `projection_error`; `SlackPort.post` omits the argument entirely when it is `None`.
+`render()` returns a `Post(channel, text, blocks, username, icon_emoji)`. **`text` is populated for every kind, blocks or not** — Slack renders `text`, not `blocks`, in push notifications and to screen readers, so a blocks-only message arrives blank there. The templates below are that `text`. `blocks` carries Block Kit layout for every kind except `projection_error`; `SlackPort.post` omits the argument entirely when it is `None`.
+
+### Seat identity
+
+Seats have names, so a channel reads as people talking and a reader can tell who is speaking before reading a word of the body. `render.SEATS` maps seat slug → `<Name> (<Role>)` — the role is in parentheses so nobody has to memorise the mapping and a second analyst stays unambiguous — and `render.ICONS` maps slug → emoji. One dict serves both the Slack sender name and the in-message label: two spellings of one seat is worse than seeing the name twice, and the label is what survives if the token ever loses `chat:write.customize`.
+
+| slug | `analyst` | `pm` | `exec` | `critic` | `quant` |
+|---|---|---|---|---|---|
+| name | Nora (Analyst) | Vic (PM) | Dash (Execution) | Ida (Critic) | Kai (Quant) |
+| icon | 🔎 | 🎯 | ⚡ | 🧪 | 📐 |
+
+Only `signal` and `decision` set `username`/`icon_emoji` — the two kinds with a model behind them. **Machinery posts as the fund itself**: `gate_approved`, `gate_rejected`, `fill`, `digest`, `pnl`, `alert` and `projection_error` leave both `None`, so Slack shows the app's own identity. Invariant 3 keeps the gate free of LLM code; this keeps it free of an LLM's face, preserving the distinction a reader most needs — which posts came from a model, and which came from code that cannot be argued with. An unmapped slug falls back to its raw name with no icon rather than raising or borrowing another seat's face.
+
+`username`/`icon_emoji` need the bot token's `chat:write.customize` scope, and `slackkit/real.py` omits each when falsy. **Any decorator wrapping `SlackPort.post` must widen with it** (`scripts/run_day.py:RemappedSlack`) — dropping the arguments loses seat identity silently on the staging path only, which is the one case a rehearsal exists to catch.
 
 **A renderer never parses its own `text`.** A kind that wants a layout must carry the pieces as payload fields — parsing values back out of prose is banned outright, and reading the DB would break invariant 6. `digest` and `pnl` therefore emit fields *alongside* the flat `text` their emitters already composed:
 
@@ -290,6 +303,7 @@ Rendering adds nothing the event payload does not already carry (invariant 6). S
 |---|---|---|
 | `digest` | `run_close` (`orchestrator/daily.py`) | `run_date`, `decisions[{ticker, action, qty, status}]`, `fills[{symbol, side, filled_qty, filled_avg_price, partial}]`, `cost_usd` |
 | `pnl` | `scripts/close_pnl.py` | everything `orchestrator.pnl.eod_pnl` returns: `run_date`, `equity`, `pnl_usd`, `pnl_pct`, `spy_pct`, `alpha` |
+| `decision` | `handle_submit_decision` (`agents/tools/fund_server.py`) | `seat` — the slug that submitted it, alongside `ticker`, `action`, `qty`, `thesis`. Attribution reads this field; it is never assumed. Absent on rows written before the field existed, which fall back to `pm` (the only seat then permitted to submit). |
 
 The fields are **additive** — rows written before Block Kit carry `text` alone, and both renderers fall back to text-only when the fields are absent. There is no migration, and a digest must never dead-letter: it is cited as acceptance evidence (`HANDOFF-LIVE` §5).
 
@@ -299,8 +313,8 @@ Block bodies use only `section`, `section` + `fields`, and `context`, and every 
 - Critique: `CRITIQUE <TICKER>: CLEAR` or `CRITIQUE <TICKER>: <n> OBJECTION(S)` + numbered one-sentence objections, as a reply in the ticker's debate thread.
 - Gate approval: `*Risk Gate* · ✅ *<side> <TICKER>* approved for up to *<max_qty> shares*` + `Ticket \`<id[:8]>\` · expires <HH:MM> ET` in `#risk`.
 - Gate rejection: `*Risk Gate* · ⛔ *<side> <TICKER>* blocked` + `> <English gloss> (\`<reason>\`)`. An unglossed code degrades to `> (\`<reason>\`)` rather than raising — a reason minted after `render.REASONS` was written must not take the projection down. `tests/test_slackkit.py` statically guards that every `Rejected("<code>")` literal in `gate/` is glossed.
-- Decision: `*Portfolio Manager* · *<TICKER>* — <side> <qty> shares` (a `hold` renders as `hold`, with no share count) + `> <thesis>` in `#trading-floor`.
-- Fill: `*Execution Trader* · 🧾 <bought|sold> *<filled_qty> <TICKER>* at *$<avg_price>* — $<notional>` + `` Ticket `<id[:8]>` `` in `#trade-log`, threaded to the decision message.
+- Decision: `*<Seat>* · *<TICKER>* — <side> <qty> shares` (a `hold` renders as `hold`, with no share count) + `> <thesis>` in `#trading-floor`. `<Seat>` comes from the payload's `seat`, defaulting to `Vic (PM)`.
+- Fill: `*Dash (Execution)* · 🧾 <bought|sold> *<filled_qty> <TICKER>* at *$<avg_price>* — $<notional>` + `` Ticket `<id[:8]>` `` in `#trade-log`, threaded to the decision message. Labelled with the seat, but posted with no persona: a fill is the broker reporting, not the trader speaking.
 - Alert: `⚠️ *Alert* · <text>` in `#risk` — labelled because `#risk` carries both alerts and gate posts, and they demand different reactions.
 - Digest: `text` is `<run_date> close` + the `decisions:` and `fills:` lines + `est. inference cost $<n>`, composed in `run_close`. Blocks: a `*<run_date> close*` header, a Decisions / Fills / Est. cost field grid, the two lists as blockquotes, and a context line restating that inference cost is a client-side estimate. A day with neither renders `no decisions` / `no fills` — a full-HOLD day still posts.
 - P&L: `text` is `<run_date> close · ` + `orchestrator.pnl.format_line`. Blocks: the same header, then a P&L / vs SPY / Alpha / Equity grid. **Every figure carries an explicit sign**, dollar sign inside it (`+$500.00`, never `$+500.00`) — a losing day and a winning one must not differ by a character someone can miss while skimming.

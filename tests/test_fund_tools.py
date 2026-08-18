@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from agents.tools.fund_server import (handle_get_stage_brief,
@@ -48,6 +50,17 @@ def test_decision_requires_critique_row(fund_db, sim_clock):
     assert _dec(fund_db, sim_clock)["ok"]
     d = fund_db.execute("SELECT * FROM decisions").fetchone()
     assert d["action"] == "buy" and d["qty"] == 80 and d["status"] == "submitted"
+
+def test_decision_event_names_the_seat_that_submitted_it(fund_db, sim_clock):
+    """The Slack projection attributes the post from this field. It used to
+    assume the PM, which mis-attributes silently the moment a second seat can
+    submit."""
+    insert_default_critiques(fund_db, RUN, ["NVDA"], "no_critic_seat",
+                             iso(sim_clock.now()))
+    assert _dec(fund_db, sim_clock)["ok"]
+    payload = json.loads(fund_db.execute(
+        "SELECT payload FROM events WHERE kind='decision'").fetchone()["payload"])
+    assert payload["seat"] == "pm"
 
 def test_decision_seat_restricted_hold_zero_enforced(fund_db, sim_clock):
     insert_default_critiques(fund_db, RUN, ["NVDA"], "no_critic_seat",

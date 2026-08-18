@@ -5,11 +5,16 @@ from typing import Protocol
 
 class SlackPort(Protocol):
     def post(self, channel: str, text: str, thread_ts: str | None = None,
-             blocks: list[dict] | None = None) -> str:
+             blocks: list[dict] | None = None, username: str | None = None,
+             icon_emoji: str | None = None) -> str:
         """`blocks` is Block Kit layout; `text` is NOT optional alongside it.
         Slack renders text — not blocks — in push notifications and to screen
         readers, so a blocks-only message arrives blank there. Every caller
-        passes both; `blocks=None` posts text alone."""
+        passes both; `blocks=None` posts text alone.
+
+        `username`/`icon_emoji` override the sender Slack shows; both None
+        posts under the app's own identity. Any decorator wrapping this port
+        must widen with it — dropping them loses seat identity silently."""
         ...
 
 

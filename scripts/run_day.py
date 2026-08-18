@@ -167,9 +167,10 @@ class RemappedSlack:
         self._overrides = overrides
 
     def post(self, channel: str, text: str, thread_ts: str | None = None,
-             blocks: list[dict] | None = None) -> str:
+             blocks: list[dict] | None = None, username: str | None = None,
+             icon_emoji: str | None = None) -> str:
         return self._slack.post(self._overrides.get(channel, channel), text,
-                                thread_ts, blocks)
+                                thread_ts, blocks, username, icon_emoji)
 
 
 # --- market gate ------------------------------------------------------------

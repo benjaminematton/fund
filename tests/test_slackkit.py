@@ -25,9 +25,9 @@ GATE_NO = {"ticker": "NVDA", "side": "buy", "reason": "no_headroom"}
 
 
 def test_render_fill_matches_contracts_s8():
-    channel, text, _ = render("fill", FILL)
+    channel, text = render("fill", FILL)[:2]
     assert channel == "#trade-log"
-    assert text == ("*Execution Trader* · 🧾 bought *67 NVDA* at *$180.14*"
+    assert text == ("*Dash (Execution)* · 🧾 bought *67 NVDA* at *$180.14*"
                     " — $12,069.38\nTicket `a3f90000`")
 
 
@@ -37,9 +37,9 @@ def test_a_sell_fill_says_sold_not_sell():
 
 
 def test_signal_names_the_seat_and_quotes_the_summary():
-    channel, text, _ = render("signal", SIGNAL)
+    channel, text = render("signal", SIGNAL)[:2]
     assert channel == "#research"
-    assert text == ("*Research Analyst* · *NVDA* · bullish, conviction 72/100\n"
+    assert text == ("*Nora (Analyst)* · *NVDA* · bullish, conviction 72/100\n"
                     "> upgraded to Buy on datacenter demand")
 
 
@@ -49,9 +49,9 @@ def test_an_unmapped_seat_falls_back_to_its_raw_name():
 
 
 def test_decision_reads_as_an_instruction_not_a_verdict_line():
-    channel, text, _ = render("decision", DECISION)
+    channel, text = render("decision", DECISION)[:2]
     assert channel == "#trading-floor"
-    assert text == ("*Portfolio Manager* · *NVDA* — buy 80 shares\n"
+    assert text == ("*Vic (PM)* · *NVDA* — buy 80 shares\n"
                     "> datacenter demand is not priced in")
 
 
@@ -62,14 +62,14 @@ def test_a_hold_decision_does_not_claim_a_share_count():
 
 
 def test_gate_approval_spells_out_the_cap_and_labels_the_ticket():
-    channel, text, _ = render("gate_approved", GATE_OK)
+    channel, text = render("gate_approved", GATE_OK)[:2]
     assert channel == "#risk"
     assert text == ("*Risk Gate* · ✅ *buy NVDA* approved for up to *67 shares*\n"
                     "Ticket `a3f90000` · expires 16:00 ET")
 
 
 def test_gate_rejection_explains_the_reason_code_in_english():
-    channel, text, _ = render("gate_rejected", GATE_NO)
+    channel, text = render("gate_rejected", GATE_NO)[:2]
     assert channel == "#risk"
     assert text == ("*Risk Gate* · ⛔ *buy NVDA* blocked\n"
                     "> Sector exposure is already at its cap — no room for"
@@ -180,7 +180,7 @@ def test_fill_blocks_state_price_and_notional_as_fields():
     assert any("$12,069.38" in f for f in fields)
     context = [e["text"] for b in blocks if b["type"] == "context"
                for e in b["elements"]]
-    assert any("Execution Trader" in c and "a3f90000" in c for c in context)
+    assert any("Dash (Execution)" in c and "a3f90000" in c for c in context)
 
 
 def test_gate_approval_blocks_state_the_cap_and_the_expiry_as_fields():
@@ -194,7 +194,7 @@ def test_signal_blocks_quote_the_summary_and_credit_the_seat():
     blocks = render("signal", SIGNAL).blocks
     assert any("> upgraded to Buy on datacenter demand" in b["text"]["text"]
                for b in blocks if b["type"] == "section")
-    assert any("Research Analyst" in e["text"] for b in blocks
+    assert any("Nora (Analyst)" in e["text"] for b in blocks
                if b["type"] == "context" for e in b["elements"])
 
 
@@ -263,6 +263,68 @@ def test_a_losing_day_renders_a_minus_not_a_bare_number():
               for f in b.get("fields", [])]
     joined = " ".join(fields)
     assert "-$412.00" in joined and "-0.41%" in joined and "-0.23%" in joined
+
+
+# --- seat identity (tier 3) -------------------------------------------------
+
+def test_a_signal_posts_under_the_analysts_own_name_and_face():
+    """The point of the feature: who is speaking is readable from the message
+    header, before a word of the body is read."""
+    post = render("signal", SIGNAL)
+    assert post.username == "Nora (Analyst)"
+    assert post.icon_emoji == "🔎"
+
+
+def test_a_decision_posts_under_the_seat_its_payload_names():
+    post = render("decision", {**DECISION, "seat": "pm"})
+    assert post.username == "Vic (PM)"
+    assert post.icon_emoji == "🎯"
+
+
+def test_a_decision_from_another_seat_is_not_attributed_to_the_pm():
+    """Guards the hardcode this replaced: the renderer must read the seat,
+    not assume it."""
+    post = render("decision", {**DECISION, "seat": "quant"})
+    assert post.username == "Kai (Quant)"
+
+
+def test_a_decision_row_written_before_seats_still_credits_the_pm():
+    """Rows already in the production DB carry no `seat`. Only the PM could
+    have written them, so they keep posting as the PM rather than raising."""
+    assert render("decision", DECISION).username == "Vic (PM)"
+
+
+def test_an_unmapped_seat_gets_its_raw_name_and_no_face():
+    """A new seat must not take the projection down, and must not borrow
+    another seat's face."""
+    post = render("signal", {**SIGNAL, "agent": "macro"})
+    assert post.username == "macro"
+    assert post.icon_emoji is None
+
+
+ALL_KINDS = BLOCK_KINDS + [("projection_error", {"event_id": 3,
+                                                 "kind": "bogus"})]
+SPEAKS = {"signal", "decision"}
+
+
+@pytest.mark.parametrize("kind,payload", ALL_KINDS)
+def test_only_the_kinds_with_a_model_behind_them_have_a_face(kind, payload):
+    """Both directions, so a kind added later is caught either way it errs.
+    Invariant 3 keeps the gate free of LLM code; this keeps machinery free of
+    an LLM's face — a reader must be able to tell a model's words from code
+    that cannot be argued with."""
+    post = render(kind, payload)
+    assert (post.username is not None) is (kind in SPEAKS), kind
+    assert (post.icon_emoji is not None) is (kind in SPEAKS), kind
+
+
+def test_the_outbox_hands_the_persona_to_the_port(fund_db):
+    slack = FakeSlack()
+    append_event(fund_db, "signal", SIGNAL, NOW)
+    assert drain(fund_db, slack, NOW) == 1
+    post = slack.posts["#research"][0]
+    assert post["username"] == "Nora (Analyst)"
+    assert post["icon_emoji"] == "🔎"
 
 
 def test_outbox_hands_blocks_to_the_port(fund_db):
@@ -396,7 +458,8 @@ class _FlakySlack:
         self.posts: list[tuple[str, str]] = []
 
     def post(self, channel: str, text: str, thread_ts: str | None = None,
-             blocks: list[dict] | None = None) -> str:
+             blocks: list[dict] | None = None, username: str | None = None,
+             icon_emoji: str | None = None) -> str:
         if self.remaining:
             self.remaining -= 1
             raise RuntimeError("slack outage")

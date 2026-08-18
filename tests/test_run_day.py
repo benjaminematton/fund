@@ -143,9 +143,12 @@ def test_malformed_override_is_a_hard_stop(raw):
 class _RecordingSlack:
     def __init__(self):
         self.posts = []
+        self.personas = []
 
-    def post(self, channel, text, thread_ts=None, blocks=None):
+    def post(self, channel, text, thread_ts=None, blocks=None,
+             username=None, icon_emoji=None):
         self.posts.append((channel, text, thread_ts))
+        self.personas.append((username, icon_emoji))
         return "ts-1"
 
 
@@ -156,6 +159,19 @@ def test_remapped_slack_rewrites_listed_channels_only():
     slack.post("#trade-log", "fill", "ts-0")
     assert inner.posts == [("#test-pnl", "digest", None),
                            ("#trade-log", "fill", "ts-0")]
+
+
+def test_remapped_slack_carries_the_persona_through():
+    """The staging path wraps every post. If this decorator drops username
+    and icon, a rehearsal day silently loses seat identity while production
+    keeps it — the one case a rehearsal exists to catch, broken in the
+    rehearsal itself."""
+    inner = _RecordingSlack()
+    slack = run_day_script.RemappedSlack(inner, {"#research": "#fund-staging"})
+    slack.post("#research", "signal", username="Nora (Analyst)",
+               icon_emoji="🔎")
+    assert inner.posts == [("#fund-staging", "signal", None)]
+    assert inner.personas == [("Nora (Analyst)", "🔎")]
 
 
 # --- committed config --------------------------------------------------------

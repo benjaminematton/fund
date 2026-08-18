@@ -111,8 +111,8 @@ def handle_submit_decision(conn: sqlite3.Connection, *, seat: str, args: dict,
         (str(dec.run_date), dec.ticker, dec.action, dec.qty, dec.thesis,
          dec.invalidation, dec.stop_price, now_iso))
     append_event(conn, "decision",
-                {"ticker": dec.ticker, "action": dec.action, "qty": dec.qty,
-                 "thesis": dec.thesis}, now_iso)
+                {"seat": seat, "ticker": dec.ticker, "action": dec.action,
+                 "qty": dec.qty, "thesis": dec.thesis}, now_iso)
     return {"ok": True}
 
 

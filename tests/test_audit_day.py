@@ -26,7 +26,8 @@ class FailingSlack:
     DB. Records nothing, because it delivers nothing."""
 
     def post(self, channel: str, text: str, thread_ts: str | None = None,
-             blocks: list[dict] | None = None) -> str:
+             blocks: list[dict] | None = None, username: str | None = None,
+             icon_emoji: str | None = None) -> str:
         raise RuntimeError("slack outage")
 
 

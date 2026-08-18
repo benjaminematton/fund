@@ -15,10 +15,16 @@ class Post(NamedTuple):
     """What one event projects to. `text` is always populated — Slack renders
     it, not `blocks`, in push notifications and to screen readers, so blocks
     without text arrive blank there. `blocks` is None for kinds whose text is
-    already prose composed elsewhere."""
+    already prose composed elsewhere.
+
+    `username`/`icon_emoji` override the sender Slack shows (needs the token's
+    chat:write.customize scope). Both None — every kind but `signal` and
+    `decision` — posts under the app's own identity."""
     channel: str
     text: str
     blocks: list[dict] | None = None
+    username: str | None = None
+    icon_emoji: str | None = None
 
 
 # Slack rejects a message whose section/field/context text exceeds this, with
@@ -45,11 +51,23 @@ def _fields(*pairs: tuple[str, str]) -> dict:
 def _context(*parts: str) -> dict:
     return {"type": "context", "elements": [_md(" · ".join(parts))]}
 
-# The seat that emitted the post, in the words a human uses for it. An
-# unmapped seat falls back to its raw name rather than raising — a new seat
-# must not take the projection down.
-SEATS = {"analyst": "Research Analyst", "quant": "Quant", "critic": "Critic",
-         "pm": "Portfolio Manager", "exec": "Execution Trader"}
+# The seat that emitted the post, in the words a human uses for it: a name so
+# a channel reads as people talking, the role in parentheses so nobody has to
+# memorise the mapping and a second analyst stays unambiguous. One dict, used
+# both as the Slack sender name and as the in-message label — two spellings of
+# one seat is worse than seeing the name twice, and the label is what survives
+# if chat:write.customize is ever revoked. An unmapped seat falls back to its
+# raw name rather than raising — a new seat must not take the projection down.
+SEATS = {"analyst": "Nora (Analyst)", "quant": "Kai (Quant)",
+         "critic": "Ida (Critic)", "pm": "Vic (PM)",
+         "exec": "Dash (Execution)"}
+
+# The face beside the name. Only seats with a model behind them get one:
+# machinery (the gate, fills, digests, P&L, alerts) posts as the fund itself,
+# so a reader can always tell a model's words from code that cannot be argued
+# with. An unmapped seat gets no face rather than borrowing another's.
+ICONS = {"analyst": "🔎", "quant": "📐", "critic": "🧪", "pm": "🎯",
+         "exec": "⚡"}
 
 # gate.risk reason codes in English. Unglossed codes degrade to the bare
 # code; tests/test_slackkit.py statically guards that every Rejected()
@@ -70,6 +88,11 @@ REASONS = {
 
 def _seat(agent: str) -> str:
     return SEATS.get(agent, agent)
+
+
+def _persona(agent: str) -> tuple[str, str | None]:
+    """The sender Slack shows for a seat: (username, icon_emoji)."""
+    return _seat(agent), ICONS.get(agent)
 
 
 def _order(side: str, qty: int) -> str:
@@ -93,24 +116,32 @@ def _render_fill(payload: dict) -> Post:
 
 def _render_signal(payload: dict) -> Post:
     seat, ticker = _seat(payload["agent"]), payload["ticker"]
+    username, icon = _persona(payload["agent"])
     headline = (f"{payload['direction']}, conviction "
                 f"{payload['confidence']}/100")
     return Post("#research",
                 f"*{seat}* · *{ticker}* · {headline}\n> {payload['summary']}",
                 [_section(f"*{ticker}* · {headline}"),
                  _section(f"> {payload['summary']}"),
-                 _context(seat)])
+                 _context(seat)],
+                username, icon)
 
 
 def _render_decision(payload: dict) -> Post:
+    # Rows written before the projection carried a seat can only have come
+    # from the PM — it was the sole seat allowed to submit — so they keep
+    # posting as the PM instead of raising on a field they never had.
+    slug = payload.get("seat", "pm")
+    seat, (username, icon) = _seat(slug), _persona(slug)
     ticker = payload["ticker"]
     order = _order(payload["action"], payload["qty"])
     return Post("#trading-floor",
-                f"*{SEATS['pm']}* · *{ticker}* — {order}\n"
+                f"*{seat}* · *{ticker}* — {order}\n"
                 f"> {payload['thesis']}",
                 [_section(f"*{ticker}* — {order}"),
                  _section(f"> {payload['thesis']}"),
-                 _context(SEATS["pm"])])
+                 _context(seat)],
+                username, icon)
 
 
 def _render_gate_approved(payload: dict) -> Post:

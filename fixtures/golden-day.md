@@ -69,7 +69,7 @@ Note for implementers: step-4 resize is the "one resize retry" from the design d
 
 ## 11:30 Execution
 
-Order: `client_order_id = "a3f9…"`, buy 66 NVDA, market. Fill 66 @ $180.14. `#trade-log`: `*Execution Trader* · 🧾 bought *66 NVDA* at *$180.14* — $11,889.24` + `` Ticket `a3f9` ``, threaded to the verdict. Order `filled`, ticket `consumed`, decision `executed`.
+Order: `client_order_id = "a3f9…"`, buy 66 NVDA, market. Fill 66 @ $180.14. `#trade-log`: `*Dash (Execution)* · 🧾 bought *66 NVDA* at *$180.14* — $11,889.24` + `` Ticket `a3f9` ``, threaded to the verdict. Posted as the fund itself, not under Dash's name — a fill is the broker reporting, not the trader speaking (contracts §8, *Seat identity*). Order `filled`, ticket `consumed`, decision `executed`.
 
 ## 16:15 Close (digest excerpt)
 

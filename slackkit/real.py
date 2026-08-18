@@ -26,10 +26,16 @@ class RealSlack:
         self._client = WebClient(token=token)
 
     def post(self, channel: str, text: str, thread_ts: str | None = None,
-             blocks: list[dict] | None = None) -> str:
+             blocks: list[dict] | None = None, username: str | None = None,
+             icon_emoji: str | None = None) -> str:
         # blocks is omitted rather than sent as None: Slack treats an explicit
-        # null as a payload to validate and rejects it.
+        # null as a payload to validate and rejects it. username/icon_emoji
+        # are omitted for the same reason, and need chat:write.customize.
         extra = {"blocks": blocks} if blocks else {}
+        if username:
+            extra["username"] = username
+        if icon_emoji:
+            extra["icon_emoji"] = icon_emoji
         try:
             resp = self._client.chat_postMessage(channel=channel, text=text,
                                                  thread_ts=thread_ts, **extra)

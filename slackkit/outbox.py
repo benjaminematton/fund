@@ -90,7 +90,9 @@ def drain(conn: sqlite3.Connection, slack, now_iso: str) -> int:
                 _dead_letter(conn, row, now_iso, exc)
                 continue
             try:
-                slack.post(post.channel, post.text, blocks=post.blocks)
+                slack.post(post.channel, post.text, blocks=post.blocks,
+                           username=post.username,
+                           icon_emoji=post.icon_emoji)
             except PermanentPostError as exc:
                 _dead_letter(conn, row, now_iso, exc)
                 continue
