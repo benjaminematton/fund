@@ -1,0 +1,15 @@
+[Unit]
+Description=fund — EOD P&L digest (16:35 ET, Mon-Fri)
+Documentation=file:///opt/fund/ops/README.md
+
+[Timer]
+# 16:35, NOT 16:15. close_frame shifts its end back SIP_DELAY (16 min,
+# measured — free-plan SIP blackout), so a 16:15 fire asks for 15:59, before
+# the closing auction writes the bar, and correctly posts nothing.
+OnCalendar=Mon..Fri *-*-* 16:35:00 America/New_York
+AccuracySec=1s
+Persistent=false
+Unit=fund-pnl.service
+
+[Install]
+WantedBy=timers.target

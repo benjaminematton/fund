@@ -1,0 +1,14 @@
+[Unit]
+Description=fund — nightly DB + journals snapshot (17:30 ET)
+Documentation=file:///opt/fund/ops/README.md
+
+[Timer]
+# Daily including weekends: cheap, idempotent, and a weekend snapshot costs
+# 86 KB.
+OnCalendar=*-*-* 17:30:00 America/New_York
+AccuracySec=1s
+Persistent=false
+Unit=fund-backup.service
+
+[Install]
+WantedBy=timers.target

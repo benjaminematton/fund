@@ -1,0 +1,20 @@
+[Unit]
+Description=fund — one trading day (09:35 ET, Mon-Fri)
+Documentation=file:///opt/fund/ops/README.md
+
+[Timer]
+# Timezone pinned in the expression AS WELL AS on the host, so the schedule
+# survives someone changing the box's timezone later.
+# DST is a non-issue here: only 02:00-03:00 local events get skipped or
+# doubled, and 09:35 exists on every day of the year.
+OnCalendar=Mon..Fri *-*-* 09:35:00 America/New_York
+# Without this systemd places the fire at a randomized point in a 1-minute
+# window. 09:35 should mean 09:35.
+AccuracySec=1s
+# == the plists' RunAtLoad=false. A day starts because the market opened,
+# never because the host did. A missed fire is skipped, not caught up.
+Persistent=false
+Unit=fund-daily.service
+
+[Install]
+WantedBy=timers.target

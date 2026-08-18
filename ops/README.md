@@ -1,0 +1,259 @@
+# ops — the fund's scheduled host
+
+The fund runs on one Linux droplet on an ET clock. Two jobs trade; one backs up.
+
+**Only one host may ever hold a live schedule.** `flock` is machine-local and
+ticket-id namespaces are per-database, so two hosts produce genuine duplicate
+orders that `client_order_id` idempotency cannot catch. Everything in this
+document is arranged around that.
+
+## Layout
+
+| path | holds |
+|---|---|
+| `/opt/fund` | git checkout + `.venv` — disposable, re-clonable |
+| `/var/lib/fund/fund.sqlite` | **the fund** — outside the checkout, so no re-clone or `git clean -x` can reach it |
+| `/var/lib/fund/journals/` | agent memory (`FUND_JOURNALS`) |
+| `/var/lib/fund/backups/` | dated snapshots, kept indefinitely |
+| `/etc/fund/env` | job secrets, `0600 fund:fund` |
+| `/etc/fund/alert-env` | alert secrets only, `0600 fund:fund` |
+
+`/var/lib/fund/run_day.lock` lands there for free — `acquire_lock` derives it
+from `FUND_DB`'s parent.
+
+There is no `logs/` directory. systemd captures stdout and stderr into the
+journal: `journalctl -u fund-daily`.
+
+## Units
+
+| unit | fires | runs |
+|---|---|---|
+| `fund-daily.timer` | 09:35 ET Mon–Fri | `scripts/run_day.py` |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py` |
+| `fund-backup.timer` | 17:30 ET daily | `ops/backup.sh` |
+| `fund-alert@.service` | on any of the above failing | `ops/notify_failure.sh` |
+
+Three things about these are deliberate and should not be "tidied":
+
+- **The timezone is pinned in the `OnCalendar` expression**, not only on the
+  host, so the schedule stays correct if the box's timezone is ever changed.
+- **`Persistent=false`** reproduces the old plists' `RunAtLoad=false`: a day
+  starts because the market opened, never because the host booted. A missed
+  fire is skipped, not caught up.
+- **No `Restart=` anywhere.** Invariant 4's default is HOLD. A failed day waits
+  for a human; it does not retry itself.
+
+`16:35` is measured, not chosen: `close_frame` shifts its end back `SIP_DELAY`
+(16 min), so a 16:15 fire asks for a 15:59 bar the closing auction has not
+written yet, and correctly posts nothing.
+
+## Provisioning a fresh host
+
+Debian 13, 1 vCPU / 2 GB, NYC. As root:
+
+```bash
+timedatectl set-timezone America/New_York
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo "/swapfile none swap sw 0 0" >> /etc/fstab
+
+adduser --disabled-password --gecos "" --home /home/fund --shell /bin/bash fund
+usermod -aG systemd-journal fund     # notify_failure.sh reads the journal
+
+# Debian defaults journald to Storage=auto, which is VOLATILE without this
+# directory — logs would be erased on every reboot, and they are now the only
+# forensic trail this host has.
+mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+systemd-tmpfiles --create --prefix /var/log/journal
+printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\n' > /etc/systemd/journald.conf.d/fund.conf
+systemctl restart systemd-journald
+
+apt-get update && apt-get install -y git curl sqlite3 jq rsync
+mkdir -p /var/lib/fund/journals /var/lib/fund/backups /etc/fund /opt/fund
+chown -R fund:fund /var/lib/fund /opt/fund
+chmod 750 /var/lib/fund && chmod 700 /etc/fund
+```
+
+As `fund`:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH=$HOME/.local/bin:$PATH
+uv python install 3.14          # standalone; does not touch Debian's 3.13
+
+git clone https://github.com/benjaminematton/fund.git /opt/fund
+cd /opt/fund && make deps       # must be make deps, NOT uv venv:
+                                # scripts/sync_deps.py shells out to pip, which
+                                # stdlib venv bundles and uv venv does not.
+make test                       # offline, no keys needed
+```
+
+Pre-warm the tool cache, or the first `uvx alpaca-mcp-server` download lands
+inside the 09:35 critical path:
+
+```bash
+set -a; . /etc/fund/env; set +a
+uvx alpaca-mcp-server --help
+```
+
+### Secrets
+
+`/etc/fund/env` is the Mac's `.env` with **`FUND_DB` rewritten to an absolute
+path**. It is relative in the original and works there only because launchd sets
+`WorkingDirectory`; under systemd it would resolve against `/opt/fund` and put
+the fund inside the checkout.
+
+```
+FUND_DB=/var/lib/fund/fund.sqlite
+FUND_JOURNALS=/var/lib/fund/journals
+```
+
+`/etc/fund/alert-env` holds two lines and nothing else:
+
+```
+SLACK_BOT_TOKEN=xoxb-...
+FUND_ALERT_CHANNEL=#risk
+```
+
+**It is a separate file on purpose.** A missing or unreadable `/etc/fund/env`
+is the most likely fresh-host failure; if the alert read the same file it would
+die for the identical reason and you would learn nothing.
+
+systemd parses these files itself — it does **not** expand `${VAR}`, and it
+continues a comment across a trailing backslash where a shell would not.
+
+### Install the units
+
+```bash
+sudo cp /opt/fund/ops/fund-*.timer /opt/fund/ops/fund-*.service \
+        "/opt/fund/ops/fund-alert@.service" /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemd-analyze verify /etc/systemd/system/fund-daily.service
+```
+
+Do **not** enable the timers until the cutover.
+
+## Cutover
+
+**The ordering is the safety property.** Validation runs against a *snapshot*
+while the old host stays authoritative. The old host is silenced immediately
+**before** the final state transfer — never after — because once the new host
+holds the current database, a fire on the old one writes to a stale copy and
+places orders under a ticket-id namespace the new host has never seen.
+
+### 1. Validate (old host still live)
+
+```bash
+make test                       # offline suite
+make schema-pin                 # introspects the broker's REAL tool schema
+uvx alpaca-mcp-server --help    # broker tools reachable
+python scripts/run_day.py       # market closed -> exit 0, writes nothing
+```
+
+Then rehearse the timer→service join, which neither `list-timers` nor a manual
+`systemctl start` proves on its own:
+
+```bash
+cat > /etc/systemd/system/fund-rehearsal.timer <<EOF
+[Timer]
+OnActiveSec=90s
+AccuracySec=1s
+Unit=fund-daily.service
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload && systemctl start fund-rehearsal.timer
+sleep 120 && journalctl -u fund-daily.service -n 20 --no-pager
+systemctl stop fund-rehearsal.timer && rm /etc/systemd/system/fund-rehearsal.timer
+systemctl daemon-reload
+```
+
+Then prove the alert fires — break `/etc/fund/env`, start the unit, confirm the
+Slack message. Then restore it.
+
+### 2. Silence the old Mac — BOTH barriers
+
+> `launchctl unload` is **session-scoped**. `~/Library/LaunchAgents` is
+> launchd's per-user auto-load directory — it reloads its contents at every
+> login. Unloading alone means the fund resurrects on the Mac at the next
+> reboot or login while the droplet is live. Two hosts means two ticket-id
+> namespaces, so `client_order_id` idempotency will **not** dedupe the
+> duplicate orders. Move the plist out; do not merely unload it.
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.fund.daily.plist
+mkdir -p ~/fund-rollback && mv ~/Library/LaunchAgents/com.fund.daily.plist ~/fund-rollback/
+mv .env .env.MIGRATED-TO-VM          # second barrier: a stray run exits 1 loudly
+
+launchctl list | grep -i fund || echo "PASS: no fund job loaded"
+ls ~/Library/LaunchAgents/ | grep -i fund || echo "PASS: no fund plist in auto-load dir"
+```
+
+Re-check both **after a real logout/login** — the unload alone does not survive one.
+
+### 3. Transfer and enable
+
+```bash
+sqlite3 state/fund.sqlite ".backup '/tmp/fund-final.sqlite'"
+sqlite3 /tmp/fund-final.sqlite 'PRAGMA integrity_check'
+scp /tmp/fund-final.sqlite root@HOST:/var/lib/fund/fund.sqlite
+rsync -az journals/ root@HOST:/var/lib/fund/journals/
+ssh root@HOST 'chown -R fund:fund /var/lib/fund'
+```
+
+Assert the copy survived — three checks, because "the file opened" is not "the
+fund survived" and a truncated copy opens fine:
+
+```bash
+sqlite3 /var/lib/fund/fund.sqlite 'PRAGMA integrity_check'
+.venv/bin/python3 scripts/audit_day.py /var/lib/fund/fund.sqlite 2026-08-17
+for t in signals decisions tickets orders; do
+  printf "%s=%s " "$t" "$(sqlite3 /var/lib/fund/fund.sqlite "SELECT count(*) FROM $t")"
+done; echo
+```
+
+Row counts must match the source. Then:
+
+```bash
+systemctl enable --now fund-daily.timer fund-pnl.timer fund-backup.timer
+systemctl list-timers 'fund-*' --no-pager
+```
+
+## Rollback
+
+**Only at a clean day boundary. Mid-day rollback is forbidden.** Once a day has
+placed an order, that order exists at Alpaca. Rolling back to a pre-cutover
+snapshot would discard it from the database and leave the broker and the source
+of truth disagreeing — materially worse than a missed day.
+
+If a day fails mid-flight: **fix forward, or accept a missed day.**
+
+At a clean boundary, mirror the cutover in reverse:
+
+```bash
+ssh root@HOST 'systemctl disable --now fund-daily.timer fund-pnl.timer fund-backup.timer'
+ssh root@HOST 'systemctl list-timers "fund-*" --no-pager'    # verify gone FIRST
+
+ssh root@HOST "sqlite3 /var/lib/fund/fund.sqlite \".backup '/tmp/back.sqlite'\""
+scp root@HOST:/tmp/back.sqlite state/fund.sqlite
+rsync -az root@HOST:/var/lib/fund/journals/ journals/
+
+mv .env.MIGRATED-TO-VM .env
+cp ~/fund-rollback/com.fund.daily.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.fund.daily.plist
+```
+
+## Daily operations
+
+```bash
+journalctl -u fund-daily -n 100 --no-pager     # the day's log
+journalctl -u fund-daily --since "09:30"       # this morning
+systemctl list-timers 'fund-*' --no-pager      # when does it next fire
+systemctl --failed                             # anything broken
+systemctl start fund-pnl.service               # run the P&L digest by hand
+ls -la /var/lib/fund/backups/                  # snapshots
+```
+
+## Deliberately not scheduled
+
+`make eval` runs real LLM turns against the real charters — measured **$0.81
+and ~7 minutes** per run. It is never put on a timer. Run it by hand.

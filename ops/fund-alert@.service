@@ -1,0 +1,14 @@
+[Unit]
+Description=fund — Slack alert for failed unit %i
+Documentation=file:///opt/fund/ops/README.md
+
+[Service]
+Type=oneshot
+User=fund
+Group=fund
+# NOT /etc/fund/env. The alert must not share a failure mode with the job it
+# watches, and a missing or unreadable job env file is the single most likely
+# fresh-host failure — it would break both identically.
+EnvironmentFile=/etc/fund/alert-env
+ExecStart=/opt/fund/ops/notify_failure.sh %i
+TimeoutStartSec=2min

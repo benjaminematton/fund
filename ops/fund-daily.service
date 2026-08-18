@@ -1,0 +1,23 @@
+[Unit]
+Description=fund — run_day.py (full trading day, self-auditing)
+Documentation=file:///opt/fund/ops/README.md
+# run_day.py's pre-Slack window (paper_guard, require_env, acquire_lock,
+# market_is_open, RealSlack construction) posts nothing to Slack on failure.
+# Its docstring calls that acceptable because the exit is "a visible failure,
+# just not a Slack one" — true at a Mac someone sits in front of, false on a
+# droplet. OnFailure restores that premise. It fires on start failures
+# (203/EXEC, unreadable EnvironmentFile) and timeout kills too.
+OnFailure=fund-alert@%n.service
+
+[Service]
+Type=oneshot
+User=fund
+Group=fund
+WorkingDirectory=/opt/fund
+EnvironmentFile=/etc/fund/env
+ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/run_day.py
+# Bound a hung LLM call. On kill the kernel releases the flock and checkpoint
+# CAS makes the next run resume rather than repeat.
+TimeoutStartSec=30min
+# NO Restart=. Invariant 4: the default is HOLD. A failed day waits for a
+# human; it does not retry itself.

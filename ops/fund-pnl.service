@@ -1,0 +1,13 @@
+[Unit]
+Description=fund — close_pnl.py (P&L $ and %% vs SPY)
+Documentation=file:///opt/fund/ops/README.md
+OnFailure=fund-alert@%n.service
+
+[Service]
+Type=oneshot
+User=fund
+Group=fund
+WorkingDirectory=/opt/fund
+EnvironmentFile=/etc/fund/env
+ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/close_pnl.py
+TimeoutStartSec=10min

@@ -1,0 +1,15 @@
+[Unit]
+Description=fund — atomic, integrity-checked snapshot
+Documentation=file:///opt/fund/ops/README.md
+# A silently failing backup is a classic trap.
+OnFailure=fund-alert@%n.service
+
+[Service]
+Type=oneshot
+User=fund
+Group=fund
+WorkingDirectory=/opt/fund
+EnvironmentFile=/etc/fund/env
+Environment=FUND_BACKUP_DIR=/var/lib/fund/backups
+ExecStart=/opt/fund/ops/backup.sh
+TimeoutStartSec=10min
