@@ -25,27 +25,45 @@ def _runs() -> list[str]:
                   if p.is_dir() and p.name not in NOT_A_RUN)
 
 
-def main(baseline: str | None) -> int:
+def _report(name: str, cases: dict):
+    return build_report(grade_traces(TRACES / name, cases, full_registry()))
+
+
+def main(run: str | None, baseline: str | None) -> int:
+    """No args: every run. One: that run. Two: that run diffed vs a baseline.
+
+    There is deliberately no "latest". Runs are labelled by hand (control,
+    primary, secondary) as well as by git sha, and a merge rewrites every
+    directory's mtime — so neither name order nor mtime identifies the run you
+    meant. Guessing wrong here reports a one-trial smoke run as the result.
+    """
     cases = {c.id: c for c in load_cases(CASES)}
     runs = _runs()
     if not runs:
         print("no suite runs recorded yet — run `make eval` first")
         return 1
-    latest = runs[-1]
-    current = build_report(grade_traces(TRACES / latest, cases,
-                                        full_registry()))
-    print(f"=== {latest} ===")
+    for name in (run, baseline):
+        if name and name not in runs:
+            print(f"no traces for {name!r}; have {runs}")
+            return 1
+
+    if run is None:
+        for name in runs:
+            print(f"=== {name} ===")
+            print(render(_report(name, cases)))
+            print()
+        return 0
+
+    current = _report(run, cases)
+    print(f"=== {run} ===")
     print(render(current))
     if baseline:
-        if baseline not in runs:
-            print(f"\nno traces for baseline {baseline!r}; have {runs}")
-            return 1
-        base = build_report(grade_traces(TRACES / baseline, cases,
-                                         full_registry()))
-        print(f"\n=== vs baseline {baseline} ===")
-        print(diff(current, base))
+        print(f"\n=== {run} vs {baseline} ===")
+        print(diff(current, _report(baseline, cases)))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else None))
+    args = [a for a in sys.argv[1:] if a]
+    sys.exit(main(args[0] if args else None,
+                  args[1] if len(args) > 1 else None))

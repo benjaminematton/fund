@@ -78,9 +78,9 @@ close-pnl: deps
 eval: deps
 	$(PYTHON) scripts/eval_suite.py $(CASES)
 
-# Grade the newest trace set, optionally diffing a baseline sha. Free and
-# offline — it re-scores recorded traces and never runs a turn.
-#   make eval-report              # newest run
-#   make eval-report BASELINE=abc1234
+# Re-score recorded traces. Free and offline — never runs a turn.
+#   make eval-report                            # every run
+#   make eval-report RUN=control                # one run
+#   make eval-report RUN=secondary BASELINE=control   # diff two runs
 eval-report: deps
-	$(PYTHON) -m evals.report_cli $(BASELINE)
+	$(PYTHON) -m evals.report_cli $(RUN) $(BASELINE)
