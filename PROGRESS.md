@@ -266,9 +266,6 @@ move.
       params must still pass G2/G3 and `FAIL_PARAMS` must still fail on `wfe`.
       Deferred deliberately on 2026-08-18: `fundbt/` is unwired from the daily
       cycle, so this cannot affect trading.
-- [ ] **`FUND_HOST_ID` guard** in `run_day.py` — refuse to run when the DB
-      records a different last-writing host. Turns the one-host invariant from
-      procedural into enforced. Today only two manual barriers protect it.
 
 **Next branches** — each belongs in a **new chat**, per the standing rule that
 new implementation branches get fresh context.
@@ -300,6 +297,25 @@ new implementation branches get fresh context.
       "trusted" has no evidence behind it. Requires a deliberate human commit
       changing **invariant 1** (CI-enforced by `scripts/check_purity.py`) that
       records the size, the date, and the evidence justifying the flip.
+
+      **Precondition — the `FUND_HOST_ID` guard** (`run_day.py` refuses to run
+      when the DB records a different last-writing host). Moved here from "Now"
+      on 2026-08-18, deliberately: while the fund is paper, two hosts cost a
+      corrupted record, not money, and the Mac is already double-disarmed —
+      `com.fund.daily.plist` is out of `~/Library/LaunchAgents` and `.env` is
+      renamed, so the failure needs a human to undo two barriers first. Real
+      money is what makes duplicate orders expensive, and `client_order_id`
+      idempotency cannot catch them: `flock` is machine-local and ticket-id
+      namespaces are per-database.
+
+      Two things to settle when it is built, both known now. It would **block
+      the documented rollback** (§Rollback restores the plist and `.env` on
+      purpose, then starts on a DB the droplet last wrote), so it needs an
+      override — and an override used once under outage pressure is procedural
+      again. And `state/` has no meta/kv table, so recording the host means a
+      `state/schema.sql` change against a live `fund.sqlite` with no migration
+      framework; a sidecar file beside `run_day.lock` avoids the DDL but does
+      not travel with a copied database. Decide that before coding.
 
 ---
 
