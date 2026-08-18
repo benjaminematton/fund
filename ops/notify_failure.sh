@@ -18,15 +18,17 @@ JOURNALCTL="${FUND_ALERT_JOURNALCTL:-journalctl}"
 
 # Redact anything shaped like a credential before it leaves the box. A
 # traceback that dumps os.environ must not publish broker keys to Slack.
-# Prefix rules catch known token shapes; the NAME=VALUE rule catches
-# secrets with no recognizable prefix (e.g. ALPACA_SECRET_KEY).
+# Prefix rules catch known token shapes; the name-based rule catches
+# secrets with no recognizable prefix (e.g. ALPACA_SECRET_KEY), whether
+# written as NAME=VALUE, NAME: VALUE, or quoted python/JSON dict dumps
+# ('NAME': 'VALUE', "NAME": "VALUE").
 redact() {
     sed -E \
         -e 's/sk-ant-[A-Za-z0-9_-]+/sk-ant-REDACTED/g' \
         -e 's/xoxb-[A-Za-z0-9-]+/xoxb-REDACTED/g' \
         -e 's/xapp-[A-Za-z0-9-]+/xapp-REDACTED/g' \
         -e 's/PK[A-Z0-9]{16,}/PK-REDACTED/g' \
-        -e 's/([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])[A-Za-z0-9_]*)=[^[:space:]]+/\1=REDACTED/g'
+        -e "s/['\"]?([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])[A-Za-z0-9_]*)['\"]?[[:space:]]*[=:][[:space:]]*['\"]?[^[:space:]]+/\1=REDACTED/g"
 }
 
 STATUS="$(systemctl show -p Result --value "$UNIT" 2>/dev/null || echo unknown)"

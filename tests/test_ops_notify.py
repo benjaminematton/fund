@@ -101,3 +101,52 @@ def test_does_not_redact_ordinary_assignment_that_is_not_a_credential(tmp_path):
     proc, body = _run(tmp_path, "run_day: universe=NVDA,MSFT,AAPL", '{"ok":true}')
     assert proc.returncode == 0, proc.stderr
     assert "run_day: universe=NVDA,MSFT,AAPL" in body["text"]
+
+
+def test_redacts_python_os_environ_repr_form(tmp_path):
+    """A dumped os.environ prints as a python dict repr — NAME': 'VALUE', not
+    NAME=VALUE. This is the reviewer's exact colon-delimited-leak repro."""
+    proc, body = _run(
+        tmp_path, "{'ALPACA_SECRET_KEY': 'aB3dEfGhIjKlMnOpQrSt9zZ'}", '{"ok":true}'
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"]
+    assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in text, f"leaked secret: {text}"
+    assert "REDACTED" in text
+
+
+def test_redacts_json_form(tmp_path):
+    """A JSON-formatted log line also pairs NAME and VALUE with a colon and
+    double quotes rather than =."""
+    proc, body = _run(
+        tmp_path, '{"ALPACA_SECRET_KEY": "aB3dEfGhIjKlMnOpQrSt9zZ"}', '{"ok":true}'
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"]
+    assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in text, f"leaked secret: {text}"
+    assert "REDACTED" in text
+
+
+def test_redacts_plain_colon_form(tmp_path):
+    """NAME: VALUE with no quotes at all — the plainest colon-delimited shape."""
+    proc, body = _run(
+        tmp_path, "ALPACA_SECRET_KEY: aB3dEfGhIjKlMnOpQrSt9zZ", '{"ok":true}'
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"]
+    assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in text, f"leaked secret: {text}"
+    assert "REDACTED" in text
+
+
+def test_does_not_redact_ordinary_lines_with_colons_or_equals(tmp_path):
+    """Extending redaction to colons must not start eating ordinary log lines
+    that happen to contain a colon or an equals sign but no credential."""
+    proc, body = _run(
+        tmp_path,
+        "run_day: market is closed\nqty=80 stop=215",
+        '{"ok":true}',
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"]
+    assert "run_day: market is closed" in text
+    assert "qty=80 stop=215" in text
