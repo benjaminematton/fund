@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin eval eval-report
+.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin preflight eval eval-report
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -49,6 +49,39 @@ replay:
 # Offline tests cannot catch that by construction — run this before a live day.
 schema-pin: deps
 	$(PYTHON) -m pytest -m live tests/test_live_smoke.py -k schema_pin -v
+
+# Host preflight: exercises uvx -> MCP connect -> Anthropic -> a real seat turn
+# under the EXACT environment systemd will use. Run after ANY host, unit, or
+# environment change. Droplet-only; the paths below are hardcoded on purpose.
+#
+# It must go through systemd-run, NOT `su - fund`. A login shell sources the
+# profile and puts ~/.local/bin on PATH; systemd's default PATH does not have
+# it. Every manual check on 2026-08-18 used `su - fund`, so all of them passed
+# while the real launch path was broken — that is the day the fund lost. The
+# market-closed timer rehearsal missed it too: run_day.py exited on the broker
+# clock before any seat started, so it went green without proving anything.
+# Running this from the current shell reproduces exactly that blind spot.
+#
+# ~$$0.31 and hits the network. Never wire into `make test`.
+#
+# Places no orders: the seats under eval are the analyst and PM, whose Alpaca
+# toolsets are read-only and whose deny list blocks mcp__alpaca__place_*.
+#
+# --label is required. Traces are keyed by git sha, so an unlabelled probe run
+# silently overwrites the control baseline (see scripts/eval_suite.py). The
+# label's traces are removed afterwards whether or not the run passed —
+# evals/traces/ is tracked in git, so leftovers dirty the droplet checkout.
+# No `deps` prerequisite: this runs /opt/fund/.venv as the fund user, and
+# `deps` would sync the invoking user's checkout instead.
+preflight:
+	systemd-run --uid=fund --pipe --wait --quiet \
+	  --property=WorkingDirectory=/opt/fund \
+	  --property=EnvironmentFile=/etc/fund/env \
+	  --property=Environment=PATH=/home/fund/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin \
+	  --property=Environment=HOME=/home/fund \
+	  --property=TimeoutStartSec=10min \
+	  /opt/fund/.venv/bin/python3 scripts/eval_suite.py --label vmcheck a01; \
+	  ret=$$?; rm -rf evals/traces/vmcheck; exit $$ret
 
 # One live trading day: real clock, real Slack, real Alpaca paper, real LLM
 # seats. Needs .env loaded (`set -a; source .env; set +a`). Manual/launchd

@@ -149,6 +149,11 @@ uvx alpaca-mcp-server --help    # broker tools reachable
 python scripts/run_day.py       # market closed -> exit 0, writes nothing
 ```
 
+> None of the four prove what systemd will do. Run interactively — or under
+> `su - fund`, which is a **login shell** — they source the profile and get
+> `~/.local/bin` on `PATH`. systemd's default `PATH` does not include it.
+> Validating with `su - fund` is not a check of the launch path.
+
 Then rehearse the timer→service join, which neither `list-timers` nor a manual
 `systemctl start` proves on its own:
 
@@ -166,6 +171,26 @@ sleep 120 && journalctl -u fund-daily.service -n 20 --no-pager
 systemctl stop fund-rehearsal.timer && rm /etc/systemd/system/fund-rehearsal.timer
 systemctl daemon-reload
 ```
+
+**The rehearsal above is not sufficient on its own.** Run with the market
+closed — which is when a cutover happens — `run_day.py` exits on the broker
+clock before any seat starts. It proves the timer fires the unit and nothing
+past that: no `uvx`, no MCP connect, no seat turn. On 2026-08-18 it passed and
+concealed a missing `PATH` that cost a full trading day. A rehearsal that exits
+early is worse than no rehearsal, because it produces a green checkmark.
+
+So finish with the preflight, which is **mandatory after any host, unit, or
+environment change**:
+
+```bash
+make preflight    # ~2 min, ~$0.31, places no orders
+```
+
+It runs a real seat turn via `systemd-run` under the unit's exact `PATH`,
+`HOME` and `EnvironmentFile` — the only check here that exercises `uvx` → MCP →
+Anthropic → a seat the way the timer will. Expect `a01 3/3 OK`. Note
+`/opt/fund/.env` must be a symlink to `/etc/fund/env`: `scripts/eval_suite.py`
+loads `.env` itself via `scripts/eval_one.py:load_env`.
 
 Then prove the alert fires — break `/etc/fund/env`, start the unit, confirm the
 Slack message. Then restore it.
