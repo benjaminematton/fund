@@ -252,10 +252,22 @@ read *while the next run starts* — hence the guard below.
 
 ```bash
 systemctl is-active fund-daily.service        # MUST be `inactive`
-cd /opt/fund && git pull --ff-only
-git diff --stat <old-sha>..HEAD -- pyproject.toml state/schema.sql
-make preflight                                 # ~2 min, ~$0.31
+su - fund -c 'cd /opt/fund && git pull --ff-only'
+cd /opt/fund && git diff --stat <old-sha>..HEAD -- pyproject.toml state/schema.sql
+make preflight                                 # as root; ~2 min, ~$0.31
 ```
+
+**The pull runs as `fund`, not root.** The read-only GitHub deploy key lives in
+`/home/fund/.ssh/id_ed25519` and `/opt/fund` is `fund:fund`; as root the pull
+fails on `Permission denied (publickey)` and, with a key present, would leave
+root-owned objects in `.git` that the units can no longer write. `make
+preflight` is the opposite — run it as root, since `systemd-run --uid=fund`
+needs the privilege to set the unit properties.
+
+This is the one place `su - fund` is right. Its login shell is the *point* here
+— git needs `$HOME` for the key and `known_hosts`. The warning against it under
+Cutover is about using it to *validate the launch path*, where the profile it
+sources hides systemd's real `PATH`.
 
 **1. Never deploy while a day is running.** `is-active` is the check;
 `fund-daily.service` is `oneshot`, so "active" means a trading day is in
