@@ -9,5 +9,12 @@ User=fund
 Group=fund
 WorkingDirectory=/opt/fund
 EnvironmentFile=/etc/fund/env
+# uvx lives in ~/.local/bin, which is NOT on systemd's default PATH
+# (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin). agents/seats.py:49
+# hardcodes `uvx alpaca-mcp-server`, so without this the MCP server never
+# connects and every seat refuses to run — 2026-08-18's lost day. A login
+# shell finds uvx via the profile, which is why validating with `su - fund`
+# missed it.
+Environment=PATH=/home/fund/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/close_pnl.py
 TimeoutStartSec=10min
