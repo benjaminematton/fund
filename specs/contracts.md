@@ -297,6 +297,8 @@ Only `signal` and `decision` set `username`/`icon_emoji` — the two kinds with 
 
 `username`/`icon_emoji` need the bot token's `chat:write.customize` scope, and `slackkit/real.py` omits each when falsy. **Any decorator wrapping `SlackPort.post` must widen with it** (`scripts/run_day.py:RemappedSlack`) — dropping the arguments loses seat identity silently on the staging path only, which is the one case a rehearsal exists to catch.
 
+A token that may not set a sender identity answers `missing_scope` or `not_allowed_token_type`, and both are classified **permanent** in `real.py:PERMANENT_ERRORS`: they stay refused until a human changes the app's scopes, so they satisfy the same definition as `invalid_auth`. That classification is load-bearing rather than tidy — `PERMANENT_ERRORS` is an allowlist and `drain()` treats every unlisted code as transient, so leaving these out would stop the drain on the day's **first** `signal` and queue every gate post, fill and digest behind it for the rest of the day. Dead-lettering costs one post and reddens the day through the audit's `projection_error` check.
+
 **A renderer never parses its own `text`.** A kind that wants a layout must carry the pieces as payload fields — parsing values back out of prose is banned outright, and reading the DB would break invariant 6. `digest` and `pnl` therefore emit fields *alongside* the flat `text` their emitters already composed:
 
 | Kind | Emitter | Fields on the payload beyond `text` |

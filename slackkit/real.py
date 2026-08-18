@@ -10,15 +10,23 @@ from slack_sdk.errors import SlackApiError
 from .port import PermanentPostError
 
 # Slack error codes that no retry can fix: the bot was never invited, the
-# channel is gone or archived, the token is bad, or the Block Kit payload is
-# malformed/oversized — Slack rejects that message identically forever, so it
-# must dead-letter rather than stop the drain for a retry that cannot help.
-# Everything else (rate limits, 5xx, network) is transient and must keep its
-# retry semantics. Block codes per api.slack.com/methods/chat.postMessage.
+# channel is gone or archived, the token is bad, the Block Kit payload is
+# malformed/oversized, or the token may not set a sender identity — Slack
+# rejects that message identically forever, so it must dead-letter rather
+# than stop the drain for a retry that cannot help. Everything else (rate
+# limits, 5xx, network) is transient and must keep its retry semantics.
+# Codes per api.slack.com/methods/chat.postMessage.
+#
+# missing_scope / not_allowed_token_type are the persona pair: they answer a
+# username/icon_emoji the token is not allowed to set, and stay refused until
+# a human changes the app's scopes. Left transient they would stop the drain
+# on the day's FIRST signal — the analyst's — and queue every gate post, fill
+# and digest behind it for the rest of the day.
 PERMANENT_ERRORS = frozenset({"not_in_channel", "channel_not_found",
                               "invalid_auth", "is_archived",
                               "invalid_blocks", "invalid_blocks_format",
-                              "msg_blocks_too_long"})
+                              "msg_blocks_too_long",
+                              "missing_scope", "not_allowed_token_type"})
 
 
 class RealSlack:

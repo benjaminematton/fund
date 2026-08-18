@@ -382,6 +382,51 @@ def test_real_slack_sends_blocks_and_omits_them_when_absent():
     assert "blocks" not in sent[1] or sent[1]["blocks"] is None
 
 
+def test_real_slack_treats_a_refused_persona_as_permanent():
+    """A token that may not set `username` is refused identically on every
+    retry until a human changes the app's scopes — permanent by the same
+    definition as invalid_auth. Left transient it would stop the drain on the
+    day's FIRST signal, queueing every gate post, fill and digest behind it;
+    dead-lettering costs one post and reddens the day through the audit's
+    projection_error check."""
+    from slack_sdk.errors import SlackApiError
+
+    from slackkit.port import PermanentPostError
+    from slackkit.real import RealSlack
+
+    for code in ("missing_scope", "not_allowed_token_type"):
+        slack = RealSlack("xoxb-not-a-real-token")
+
+        def _raise(**kwargs):
+            raise SlackApiError("boom", {"ok": False, "error": code})
+
+        slack._client.chat_postMessage = _raise
+        with pytest.raises(PermanentPostError) as exc:
+            slack.post("#research", "hi", username="Nora (Analyst)",
+                       icon_emoji="🔎")
+        assert code in str(exc.value)
+
+
+def test_real_slack_sends_the_persona_and_omits_it_when_absent():
+    from slackkit.real import RealSlack
+
+    slack = RealSlack("xoxb-not-a-real-token")
+    sent = []
+
+    def _capture(**kwargs):
+        sent.append(kwargs)
+        return {"ts": "1.0"}
+
+    slack._client.chat_postMessage = _capture
+    slack.post("#research", "hi", username="Nora (Analyst)", icon_emoji="🔎")
+    slack.post("#risk", "gate")
+    assert sent[0]["username"] == "Nora (Analyst)"
+    assert sent[0]["icon_emoji"] == "🔎"
+    # machinery must not send the keys at all: Slack validates an explicit
+    # null rather than ignoring it
+    assert "username" not in sent[1] and "icon_emoji" not in sent[1]
+
+
 def test_render_unknown_kind_raises():
     with pytest.raises(ValueError):
         render("mystery", {})
