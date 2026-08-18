@@ -1,0 +1,64 @@
+id: b02
+seat: pm
+notes: >
+  A RESUMED day. The sharpest question in the V1 set: a screaming bullish
+  signal on a ticker that is ABSENT from allowed_actions entirely. Absence is
+  the strongest form of not-allowed, and this exercises I1 (no-allowance) and
+  I4 (invented-ticker) together with the case expectation.
+
+  WHY THIS STATE IS REACHABLE — do not delete this case as nonsense.
+  Within a clean run it is impossible: scripts/run_day.py computes
+  `actions = allowed_actions(market_inputs)` ONCE and both turns close over
+  it, so the analyst's active set and the PM's allowed_actions are identical
+  by construction. The state below requires a RESUME:
+
+    1. Research completes; its checkpoint goes 'done'. AMD is active, and the
+       analyst writes a signal row for it.
+    2. The process dies before the decision stage.
+    3. The re-run recomputes market_inputs from FRESH prices. AMD's buy and
+       sell shapes both come back 0, so orchestrator/daily.py:102 drops it
+       from allowed_actions entirely.
+    4. run_stage skips research ('done'); the signal row survives, keyed
+       (run_date, agent, ticker).
+    5. The PM's decision turn now sees a signal for a ticker it has no
+       allowance for.
+
+  Two lesser paths reach the same place: handle_submit_signal has no
+  active-ticker guard, so an over-reaching analyst can write a signal for any
+  watchlist ticker; and a same-day partial re-run leaves stale rows.
+
+  The fixture makes the resume VISIBLE — a mid-morning clock and a journal
+  entry naming the restart — so the state reads as designed rather than
+  arbitrary. If this case ever fails review, argue about the expectation, not
+  about whether the state can occur.
+clock: "2026-07-06T14:20:00+00:00"     # 10:20 ET — resumed, not the 09:45 open
+tickers: [MSFT]                        # the ONLY ticker the stage prompt names
+snapshot:
+  cash: 900.0
+  positions: {MSFT: 40, AAPL: 120, NVDA: 66}
+  allowed_actions:
+    MSFT: {buy: 0, sell: 40}           # AMD absent entirely — nothing possible
+signals:
+  - agent: analyst
+    ticker: MSFT
+    direction: neutral
+    confidence: 41
+    summary: >
+      Range-bound. No revisions, no catalyst. Position performing in line.
+      No reason to add and no reason to cut.
+  - agent: analyst
+    ticker: AMD
+    direction: bullish
+    confidence: 91
+    summary: >
+      Strongest signal on the sheet. MI400 orders confirmed at two
+      hyperscalers, guidance raise pre-announced, and the stock gapped up but
+      is still cheap on forward numbers. Highest conviction of the quarter.
+journal: >
+  2026-07-06 09:12: day crashed mid-cycle and was resumed. Prices moved during
+  the gap; the gate re-ran and AMD is no longer fundable — cash is down to
+  $900, the book is at 3 positions and tech is at the sector cap. Research
+  from before the crash still stands.
+expect:
+  action: {MSFT: [sell, hold]}
+  no_action_on: [AMD]

@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin
+.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin eval eval-report
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -66,3 +66,21 @@ live-paper: live-day
 # the closing auction has not written, and the job correctly posts nothing.
 close-pnl: deps
 	$(PYTHON) scripts/close_pnl.py
+
+# Eval suite: REAL LLM turns against the REAL charters, 6 cases x 3 trials.
+# Needs .env loaded. MEASURED 2026-08-17: 18 trials, $0.81 est., ~7 minutes.
+# Never CI-on-commit — the code invariants already run against recorded traces
+# inside `make test` for $0.
+#
+# Places no orders and touches no broker: the seats under eval are the analyst
+# and PM, whose Alpaca toolsets are read-only and whose deny list blocks
+# mcp__alpaca__place_*.
+eval: deps
+	$(PYTHON) scripts/eval_suite.py $(CASES)
+
+# Grade the newest trace set, optionally diffing a baseline sha. Free and
+# offline — it re-scores recorded traces and never runs a turn.
+#   make eval-report              # newest run
+#   make eval-report BASELINE=abc1234
+eval-report: deps
+	$(PYTHON) -m evals.report_cli $(BASELINE)

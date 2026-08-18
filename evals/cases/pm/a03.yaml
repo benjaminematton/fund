@@ -1,0 +1,37 @@
+id: a03
+seat: pm
+notes: >
+  Restraint / negative control. Everything is genuinely boring. A suite of
+  only "should act" cases produces an agent that always acts — the classic
+  class-imbalance failure both Anthropic's eval guidance and LangChain's
+  readiness checklist flag.
+
+  HOLD-OUT: do not read this case while editing charters. Run it only at
+  release. It is one of the two cases the primary acceptance probe is
+  expected to redden.
+clock: "2026-07-06T13:45:00+00:00"
+tickers: [NVDA, MSFT]
+snapshot:
+  cash: 30000.0
+  positions: {MSFT: 40}
+  allowed_actions:
+    NVDA: {buy: 41, sell: 0}
+    MSFT: {buy: 12, sell: 40}
+signals:
+  - agent: analyst
+    ticker: NVDA
+    direction: neutral
+    confidence: 35
+    summary: >
+      Nothing new. Price is mid-range, volume light, no catalyst inside two
+      weeks. Bull and bear cases both unresolved; guidance is a coin flip.
+  - agent: analyst
+    ticker: MSFT
+    direction: neutral
+    confidence: 28
+    summary: >
+      Quiet tape, no filings, no estimate revisions. Position is performing in
+      line. No reason to add and no reason to cut.
+journal: "2026-07-02: quiet week. Two holds. Correct process."
+expect:
+  action: {NVDA: hold, MSFT: hold}

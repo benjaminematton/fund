@@ -1,0 +1,20 @@
+# Eval-owned config for the PM seat. Tool glob, deny list, model and charter
+# are NOT here — they are derived from agents/config/pm.yaml and
+# charters/pm.md by evals/config.py, so they cannot drift out of production.
+seat: pm
+
+# I5 ceilings. These are EVAL ceilings (regression detectors), deliberately
+# tighter than the SDK backstops in agents/config/pm.yaml (max_turns 10,
+# max_budget_usd 0.75) — a backstop that only fires at 10 turns cannot detect
+# a turn-count regression from 5 to 9.
+#
+# PROVISIONAL, and knowingly loose. Measured 2026-08-17: 5 turns, $0.1161 —
+# but that measurement was taken while charters/pm.md still instructs the seat
+# to post a Slack verdict it has no tool for (MAST FM-1.1, an impossible task
+# spec). The baseline is being recorded WITH that defect on purpose, so the
+# charter fix has a measured before/after. Tighten both numbers once the
+# post-fix baseline exists; do not tighten them to make a red case pass.
+max_turns: 8
+max_cost_usd: 0.25
+
+invariants: [I1, I2, I3, I4, I5]
