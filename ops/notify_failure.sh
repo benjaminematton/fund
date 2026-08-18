@@ -28,7 +28,7 @@ redact() {
         -e 's/xoxb-[A-Za-z0-9-]+/xoxb-REDACTED/g' \
         -e 's/xapp-[A-Za-z0-9-]+/xapp-REDACTED/g' \
         -e 's/PK[A-Z0-9]{16,}/PK-REDACTED/g' \
-        -e "s/['\"]?([A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])[A-Za-z0-9_]*)['\"]?[[:space:]]*[=:][[:space:]]*['\"]?[^[:space:]]+/\1=REDACTED/g"
+        -e "s/['\"]?([A-Z][A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)['\"]?[[:space:]]*[=:][[:space:]]*['\"]?[^[:space:]]+/\1=REDACTED/g"
 }
 
 STATUS="$(systemctl show -p Result --value "$UNIT" 2>/dev/null || echo unknown)"

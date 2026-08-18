@@ -87,12 +87,25 @@ def test_redacts_secret_key_with_no_recognized_value_prefix(tmp_path):
     assert "REDACTED" in text
 
 
-def test_redacts_credential_name_case_insensitively(tmp_path):
-    proc, body = _run(tmp_path, "Alpaca_Secret_Key=aB3dEfGhIjKlMnOpQrSt9zZ", '{"ok":true}')
+def test_redacts_every_real_env_var_in_this_project(tmp_path):
+    """The name rule is anchored to ALL_CAPS env-var shape. Every credential
+    this fund actually carries is that shape — see .env."""
+    for name in ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
+                 "SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN_EXEC", "SLACK_APP_TOKEN_EXEC"):
+        proc, body = _run(tmp_path, f"{name}=aB3dEfGhIjKlMnOpQrSt9zZ", '{"ok":true}')
+        assert proc.returncode == 0, proc.stderr
+        assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in body["text"], f"{name} leaked"
+
+
+def test_diagnostic_text_naming_a_credential_survives_readable(tmp_path):
+    """The anchor exists for this case. market/source_alpaca.py uses
+    os.environ["ALPACA_SECRET_KEY"], so a missing credential on a fresh host
+    raises KeyError naming the variable — the ONE fact the operator needs.
+    An earlier unanchored rule turned it into `KeyError=REDACTED`."""
+    proc, body = _run(tmp_path, "KeyError: 'ALPACA_SECRET_KEY'", '{"ok":true}')
     assert proc.returncode == 0, proc.stderr
-    text = body["text"]
-    assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in text, f"leaked secret: {text}"
-    assert "REDACTED" in text
+    assert "KeyError" in body["text"]
+    assert "ALPACA_SECRET_KEY" in body["text"], f"variable name destroyed: {body['text']}"
 
 
 def test_does_not_redact_ordinary_assignment_that_is_not_a_credential(tmp_path):
