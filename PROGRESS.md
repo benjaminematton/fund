@@ -194,6 +194,15 @@ independent barriers, because `launchctl unload` is session-scoped and
 `~/Library/LaunchAgents` reloads at every login. Unloading alone would have let
 the fund resurrect here days later while the droplet was live.
 
+**Verified 2026-08-18**, and the logout/login test this was waiting on turned
+out to be unnecessary: `launchctl list` shows only `com.fund.pull-backups`, and
+`~/Library/LaunchAgents` contains only its plist —
+`com.fund.daily.plist` sits in `~/fund-rollback/`. The open question was whether
+a session-scoped `unload` would survive a login; it never applied, because the
+trading job was **moved out of the auto-load directory** rather than unloaded.
+A login has nothing to resurrect. The one-host invariant holds on the Mac side
+by construction, not by anyone remembering.
+
 ### Alerting
 
 `run_day.py:25-34` documents a pre-Slack window that posts nothing on failure,
@@ -260,8 +269,6 @@ move.
 - [ ] **`FUND_HOST_ID` guard** in `run_day.py` — refuse to run when the DB
       records a different last-writing host. Turns the one-host invariant from
       procedural into enforced. Today only two manual barriers protect it.
-- [ ] Verify `launchctl list | grep fund` still shows only `pull-backups`
-      **after a real logout/login** — the unload alone does not survive one.
 
 **Next branches** — each belongs in a **new chat**, per the standing rule that
 new implementation branches get fresh context.
