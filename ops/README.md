@@ -246,15 +246,32 @@ systemctl list-timers 'fund-*' --no-pager
 ## Deploy a code change
 
 `/opt/fund` is a plain git checkout and the units run straight out of it, so a
-deploy is a pull. There is nothing to restart: every unit is `Type=oneshot` and
-reads the working tree fresh at each invocation. That also means the tree is
-read *while the next run starts* — hence the guard below.
+deploy is a pull. Nothing needs restarting for a *code* change: every unit is
+`Type=oneshot` and reads the working tree fresh at each invocation. That also
+means the tree is read *while the next run starts* — hence the guard below.
+
+**The unit files are the exception, and they are the easy thing to miss.**
+`/etc/systemd/system/fund-*.{service,timer}` are **copies**, not symlinks into
+the repo. A pull updates `ops/` in the checkout and changes nothing systemd
+runs. Edit a unit, pull, and the old one still fires — with a clean `git
+status` and a matching `HEAD` to reassure you.
 
 ```bash
 systemctl is-active fund-daily.service        # MUST be `inactive`
 su - fund -c 'cd /opt/fund && git pull --ff-only'
-cd /opt/fund && git diff --stat <old-sha>..HEAD -- pyproject.toml state/schema.sql
+cd /opt/fund && git diff --stat <old-sha>..HEAD -- pyproject.toml state/schema.sql ops/
 make preflight                                 # as root; ~2 min, ~$0.31
+```
+
+If `ops/` shows a changed `.service` or `.timer`, reinstall the copies and
+reload, then re-verify — `daemon-reload` alone re-reads `/etc/systemd/system`,
+which is not where you just edited:
+
+```bash
+cp /opt/fund/ops/fund-*.timer /opt/fund/ops/fund-*.service /etc/systemd/system/
+systemctl daemon-reload
+systemd-analyze verify /etc/systemd/system/fund-daily.service
+systemctl list-timers fund-daily.timer --no-pager   # confirm still armed
 ```
 
 **The pull runs as `fund`, not root.** The read-only GitHub deploy key lives in
