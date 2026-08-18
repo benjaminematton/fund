@@ -68,4 +68,13 @@ Fresh repo: work on `main` until Phase 1 lands, then one branch per phase with `
 
 ## Prompt principles baked in (so you can adapt them)
 
-Exact files named, reading order specified · scope fenced to one phase with an explicit "nothing from later phases" · done-criteria checkable and external (acceptance.md), never "when it works" · constraints stated as can't-change invariants · plan externalized to plans/phase-N.md so any future session resumes it · anti-over-engineering clause (spec-minimal) · review gate between plan and execution · deviations surface as questions, not silent fixes.
+These prompts share the following principles:
+
+- Exact files are named, and the reading order is specified.
+- Scope is fenced to one phase, with an explicit "nothing from later phases".
+- Done-criteria are checkable and external (`acceptance.md`), never "when it works".
+- Constraints are stated as invariants that cannot change.
+- The plan is externalized to `plans/phase-N.md`, so any future session can resume it.
+- An anti-over-engineering clause keeps the implementation spec-minimal.
+- A review gate sits between plan and execution.
+- Deviations surface as questions, not silent fixes.

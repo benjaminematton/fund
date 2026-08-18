@@ -17,7 +17,7 @@ from orchestrator.clock import et_run_date
 
 
 class PnlUnavailable(RuntimeError):
-    """Today's P&L cannot be computed from data we trust, so there is no
+    """Today's P&L cannot be computed from data the fund trusts, so there is no
     number to post. Never a guess and never a zero (invariant 4) — a flat day
     and an unmeasurable one look identical in a digest and mean opposite
     things."""
@@ -30,7 +30,9 @@ def eod_pnl(source, clock) -> dict:
     MUST run after the close has settled — 16:35 ET is the scheduled time.
     close_frame shifts its end back SIP_DELAY (16 min), so an earlier call asks
     for a bar the session has not finished writing; the same-session guard
-    below is what turns that into no post rather than a wrong one.
+    on the bar date is what turns that into no post rather than a wrong one.
+    Raises PnlUnavailable when the broker equity or the SPY closes cannot
+    support a number.
     """
     now = clock.now()
     run_date = et_run_date(now)
@@ -76,8 +78,9 @@ def _spy_closes(source, end) -> tuple[float, float, str]:
     """SPY's last two daily closes, and the ET date of the last one.
 
     Routed through close_frame, never a hand-rolled bars request: close_frame
-    owns the SIP_DELAY shift Alpaca's free plan 403s without, and applies it to
-    the `end` passed in rather than to a wall-clock read of its own.
+    owns the SIP_DELAY shift that the free Alpaca plan rejects with a 403 when
+    it is missing, and applies it to the `end` passed in rather than to a
+    wall-clock read of its own.
     """
     frame = source.close_frame(["SPY"], end=end)
     if "SPY" not in frame.columns or len(frame.index) < 2:

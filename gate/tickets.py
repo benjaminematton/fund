@@ -65,7 +65,7 @@ def expire_open_tickets(conn: sqlite3.Connection, now_iso: str) -> list[str]:
 def _as_share_count(qty):
     """Whole-share count from an int or a digit-string; None otherwise. The
     Alpaca MCP place tool sends qty as a STRING ("1"); tickets store max_qty as
-    an int. Accept the string form of a whole number; reject bool, float, and
+    an int. Accepts the string form of a whole number; rejects bool, float, and
     non-digit strings — no fractional shares, no guessing (invariant 4)."""
     if isinstance(qty, bool):
         return None
@@ -84,10 +84,11 @@ _STOP_LEG_KEYS = ("stop_loss_stop_price", "stop_loss_limit_price",
 
 
 def _as_price(value):
-    """Price from a float/int or a numeric STRING; None otherwise. The Alpaca
+    """Price from a float, int, or a numeric STRING; None otherwise. The Alpaca
     MCP place tool sends every numeric as a string ("210.0"), so the string
     form is the normal case here, not the edge case. Rejects bool and
-    unparseable input — a stop we cannot read is a stop we cannot verify."""
+    unparseable input — a stop the gate cannot read is a stop the gate
+    cannot verify."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -163,11 +164,11 @@ def validate_order(conn: sqlite3.Connection, tool_input,
                 f" != ticket stop_price {t['stop_price']} — the order must"
                 " carry the ticket's stop")
         # A stop exit places at Alpaca as order_class 'oto' carrying the single
-        # stop leg — NOT 'bracket' (bracket 422s: it requires a take_profit leg
-        # the ticket has no field for). Fail-fast on the unplaceable class
-        # rather than let the broker reject it (invariant 4). The plain path
-        # (stop_price NULL) stays order_class-agnostic — no false-deny on a
-        # legitimate simple order.
+        # stop leg — NOT 'bracket'. Alpaca rejects a bracket order with a 422
+        # because it requires a take_profit leg the ticket has no field for.
+        # Fail-fast on the unplaceable class rather than let the broker reject
+        # it (invariant 4). The plain path (stop_price NULL) stays
+        # order_class-agnostic — no false-deny on a legitimate simple order.
         if tool_input.get("order_class") != "oto":
             return False, (f"order_class {tool_input.get('order_class')!r} must "
                            "be 'oto' for a stop exit — bracket is unplaceable")

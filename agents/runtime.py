@@ -34,7 +34,7 @@ def _cached(conn_factory):
 
 
 def _deny_alert_text(tool_input, reason) -> str:
-    """Name the ticker, the reason and the 8-char ticket id. The input of a
+    """Name the ticker, the reason, and the 8-char ticket id. The input of a
     DENIED order is untrusted by construction — a malformed-input deny is the
     normal case — so every field degrades to '?' and this never raises."""
     ti = tool_input if isinstance(tool_input, dict) else {}
@@ -57,8 +57,10 @@ def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
             ok, reason = validate_order(conn(),
                                         input_data.get("tool_input"),
                                         iso(clock.now()))
-        except Exception as exc:  # fail closed (invariant 4): never let an
-            ok, reason = False, f"gate error: {exc}"  # internal error allow
+        # Fail closed (invariant 4): never let an internal error allow the
+        # order.
+        except Exception as exc:
+            ok, reason = False, f"gate error: {exc}"
         if ok:
             return {}
         denial = {"hookSpecificOutput": {
@@ -74,8 +76,9 @@ def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
             append_event(conn(), "alert", {
                 "text": _deny_alert_text(input_data.get("tool_input"), reason)},
                 iso(clock.now()))
-        except Exception as exc:      # logged, never silent: if this path is
-            log.error(               # broken, denies go dark again and the
+        # Logged, never silent: if this path is broken, denies go dark again.
+        except Exception as exc:
+            log.error(
                 "order gate: DENIED %s but could not record the alert —"
                 " %s: %s; the denial still stands",
                 _deny_alert_text(input_data.get("tool_input"), reason),
@@ -91,7 +94,7 @@ def _extract_order(tool_response):
     under ``data`` with an ``_alpaca_mcp_security`` envelope; FakeAlpaca and the
     offline fixtures return the order dict directly. A rejection (``error`` key,
     or Alpaca ``code``/``message``) -> None: invariant 4, a rejection is never
-    recorded. Numeric fields may be strings ("67") and prices may be null."""
+    recorded. Numeric fields can be strings ("67") and prices can be null."""
     obj = tool_response
     if isinstance(obj, str):
         try:
@@ -111,10 +114,10 @@ def _extract_order(tool_response):
 
 def _parse_fill(order: dict) -> tuple[int | None, float | None]:
     """Coerce filled_qty/filled_avg_price into locals, never raising: returns
-    (None, None) for anything malformed (missing, null, non-positive, or a
-    fractional qty — this fund is whole-share only; orders.filled_qty is
+    (None, None) for anything malformed — missing, null, non-positive, or a
+    fractional qty. This fund is whole-share only and orders.filled_qty is
     INTEGER, so a fractional fill is an anomaly, not something to floor
-    silently). Callers must check for None before transitioning anything."""
+    silently. Callers must check for None before transitioning anything."""
     try:
         raw_qty = float(order["filled_qty"])
         avg_price = float(order["filled_avg_price"])
@@ -130,7 +133,7 @@ def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
     """PostToolUse on place_*: mirror the broker's answer into SQLite.
     Idempotent under retry: INSERT OR IGNORE + CAS transitions; the fill
     event is appended only when the order CAS submitted->filled wins.
-    Parses the real MCP envelope (JSON string + `data`) via _extract_order."""
+    Parses the real MCP envelope (JSON string + `data`) with _extract_order."""
     conn_get = _cached(conn_factory)
 
     async def record_order(input_data, tool_use_id, context) -> dict:
@@ -138,7 +141,9 @@ def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
             return {}
         order = _extract_order(input_data.get("tool_response"))
         if order is None:
-            return {}  # nothing landed; retry/reconcile is the turn's job (§5.1)
+            # Nothing landed; retry/reconcile is the turn's job
+            # (contracts §5.1).
+            return {}
         conn = conn_get()
         now = iso(clock.now())
         coid = order["client_order_id"]
@@ -151,7 +156,7 @@ def make_order_recorder(conn_factory: Callable[[], sqlite3.Connection],
         conn.commit()
         try_transition(conn, "tickets", {"id": coid}, "open", "consumed", now)
         # A market order acks 'accepted' first; the fill (and thus the fill
-        # event + decision->executed) only lands once status is 'filled' —
+        # event + decision->executed) only lands after status is 'filled' —
         # async fills reconcile on a later turn (Phase 2). Recording the order
         # row + consuming the ticket above is unconditional and idempotent.
         if order.get("status") == "filled":
@@ -203,8 +208,8 @@ def make_decision_recorder(path: str | Path, seat: str):
 
 def record_cost(conn: sqlite3.Connection, run_date: str, agent: str,
                 session_id: str, usd_estimate: float, now_iso: str) -> None:
-    """ResultMessage.total_cost_usd is a client-side ESTIMATE — label 'est.'
-    wherever surfaced (CLAUDE.md)."""
+    """Insert one cost row for a seat turn. ResultMessage.total_cost_usd is a
+    client-side ESTIMATE — label 'est.' wherever surfaced (CLAUDE.md)."""
     conn.execute(
         "INSERT INTO costs (run_date, agent, session_id, usd_estimate,"
         " recorded_at) VALUES (?, ?, ?, ?, ?)",
@@ -224,7 +229,7 @@ def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
     same code the live day runs.
 
     total_cost_usd is Optional[float] in the SDK and is NOT always populated.
-    When it is missing/None/non-finite we write NO cost row and append one
+    When it is missing/None/non-finite this writes NO cost row and appends one
     `alert` instead. Deliberate: costs.usd_estimate is REAL NOT NULL, so the
     only alternatives are a fabricated 0.0 (which would make real spend look
     free in the digest and in the ≤$0.50/day acceptance box) or silence
@@ -239,7 +244,7 @@ def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
     record_cost_guarded() — cost accounting must never take down trading
     (invariant 4), but it must not lie about itself either.
 
-    Returns True iff a cost row was written."""
+    Returns True if a cost row was written; False otherwise."""
     usd = getattr(result, "total_cost_usd", None)
     session_id = str(getattr(result, "session_id", None) or "unknown")
     if isinstance(usd, bool) or not isinstance(usd, (int, float)) \

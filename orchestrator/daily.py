@@ -115,7 +115,7 @@ def run_pre_gate(ctx: StageCtx) -> list[str]:
 
 
 def _pre_gate_stage(ctx: StageCtx) -> list[str]:
-    """The pre_gate stage BODY: run_pre_gate's pure computation, plus one
+    """The pre_gate stage body: run_pre_gate's pure computation, plus one
     alert per ticker dropped because BOTH shapes came back gate_error — a
     malformed/NaN feed, not the legitimate no_headroom/nothing_held skip,
     which must stay silent (review Important 5). Only called from inside
@@ -175,7 +175,7 @@ def run_decision(ctx: StageCtx, active: list[str]) -> None:
         if decided is not None:
             continue
         # Event BEFORE the row commit (review Minor 7): if a crash lands
-        # between the two, the resume guard above only ever sees the
+        # between the two, the resume guard in this loop only ever sees the
         # decisions table, so once that INSERT commits the ticker is
         # skipped forever. Committing the alert first means the only
         # crash window left re-runs both (a harmless duplicate alert),
@@ -264,7 +264,7 @@ def run_gate(ctx: StageCtx) -> None:
     an already-minted ticket is reused (and reconciled) rather than
     duplicated. Each decision is isolated (review Important 4): a raise
     handling one ticker rejects only that ticker with 'gate_error' and the
-    rest of the stage still runs — matching the fail-closed posture size()
+    rest of the stage still runs. That matches the fail-closed posture size()
     already has, so one bad row can never sink the whole day's execution,
     reconciliation, and digest."""
     now_dt = ctx.clock.now()
@@ -305,7 +305,7 @@ def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> 
     """Trader stage. Zero open tickets -> no turn at all (no LLM spend on a
     hold day); the stage still drains and still checkpoints done."""
     now = iso(ctx.clock.now())
-    expire_open_tickets(ctx.conn, now)   # gate expiry is clock-injected (§0)
+    expire_open_tickets(ctx.conn, now)   # clock-injected expiry (acceptance §0)
 
     def body() -> None:
         if run_trader_turn is not None and open_tickets(ctx.conn, iso(ctx.clock.now())):
@@ -318,7 +318,7 @@ def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> 
 
 def _decision_rows(conn: sqlite3.Connection, run_date: str) -> list[dict]:
     """The digest's decisions as fields, not prose. slackkit/render.py lays
-    the digest out from these: it may not parse them back out of the text
+    the digest out from these: it must not parse them back out of the text
     (free text is never parsed) nor read the DB itself (invariant 6)."""
     return [{"ticker": r["ticker"], "action": r["action"], "qty": r["qty"],
              "status": r["status"]}
@@ -384,7 +384,7 @@ def run_close(ctx: StageCtx) -> None:
     """EOD digest to #pnl + one journal line per participating seat. Posts
     even on a full-HOLD day. Idempotent per-piece (review Minor 6): the
     digest-exists check only guards the digest post, and each journal write
-    is independently guarded by _append_entry_once, so a kill between the
+    is independently guarded by _append_entry_once, so an exit between the
     digest commit and the journal writes still gets the journals written on
     resume instead of losing them forever."""
     conn, run_date = ctx.conn, ctx.run_date

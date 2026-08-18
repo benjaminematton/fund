@@ -18,6 +18,9 @@ def load_recording(path: str | Path) -> list[dict]:
 async def replay_turn(decisions: list[dict], *, pre_hooks: list,
                       executor: Callable[[str, dict], object],
                       post_hooks: list) -> list[dict]:
+    """Run recorded decisions through the real hooks, in order. Returns one
+    outcome per decision: {"tool", "denied"} when a PreToolUse hook denied it,
+    {"tool", "result"} otherwise."""
     outcomes: list[dict] = []
     for i, d in enumerate(decisions):
         input_data = {"tool_name": d["tool"], "tool_input": d["args"]}

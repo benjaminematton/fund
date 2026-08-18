@@ -25,7 +25,7 @@ from state.models import Decision, Signal
 SIGNAL_SEATS = ("analyst",)
 DECISION_SEATS = ("pm",)
 BRIEF_SEATS = ("analyst", "pm")
-JOURNAL_ENTRIES = 3          # how many past days a seat is shown of its own log
+JOURNAL_ENTRIES = 3          # how many past days of its own log a seat is shown
 
 
 def run_date_from_clock(clock: Clock) -> str:
@@ -68,7 +68,7 @@ def handle_submit_decision(conn: sqlite3.Connection, *, seat: str, args: dict,
     """Validate + UPSERT the PM's final decision, append a projection event.
     Refuses if no critique row exists yet for (run_date, ticker) — enforces
     the draft -> critique -> final ordering (contracts §4). Refuses outright
-    once the decision has left 'submitted' (contracts §4 ruling 2026-08-13,
+    after the decision has left 'submitted' (contracts §4 ruling 2026-08-13,
     "Irrevocable for the day"): a mutable thesis/qty behind a live ticket
     would rewrite the audit trail the gate approved against. Wrong seat,
     invalid payload, missing critique, or non-'submitted' status: no row, no

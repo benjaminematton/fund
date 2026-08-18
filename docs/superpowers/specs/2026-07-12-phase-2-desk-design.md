@@ -119,14 +119,14 @@ turn** — acceptance asserts **zero agent turns** are spent on it (cost control
 the full input space (vols, correlations, prices, equity, cash, positions, sector weights, daily
 P&L, held_qty). The Kelly-framed invariants from the kickoff (monotonicity in edge, zero-edge
 limit, fractional-vs-full Kelly ordering) **do not apply** — the gate has no edge input. The set
-below is the tiered-gate replacement; items marked ★ were **not** in the kickoff list and are
+that follows is the tiered-gate replacement; items marked ★ were **not** in the kickoff list and are
 argued for.
 
 1. **Vol-tier non-increasing.** Higher vol ⟹ base-limit % never rises. Boundary cases 14.9 / 15 /
    49.9 / 50 / 50.1.
 2. **Correlation-multiplier non-increasing** in correlation. Boundaries 0.2 / 0.4 / 0.6 / 0.8
    (lower-inclusive per §2.4).
-3. **Caps hold under ALL inputs (master property).** For every generated input, the output
+3. **Caps hold under all inputs (master property).** For every generated input, the output
    `max_qty·price` simultaneously respects the vol dollar-limit, cash, post-trade sector cap, and
    position count — or the gate REJECTs. No input yields a qty that breaches any cap.
 4. **Cash never over-spent.** A buy's `max_qty·price ≤ available cash`.
@@ -134,7 +134,7 @@ argued for.
    so they are scale-free; dollar exposure is homogeneous degree 1 in equity. Scaling equity and
    price by a common k leaves the integer share count unchanged (modulo the floor); scaling equity
    alone by k scales the dollar limit by k. A violation means a unit/absolute-threshold bug.
-6. **Integer floor, rounded DOWN. ★** `max_qty` is always a non-negative integer, floored not
+6. **Integer floor, rounded *down*. ★** `max_qty` is always a non-negative integer, floored not
    rounded. One share over a boundary tips the 60% sector cap or spends cash the account lacks
    (67 vs 68 is a money bug). The kickoff's "caps hold" implies this but the rounding *direction*
    must be asserted independently.
@@ -206,7 +206,7 @@ Behaviors covered (each an assertion that runs identically on both arms):
    `qty`/`filled_qty` string-typed; `filled_avg_price` null until fill; `order_class` `""` for a
    simple order, `"oto"` for a stop exit. (BUG A/B origin.)
 2. **Accepted-not-filled** — a fresh market order acks `status="accepted"`, `filled_qty="0"`,
-   `filled_avg_price=null` (NOT filled). (BUG B / async.)
+   `filled_avg_price=null` (*not* filled). (BUG B / async.)
 3. **Async full fill** — after `tick()`/poll, `get_order_by_client_order_id` reports
    `status="filled"`, `filled_qty==qty`, `filled_avg_price` set.
 4. **Partial fill** — `status="partially_filled"`, `0 < filled_qty < qty`; shape + recorder

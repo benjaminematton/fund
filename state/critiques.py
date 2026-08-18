@@ -1,8 +1,8 @@
 """Default critique rows. MVF has no Critic seat, so the orchestrator opens
 the decision stage by inserting one `clear` critique per active ticker —
-otherwise submit_decision's critique-row guard (contracts §4) refuses every
-PM call. Lives in state/ (not agents/) because orchestrator/ must not import
-from agents/ (CLAUDE.md); agents.tools.fund_server re-exports it."""
+otherwise the critique-row guard in submit_decision (contracts §4) refuses
+every PM call. Lives in state/ (not agents/) because orchestrator/ must not
+import from agents/ (CLAUDE.md); agents.tools.fund_server re-exports it."""
 
 from __future__ import annotations
 

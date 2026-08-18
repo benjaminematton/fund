@@ -864,7 +864,7 @@ git push origin master
 
 ---
 
-# PART B — provisioning (requires the droplet)
+## Part B — provisioning (requires the droplet)
 
 > **Human gate.** `doctl` is not installed and the droplet does not exist.
 > Benjamin creates it in the DigitalOcean console and supplies SSH access
@@ -1238,7 +1238,7 @@ supervised, not scheduled.
 
 ---
 
-# PART C — cutover
+## Part C — cutover
 
 ## Task 11: Silence the Mac, transfer, enable
 

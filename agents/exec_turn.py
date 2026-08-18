@@ -60,7 +60,7 @@ async def await_servers_connected(
         poll_s: float = 0.5,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
     """(c) live gate: poll client.get_mcp_status() until every required server
-    is 'connected', or raise ExecTurnViolation once timeout_s elapses. `sleep`
+    is 'connected', or raise ExecTurnViolation after timeout_s elapses. `sleep`
     is injected so the wait is deterministic in tests (no wall clock)."""
     elapsed = 0.0
     while True:
@@ -140,7 +140,7 @@ def check_tool_calls(tool_names: list[str], open_ticket_count: int = 0) -> None:
 
     (c) is the first live day's lesson (2026-08-17). The seat read
     list_open_tickets, never reached a place_* call, and (a) passed it because
-    it HAD called a tool. A turn holding an authorised ticket that never even
+    it HAD called a tool. A turn holding an authorized ticket that never even
     attempts to place it is the same silent no-op (a) exists to catch, one
     step further in. This asserts on the ATTEMPT, not the outcome: a denied or
     broker-rejected placement is a different failure, reported elsewhere, and

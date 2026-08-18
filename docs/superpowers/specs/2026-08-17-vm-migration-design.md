@@ -199,7 +199,7 @@ group.
 holding only `SLACK_BOT_TOKEN` and the channel — never `/etc/fund/env`. If the
 alert shared the main env file, then the single most likely fresh-VM failure
 (a missing or unreadable env file) would break the job *and* its alert
-identically, and the coverage claim below would be false.
+identically, and the coverage claim that follows would be false.
 
 **Redact before posting** (review A4). The journal tail is filtered for
 `sk-ant-`, `xoxb-`, `xapp-`, and `PK` prefixes before it reaches Slack. A
@@ -276,9 +276,9 @@ belongs immediately **before** the final transfer.
 |---|---|---|---|
 | 0 — prep | delete orphan `fund-2026-08-17-rerun.sqlite-{wal,shm}`; `sqlite3 .backup` → snapshot | — | nothing changes |
 | 1 — build | still authoritative, timer loaded | provision, TZ, user, packages, clone, `make deps`, `make test`, install `/etc/fund/env` (with `FUND_DB` absolute) and `/etc/fund/alert-env`, journald persistence, pre-warm uv cache, units installed **disabled** | VM does no writes |
-| 2 — validate | untouched | the seven checks below | all read-only or market-closed early-exit |
+| 2 — validate | untouched | the seven checks in "Validation checks" | all read-only or market-closed early-exit |
 | 3 — cutover | **unload, move plist out of `~/Library/LaunchAgents`, rename `.env`** | final `.backup` transfer + journals rsync; restore assertions; `systemctl enable --now` all three timers | one host holds an enabled timer at every instant |
-| 4 — watch | — | first 09:35 run; digest lands; first-ever 16:35 P&L run | see below |
+| 4 — watch | — | first 09:35 run; digest lands; first-ever 16:35 P&L run | see "De-risk the P&L job" |
 
 ### Two independent barriers on the Mac (reviews T1, A2)
 
@@ -286,7 +286,7 @@ belongs immediately **before** the final transfer.
 in `~/Library/LaunchAgents/`, which is launchd's per-user auto-load directory —
 launchd loads its contents at every login. Unloading alone means the fund
 **resurrects on the Mac at the next reboot or login**, days later, with no
-human action, while the VM is also live. That is trap 2 firing automatically,
+human action, while the VM is also live. That is two hosts holding a live schedule at once,
 and `client_order_id` idempotency does not catch it.
 
 So cutover does both:
@@ -358,7 +358,7 @@ so prove it manually after a close before it ever sits on a timer. Its first
 execution should be supervised, not scheduled.
 
 **Never schedule `make eval`.** It spends real money — measured $0.81 and ~7
-minutes per run. Only the three timers above get enabled.
+minutes per run. Only the three timers in §4 get enabled.
 
 ---
 
@@ -411,7 +411,7 @@ minutes per run. Only the three timers above get enabled.
   into enforced. Needs tests.
 - **Pin the MCP server version** in `agents/seats.py:49`, if the provision-time
   pin attempt proves insufficient.
-- **Dead-man's-switch**, if the accepted risk above stops feeling acceptable.
+- **Dead-man's-switch**, if the accepted risk in §8 stops feeling acceptable.
 
 ## 10. Out of scope
 

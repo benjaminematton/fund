@@ -31,13 +31,14 @@ class IllegalTransition(Exception):
 
 
 class StaleTransition(Exception):
-    """Legal edge, but the row is not currently in from_status (CAS failed)."""
+    """Legal edge, but the row is not in from_status (CAS failed)."""
 
 
 def try_transition(conn: sqlite3.Connection, table: str, key: dict,
                    from_status: str, to_status: str, now_iso: str) -> bool:
-    """CAS the row from from_status to to_status. False if the row is not in
-    from_status (lets idempotent handlers no-op on re-run, contracts §5.2)."""
+    """CAS the row from from_status to to_status. True if the row moved; false
+    if the row is not in from_status (lets idempotent handlers no-op on
+    re-run, contracts §5.2)."""
     if table not in EDGES:
         raise IllegalTransition(f"no state machine for table {table!r}")
     if (from_status, to_status) not in EDGES[table]:

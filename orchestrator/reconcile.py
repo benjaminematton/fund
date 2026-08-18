@@ -103,7 +103,7 @@ _CONFIRMED_DEAD = {"canceled": "canceled", "expired": "canceled",
 def _dead_fill(o) -> tuple[int, float] | None:
     """Fill numbers on a broker-confirmed-dead order. None means "no shares
     changed hands" — the plain no-fill cancel, where filled_qty is absent,
-    null or 0 and filled_avg_price is null. Anything else goes through
+    null, or 0, and filled_avg_price is null. Anything else goes through
     _parse_fill and raises if malformed: a dead order that claims shares must
     say how many and at what price, or we record nothing at all."""
     raw_qty = o.get("filled_qty")
@@ -115,19 +115,19 @@ def _dead_fill(o) -> tuple[int, float] | None:
 def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
     """Close out ONE order the broker last confirmed still working, past the
     cap: request the cancel, re-query ONCE, record the TRUE terminal state.
-    Returns True iff the order filled in the race (keeps the caller's fill
-    counter honest).
+    Returns True if the order filled in the race; False otherwise, which
+    keeps the caller's fill counter honest.
 
-    The order may be 'submitted' OR 'partially_filled' in the DB (accepted ->
+    The order can be 'submitted' OR 'partially_filled' in the DB (accepted ->
     partially_filled -> canceled happens inside one run), so the CAS starts
     from whatever the row actually holds. The re-queried fill numbers decide
     the decision's fate, because the DB must tell the truth about what's held:
     filled_qty > 0 is a REAL position, so the decision is 'executed' with a
     fill event for the partial qty; only a zero fill is 'failed'.
 
-    Fail closed everywhere the broker leaves us guessing — a cancel that
+    Fail closed everywhere the broker's answer is ambiguous — a cancel that
     errored while the order still works, a re-query that errored or returned
-    nothing, a status that is not confirmed-dead, fill numbers that will not
+    nothing, a status that is not confirmed-dead, fill numbers that do not
     parse, a dead status with no legal edge from the row's current status:
     leave the row as-is for the next run and alert. Requesting a cancel twice
     is harmless (idempotent by client_order_id); recording a cancel that did
@@ -215,6 +215,11 @@ def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
 def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
                      sleep: Callable[[float], None],
                      poll_s: float = 3.0, max_wait_s: float = 90.0) -> int:
+    """Poll every submitted order to a terminal state, then close out at the
+    cap whatever the broker still confirms as working. Returns the number of
+    orders this call moved to 'filled'. poll_s is the polling cadence and
+    max_wait_s the total budget before the timeout path runs; raises
+    ValueError on a non-positive poll_s."""
     if poll_s <= 0:
         raise ValueError(f"poll_s must be positive, got {poll_s!r}")
     filled, waited = 0, 0.0
@@ -236,8 +241,9 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
                     filled += 1
             except Exception as e:
                 # Fail closed: broker unreachable, or a payload we couldn't
-                # parse (e.g. _apply's coercion raised). Either way leave the
-                # order 'submitted' for the next poll and surface it loudly.
+                # parse (for example, _apply's coercion raised). Either way
+                # leave the order 'submitted' for the next poll and surface it
+                # loudly.
                 problem[coid] = type(e).__name__
                 confirmed_open.pop(coid, None)
                 continue

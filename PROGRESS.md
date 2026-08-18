@@ -10,11 +10,13 @@ Update it when a milestone lands or an open item closes — not per commit.
 
 ## Status — 2026-08-18
 
-| | |
+The following table summarizes where the fund stands:
+
+| Item | Value |
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
 | **Live since** | 2026-08-17 — first clean end-to-end day |
-| **Tests** | 769 offline green on arm64 at `92ad9f3`; **768 + 1 known failure on x86_64** — see below |
+| **Tests** | 769 offline green on arm64 at `92ad9f3`; **768 + 1 known failure on x86_64** — see Open items |
 | **Watchlist** | NVDA, MSFT, AAPL |
 | **Open position** | NVDA 80 @ 227.09, live stop at 215 |
 | **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
@@ -162,7 +164,7 @@ hosts means genuine duplicate orders that `client_order_id` cannot dedupe.
 | `fund-daily.timer` | 09:35 ET Mon–Fri | full trading day, self-audits |
 | `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY |
 | `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot |
-| `fund-alert@.service` | on any of the above failing | posts the failure to `#risk`, mentioning the operator |
+| `fund-alert@.service` | on any of the preceding three timers failing | posts the failure to `#risk`, mentioning the operator |
 | healthchecks.io `fund-daily` | **when a 09:35 ping does not arrive** | alerts `#risk` + email at 10:20 ET |
 
 The watchdog is off-box on purpose: a dead droplet cannot run its own. It is fed
@@ -231,7 +233,7 @@ either.
 | 2026-08-18 | Slack posts rewritten for a person — mrkdwn, then Block Kit (`02a6848`, `b7bc91e`, `3ae9073`) |
 | 2026-08-18 | workspace cut to one channel per job; host failures split into `#fund-ops` (`92ad9f3`) |
 
-### The one that mattered
+### The stop-leg shape the broker never accepted
 
 `gate/tickets.py` validated a nested `stop_loss: {stop_price}`; the real
 `place_stock_order` takes a **flat** `stop_loss_stop_price` string. Every
@@ -270,7 +272,7 @@ move.
 **Next branches** — each belongs in a **new chat**, per the standing rule that
 new implementation branches get fresh context.
 
-- [ ] **Agent eval.** Scoped: see "Eval scoping" below. Start with the
+- [ ] **Agent eval.** Scoped: see the "Eval scoping" section. Start with the
       injection case at the PM boundary.
 - [ ] **Union asymmetry** in the price-history exclusion (ledgered ruling,
       2026-08-17)
@@ -355,7 +357,7 @@ The three seats, what each can reach, what each writes:
 (`{cash, positions, allowed_actions}`), `journals_root`, `clock`.
 
 **Not injectable**: anything reached through the Alpaca MCP server — news,
-bars, quotes. See the hardcoded `mcp_servers` limitation above.
+bars, quotes. For more information, see the "Known limitations" section.
 
 That split sets the order of work:
 

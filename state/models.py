@@ -35,7 +35,7 @@ class Decision(BaseModel):
     @model_validator(mode="after")
     def hold_means_zero(self):
         assert (self.action == "hold") == (self.qty == 0)
-        assert self.stop_price is None or self.action == "buy"   # stops guard new/added longs only
+        assert self.stop_price is None or self.action == "buy"   # stops guard new or added longs only
         return self
 
 

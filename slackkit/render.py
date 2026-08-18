@@ -1,5 +1,5 @@
 """Event kind -> (channel, Slack mrkdwn text) per contracts.md §8. Unknown
-kind = raise: an unrenderable event is a bug, not something to guess at
+kind raises: an unrenderable event is a bug, not something to guess at
 (invariant 4 is about trading defaults; projection failures must fail fast).
 
 Rendering is a projection and nothing more (invariant 6): every word below
@@ -17,9 +17,9 @@ class Post(NamedTuple):
     without text arrive blank there. `blocks` is None for kinds whose text is
     already prose composed elsewhere.
 
-    `username`/`icon_emoji` override the sender Slack shows (needs the token's
-    chat:write.customize scope). Both None — every kind but `signal` and
-    `decision` — posts under the app's own identity."""
+    `username`/`icon_emoji` override the sender Slack shows. Setting them
+    needs the token's chat:write.customize scope. Both None — every kind but
+    `signal` and `decision` — posts under the app's own identity."""
     channel: str
     text: str
     blocks: list[dict] | None = None
@@ -53,7 +53,7 @@ def _context(*parts: str) -> dict:
 
 # The seat that emitted the post, in the words a human uses for it: a name so
 # a channel reads as people talking, the role in parentheses so nobody has to
-# memorise the mapping and a second analyst stays unambiguous. One dict, used
+# memorize the mapping and a second analyst stays unambiguous. One dict, used
 # both as the Slack sender name and as the in-message label — two spellings of
 # one seat is worse than seeing the name twice, and the label is what survives
 # if chat:write.customize is ever revoked. An unmapped seat falls back to its
@@ -96,7 +96,7 @@ def _persona(agent: str) -> tuple[str, str | None]:
 
 
 def _order(side: str, qty: int) -> str:
-    """'buy 80 shares' / 'hold' — a hold has no share count to claim."""
+    """`buy 80 shares` or `hold` — a hold has no share count to claim."""
     return "hold" if side == "hold" else f"{side} {qty} shares"
 
 
@@ -220,7 +220,7 @@ def _render_pnl(payload: dict) -> Post:
 
 
 def _render_alert(payload: dict) -> Post:
-    """Labelled so an alert is not mistaken for a gate post: #risk carries
+    """Labeled so an alert is not mistaken for a gate post: #risk carries
     both, and they demand different reactions."""
     text = f"⚠️ *Alert* · {payload['text']}"
     return Post("#risk", text, [_section(text)])
@@ -246,7 +246,7 @@ RENDERERS: dict[str, Callable[[dict], Post]] = {
 
 
 def render(kind: str, payload: dict) -> Post:
-    """unknown kind raises here; drain() dead-letters it so one bad event
+    """An unknown kind raises here; drain() dead-letters it so one bad event
     cannot jam the queue (MVF review C2)."""
     renderer = RENDERERS.get(kind)
     if renderer is None:

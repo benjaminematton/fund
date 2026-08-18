@@ -60,7 +60,7 @@ curl -s -H "APCA-API-KEY-ID: $ALPACA_API_KEY" \
         https://paper-api.alpaca.markets/v2/clock
 ```
 
-Expect `"is_open":true`. If it is false, everything below will correctly refuse
+Expect `"is_open":true`. If it is false, every step in this runbook will correctly refuse
 to trade — come back when it is open.
 
 ### Known trap: the Slack token
@@ -71,7 +71,7 @@ audit fails on `undrained outbox events`. Nothing is lost — that post failure
 is transient, so the whole day's projection is still queued in SQLite and
 flushes on the next drain once the token is fixed. Fix the token, not the
 audit. (A *revoked* token is different: `invalid_auth` is permanent, and
-permanent errors dead-letter — see below.)
+permanent errors dead-letter — see the following paragraph.)
 
 **Invite the bot to all five channels the renderers post to — do this before
 anything else.** `not_in_channel` is permanent: those events dead-letter one
@@ -157,7 +157,7 @@ curl -s -H "APCA-API-KEY-ID: $ALPACA_API_KEY" \
 ```
 
 Then open the `#trade-log` message the test posted and **copy its permalink**
-(message ⋯ menu → Copy link).
+(open the message's more-actions menu, then click **Copy link**).
 
 | Evidence | Ticks |
 |---|---|
@@ -278,7 +278,7 @@ Note what that $0.50 is and is not. The per-seat `max_budget_usd` caps in
 exec $1.00); **expected spend is < $0.50/day**; the real figure is **measured
 after the first live day**. The caps are backstops against a runaway turn, not
 the expectation — so a day near $2.25 is an incident to investigate, and the
-$0.50 box below is the number that actually gets ticked.
+$0.50 row in §5 is the number that actually gets ticked.
 
 ---
 
@@ -301,7 +301,7 @@ Paste all five into the commit message (or PR body) that ticks the boxes.
 **STOP, capture, report. Do not retry blind.** Re-running a live day after an
 unexplained failure is how you turn one bad order into two.
 
-### The card — everything below, on one screen
+### The card — every stop condition on one screen
 
 | # | Stop on | You see it | It means |
 |---|---|---|---|
@@ -311,7 +311,7 @@ unexplained failure is how you turn one bad order into two.
 | 4 | An order you did not expect | `#trade-log`, broker | Wrong symbol, wrong side, or qty > ticket `max_qty` |
 | 5 | Paper guard fired | startup | Do NOT export and retry. Find out why it was wrong |
 
-**Then, before touching anything:** run the capture block below (DB copy,
+**Then, before touching anything:** run the capture commands in §6, "The detail" (DB copy,
 audit, checkpoints, decisions, orders, events, broker orders) and report with
 the artefacts attached.
 
@@ -346,7 +346,7 @@ Stop immediately on any of:
 3. **`run_day_failed — …` in `#risk`.** Something raised between the DB
    connection and the audit: a stage body, the watchlist/sectors load, or the
    market-data fetch. The day stopped there and **the audit did not run**, so
-   the DB is mid-flight — capture it below before anything else. Note this can
+   the DB is mid-flight — capture it with the commands in this section before anything else. Note this can
    land after a ticket was minted and an order placed.
 4. **An order you did not expect** — wrong symbol, wrong side, or a quantity
    above the ticket's `max_qty`.

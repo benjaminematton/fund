@@ -58,10 +58,11 @@ def _corr_mult(corr: float) -> float:
     return 1.10
 
 def size(inputs, mode: Mode):
-    """inputs: GateInputs OR anything else (dict, garbage). frozen=True blocks
-    plain attribute assignment, but pydantic v2's model_copy(update=...) and
-    model_construct(...) both skip field validators and can still produce an
-    isinstance-valid GateInputs carrying NaN. So size() does not trust
+    """Approved(max_qty, pre_sector_qty, side) or Rejected(reason).
+    inputs is a GateInputs or anything else (a dict, garbage). frozen=True
+    blocks plain attribute assignment, but pydantic v2's model_copy(update=...)
+    and model_construct(...) both skip field validators and can still produce
+    an isinstance-valid GateInputs carrying NaN. So size() does not trust
     isinstance() to mean "already validated" — it re-checks finiteness on
     every call, on any GateInputs it receives, regardless of how it was
     built. Anything that isn't already a GateInputs is validated here via

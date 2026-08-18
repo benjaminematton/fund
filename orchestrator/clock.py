@@ -26,8 +26,8 @@ def et_run_date(now: datetime) -> str:
     """YYYY-MM-DD in America/New_York — schema.sql documents run_date as ET,
     not UTC. Pure: takes a datetime, never reads the clock itself, so callers
     keep the injected-Clock discipline and this stays purity-lint clean.
-    Naive datetimes are rejected (all fund datetimes are tz-aware, see iso()
-    above) rather than silently assumed to be UTC."""
+    Naive datetimes are rejected (all fund datetimes are tz-aware, see
+    iso()) rather than silently assumed to be UTC."""
     if now.tzinfo is None:
         raise ValueError("naive datetime — all fund datetimes are tz-aware")
     return now.astimezone(_ET).date().isoformat()
@@ -37,7 +37,7 @@ def et_hhmm(now: datetime) -> str:
     """HH:MM in America/New_York — the twin of et_run_date for a gate
     ticket's expiry. Every other time posted to #risk is ET; a bare UTC
     HH:MM there misreads as a much longer TTL than it is. Pure and naive-
-    datetime-rejecting for the same reasons as et_run_date above."""
+    datetime-rejecting for the same reasons as et_run_date."""
     if now.tzinfo is None:
         raise ValueError("naive datetime — all fund datetimes are tz-aware")
     return now.astimezone(_ET).strftime("%H:%M")

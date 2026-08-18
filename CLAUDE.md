@@ -71,4 +71,4 @@ Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/do
 
 ## Compact instructions
 
-When compacting, preserve verbatim: the test invariants above; which plan tasks are complete with commit shas; any deviation from `plans/phase-1a.md` / `plans/phase-1b.md` and why. Discard file reads, test output, and exploration traces.
+When compacting, preserve verbatim: the test invariants in the Test invariants section; which plan tasks are complete with commit shas; any deviation from `plans/phase-1a.md` / `plans/phase-1b.md` and why. Discard file reads, test output, and exploration traces.

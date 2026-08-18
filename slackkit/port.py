@@ -1,3 +1,6 @@
+"""The Slack seam: the SlackPort protocol and PermanentPostError, both
+importable without slack_sdk."""
+
 from __future__ import annotations
 
 from typing import Protocol
@@ -19,8 +22,8 @@ class SlackPort(Protocol):
 
 
 class PermanentPostError(Exception):
-    """A post that will fail identically forever (the bot is not in the
-    channel, the channel is gone/archived, the token is invalid). drain()
+    """A post that fails identically forever (the bot is not in the
+    channel, the channel is gone or archived, the token is invalid). drain()
     dead-letters that one event and keeps going; every other post failure
     stays transient and stops the drain for retry.
 

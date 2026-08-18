@@ -14,6 +14,10 @@ Agents decide inside a deterministic control envelope. That is the whole idea.
 
 ## Architecture
 
+The following diagram traces one market day, from the scheduled fire to the
+Slack projection, with SQLite as the source of truth and Slack as a read-only
+projection of it:
+
 ```
                        ┌──────────────── one fire per market day ─────────────┐
                        │  launchd 09:35 ET  ->  scripts/run_day.py            │
@@ -213,7 +217,7 @@ schedule) are built and green offline: **556 tests, purity lint clean**.
     exec     filled 80 @ 227.09, oto + stop leg     3 turns   $0.0332
     AUDIT CLEAN 2026-08-17, zero alerts             total     $0.1997
 
-The first run that morning FAILED and the postmortem is worth reading before
+The first run that morning failed, and the postmortem is worth reading before
 trusting anything here: the gate validated a nested stop-leg shape the broker
 has never exposed, so every ticket carrying a stop was undeliverable — and the
 whole offline suite was green over it, because the fixtures encoded the same

@@ -20,11 +20,12 @@ CHARTERS_DIR = Path(__file__).resolve().parents[1] / "charters"
 # 09:35, on a host that trades. An upstream release moving a tool-schema field
 # name overnight is exactly the 2026-08-17 outage class, and `make schema-pin`
 # only defends when someone remembers to run it. Pinned to what the droplet's
-# warm uvx cache already resolves, so this makes today's behaviour explicit
+# warm uvx cache already resolves, so this makes today's behavior explicit
 # rather than changing it — no cold fetch lands in the launch path.
 # tests/test_live_smoke.py's schema pin and ops/README.md's cache pre-warm both
-# derive THIS spec: the guard, the warm cache and the thing guarded cannot drift
-# apart. An upgrade is a deliberate commit with a green `make schema-pin`.
+# derive THIS spec: the guard, the warm cache, and the thing guarded cannot
+# drift apart. An upgrade is a deliberate commit with a green
+# `make schema-pin`.
 ALPACA_MCP_SPEC = "alpaca-mcp-server@2.2.1"
 
 
@@ -34,7 +35,8 @@ def load_seat_config(path: str | Path) -> dict:
 
 def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
                        snapshot=None, journals_root=None) -> ClaudeAgentOptions:
-    """`snapshot` (zero-arg -> {cash, positions, allowed_actions}) and
+    """Build one seat's ClaudeAgentOptions from its yaml config.
+    `snapshot` (zero-arg -> {cash, positions, allowed_actions}) and
     `journals_root` are this day's stage-brief providers, injected the same
     way the DB and the clock are. Unbound (the default) is legal and safe:
     get_stage_brief then reports the section as unavailable instead of
@@ -55,7 +57,7 @@ def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
         tools=cfg["tools"],
         # No settings source: no CLAUDE.md, no project/local settings.json feed
         # this seat's context or permission surface. Invariants live in the
-        # charter. Per-seat via cfg; default [] never loads a dev file.
+        # charter. Per-seat from cfg; default [] never loads a dev file.
         setting_sources=cfg.get("setting_sources", []),
         mcp_servers={
             "alpaca": {"command": "uvx", "args": [ALPACA_MCP_SPEC],
@@ -66,9 +68,10 @@ def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
                                       journals_root=journals_root),
         },
         allowed_tools=["mcp__alpaca__*", "mcp__fund__*"],
-        # Belt over the toolset brace (invariant 2): every non-trading seat's
-        # yaml sets this to deny mcp__alpaca__place_* even if ALPACA_TOOLSETS
-        # is ever misconfigured server-side. Absent for the trading seat.
+        # A second guard over the toolset restriction (invariant 2): every
+        # non-trading seat's yaml sets this to deny mcp__alpaca__place_* even
+        # if ALPACA_TOOLSETS is ever misconfigured server-side. Absent for the
+        # trading seat.
         disallowed_tools=cfg.get("disallowed_tools"),
     )
     # Order gate + recorder hooks belong ONLY to the seat that carries the
