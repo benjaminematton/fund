@@ -17,7 +17,7 @@ def _fake_bin(tmp_path: Path, name: str, body: str) -> Path:
     return p
 
 
-def _run(tmp_path, journal_text, curl_body, unit="fund-daily.service"):
+def _run(tmp_path, journal_text, curl_body, unit="fund-daily.service", extra_env=None):
     """Run the script with fake journalctl and fake curl; return (proc, payload)."""
     journalctl = _fake_bin(tmp_path, "journalctl", f"cat <<'EOF'\n{journal_text}\nEOF")
     # fake curl writes the request body it was handed to payload.json, then answers
@@ -35,6 +35,7 @@ def _run(tmp_path, journal_text, curl_body, unit="fund-daily.service"):
         "FUND_ALERT_CHANNEL": "#risk",
         "FUND_ALERT_CURL": str(curl),
         "FUND_ALERT_JOURNALCTL": str(journalctl),
+        **(extra_env or {}),
     }
     proc = subprocess.run([str(SCRIPT), unit], capture_output=True, text=True, env=env)
     body = json.loads(payload.read_text()) if payload.exists() else None
@@ -149,6 +150,55 @@ def test_redacts_plain_colon_form(tmp_path):
     text = body["text"]
     assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in text, f"leaked secret: {text}"
     assert "REDACTED" in text
+
+
+def test_headline_states_the_consequence_not_just_the_unit_name(tmp_path):
+    """The operator reads this on a phone. `fund-daily.service failed / exit=1`
+    is true but does not say what it cost — 2026-08-18's alert delivered
+    correctly and still did not convey that the firm was not trading."""
+    proc, body = _run(tmp_path, "boom", '{"ok":true}', unit="fund-daily.service")
+    assert proc.returncode == 0, proc.stderr
+    assert "did not trade" in body["text"].lower(), body["text"]
+
+
+def test_headline_never_claims_positions_are_safe(tmp_path):
+    """The script cannot know this. Default HOLD usually means no orders, but a
+    failure AFTER an order lands exits identically. Asserting safety the alert
+    has not verified is worse than saying nothing."""
+    proc, body = _run(tmp_path, "boom", '{"ok":true}')
+    text = body["text"].lower()
+    for lie in ("no orders", "positions untouched", "nothing was placed"):
+        assert lie not in text, f"alert asserts unverified safety: {lie}"
+
+
+def test_headline_falls_back_for_an_unrecognized_unit(tmp_path):
+    proc, body = _run(tmp_path, "boom", '{"ok":true}', unit="fund-something-new.service")
+    assert proc.returncode == 0, proc.stderr
+    assert "fund-something-new.service" in body["text"]
+
+
+def test_mention_is_prepended_when_configured(tmp_path):
+    """A channel-preference notification is per-device and resets on reinstall.
+    A real mention in the payload notifies regardless of client settings."""
+    proc, body = _run(
+        tmp_path, "boom", '{"ok":true}', extra_env={"FUND_ALERT_MENTION": "<@U123ABC>"}
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert body["text"].startswith("<@U123ABC>"), body["text"]
+
+
+def test_mention_is_optional_and_leaves_no_stray_whitespace(tmp_path):
+    """It must stay unset-safe: /etc/fund/alert-env on a fresh host has no
+    FUND_ALERT_MENTION, and `set -u` is on."""
+    proc, body = _run(tmp_path, "boom", '{"ok":true}')
+    assert proc.returncode == 0, proc.stderr
+    assert body["text"].startswith(":rotating_light:"), body["text"]
+
+
+def test_journal_tail_survives_the_new_framing(tmp_path):
+    """The headline is framing, not a replacement — the evidence must remain."""
+    proc, body = _run(tmp_path, "ExecTurnViolation: alpaca failed", '{"ok":true}')
+    assert "ExecTurnViolation: alpaca failed" in body["text"]
 
 
 def test_does_not_redact_ordinary_lines_with_colons_or_equals(tmp_path):

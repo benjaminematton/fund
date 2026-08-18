@@ -35,8 +35,33 @@ STATUS="$(systemctl show -p Result --value "$UNIT" 2>/dev/null || echo unknown)"
 CODE="$(systemctl show -p ExecMainStatus --value "$UNIT" 2>/dev/null || echo '?')"
 TAIL="$("$JOURNALCTL" -u "$UNIT" -n 20 --no-pager -o cat 2>/dev/null | redact || echo '(journal unavailable)')"
 
-TEXT="$(printf ':rotating_light: *%s* failed\nresult=%s exit=%s\n```\n%s\n```' \
-        "$UNIT" "$STATUS" "$CODE" "$TAIL")"
+# Lead with what the failure COST, in the operator's terms. 2026-08-18's alert
+# delivered correctly and still read as a unit-status line: `*fund-daily.service*
+# failed / exit=1` is accurate but never says the firm is not trading.
+#
+# Deliberately silent about positions. Default HOLD usually means no order was
+# placed, but a failure AFTER one lands exits identically — this script cannot
+# tell the two apart, and an alert that asserts safety it has not verified is
+# worse than a terse one. Confirming position state stays a human step.
+case "$UNIT" in
+    fund-daily*)  HEADLINE='The fund did not trade — check positions before the next open' ;;
+    fund-pnl*)    HEADLINE='No P&L was posted for today' ;;
+    fund-backup*) HEADLINE='The nightly backup did not run' ;;
+    *)            HEADLINE='A fund job failed' ;;
+esac
+
+# Optional mention. A Slack channel notification preference is per-device and
+# silently resets on reinstall; a real <@Uxxxx> in the payload notifies
+# regardless of client settings. Unset on a fresh host, so it must survive
+# `set -u` — and the widening must be `if`, not `[ -n ] &&`, whose non-zero
+# result on the empty case would trip `set -e`.
+MENTION="${FUND_ALERT_MENTION:-}"
+if [ -n "$MENTION" ]; then
+    MENTION="$MENTION "
+fi
+
+TEXT="$(printf '%s:rotating_light: *%s*\n%s failed — result=%s exit=%s\nrunbook: /opt/fund/ops/README.md\n```\n%s\n```' \
+        "$MENTION" "$HEADLINE" "$UNIT" "$STATUS" "$CODE" "$TAIL")"
 
 # jq builds the payload so quotes, backslashes and newlines in the journal
 # tail cannot produce malformed JSON.
