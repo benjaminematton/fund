@@ -243,6 +243,54 @@ systemctl enable --now fund-daily.timer fund-pnl.timer fund-backup.timer
 systemctl list-timers 'fund-*' --no-pager
 ```
 
+## Deploy a code change
+
+`/opt/fund` is a plain git checkout and the units run straight out of it, so a
+deploy is a pull. There is nothing to restart: every unit is `Type=oneshot` and
+reads the working tree fresh at each invocation. That also means the tree is
+read *while the next run starts* — hence the guard below.
+
+```bash
+systemctl is-active fund-daily.service        # MUST be `inactive`
+cd /opt/fund && git pull --ff-only
+git diff --stat <old-sha>..HEAD -- pyproject.toml state/schema.sql
+make preflight                                 # ~2 min, ~$0.31
+```
+
+**1. Never deploy while a day is running.** `is-active` is the check;
+`fund-daily.service` is `oneshot`, so "active" means a trading day is in
+flight. A pull mid-run swaps files under a live process that has already
+imported some modules and not others — it would run half the old code and half
+the new. `acquire_lock()`'s flock protects against a *second* run, not against
+the tree changing beneath the first one. Deploy after the close or before the
+open.
+
+**2. `--ff-only` on purpose.** A merge commit created on the droplet exists
+nowhere else and makes the next pull conflict. If it refuses to fast-forward,
+someone edited the tree in place — find out what before forcing anything.
+
+**3. Check the two files that a pull alone does not handle.** If
+`pyproject.toml` changed, the venv is stale — resync it **as the `fund` user**,
+never as root, or the venv ends up owned by root and the units can no longer
+write it:
+
+```bash
+su - fund -c 'cd /opt/fund && .venv/bin/python3 scripts/sync_deps.py'
+```
+
+If `state/schema.sql` changed, **stop.** There is no migration framework — only
+a DDL file applied at creation. An existing `fund.sqlite` will not pick up the
+change, and the source of truth silently disagrees with the code. Plan that
+change deliberately; it is not a deploy step.
+
+**4. Finish with `make preflight`, not with a green `git pull`.** A pull that
+succeeded proves files moved. Preflight proves the seats still start under
+systemd — the exact thing that looked fine and was not on 2026-08-18.
+
+To undo a bad deploy, `git checkout <previous-sha>` and run `make preflight`
+again. That is a *code* rollback and is always safe; rolling back **data** is a
+different operation, governed by the section below.
+
 ## Rollback
 
 **Only at a clean day boundary. Mid-day rollback is forbidden.** Once a day has
