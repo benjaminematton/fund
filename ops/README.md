@@ -107,12 +107,26 @@ FUND_DB=/var/lib/fund/fund.sqlite
 FUND_JOURNALS=/var/lib/fund/journals
 ```
 
-`/etc/fund/alert-env` holds two lines and nothing else:
+`/etc/fund/env` also carries the heartbeat target, which is why the units can
+stay free of any hardcoded monitoring URL:
+
+```
+HC_PING_URL=https://hc-ping.com/<uuid>
+```
+
+`/etc/fund/alert-env` holds three lines and nothing else:
 
 ```
 SLACK_BOT_TOKEN=xoxb-...
 FUND_ALERT_CHANNEL=#risk
+FUND_ALERT_MENTION=<@U...>
 ```
+
+`FUND_ALERT_MENTION` is optional but wanted. A Slack channel notification
+preference is per-device and resets on reinstall; a real `<@U...>` in the
+payload pings regardless of client settings. Plain `@name` does **not** work —
+Slack does not resolve display names server-side, so it posts literal text and
+notifies nobody.
 
 **It is a separate file on purpose.** A missing or unreadable `/etc/fund/env`
 is the most likely fresh-host failure; if the alert read the same file it would
@@ -120,6 +134,43 @@ die for the identical reason and you would learn nothing.
 
 systemd parses these files itself — it does **not** expand `${VAR}`, and it
 continues a comment across a trailing backslash where a shell would not.
+
+### The heartbeat check
+
+`fund-daily.service` pings `HC_PING_URL` from `ExecStartPost`, so a ping means
+the day completed. The watchdog alerts on the **absence** of one — the single
+failure mode `OnFailure` cannot see, because a timer that never fires produces
+nothing for systemd to react to. Provisioning a fresh host is not finished
+until this exists; without it the host is silent in exactly the case that
+matters, and silence reads as a quiet day.
+
+On healthchecks.io, the check must be in **cron** mode:
+
+| field | value |
+|---|---|
+| Schedule | `35 9 * * 1-5` |
+| Timezone | `America/New_York` |
+| Grace | `45 min` (2700s) |
+| Integrations | `#risk` Slack **and** email |
+
+**Cron mode, not the default "simple" period mode.** Simple mode expects a ping
+every N hours, so Friday's run sets Saturday's deadline and you get a false
+alarm every weekend the fund correctly does not run. Cron mode knows about
+weekdays. Market holidays are already safe either way: the timer fires,
+`run_day.py` exits 0 on the broker clock, and the ping still goes out.
+
+Grace is 45 minutes because `TimeoutStartSec=30min` bounds the run, so a ping
+can legitimately arrive as late as ~10:05 — the deadline lands at 10:20, still
+early enough to act on the day.
+
+Verify it the way the unit will, expanding the variable through systemd rather
+than trusting a shell that has it for other reasons:
+
+```bash
+systemd-run --uid=fund --pipe --wait --quiet \
+  --property=EnvironmentFile=/etc/fund/env \
+  /usr/bin/curl -fsS -m 10 --retry 3 '${HC_PING_URL}'   # expect: OK
+```
 
 ### Install the units
 
