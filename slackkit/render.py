@@ -138,14 +138,54 @@ def _render_gate_rejected(payload: dict) -> Post:
 
 
 def _render_digest(payload: dict) -> Post:
-    return Post("#pnl", payload["text"])
+    """The day's decisions and fills as a layout. Rows written before Block
+    Kit carry only `text` and keep posting as text — a dead-lettered digest
+    is a lost day of acceptance evidence (HANDOFF-LIVE §5)."""
+    text = payload["text"]
+    if "decisions" not in payload:
+        return Post("#pnl", text)
+    decisions, fills = payload["decisions"], payload["fills"]
+    blocks = [
+        _section(f"*{payload['run_date']} close*"),
+        _fields(("Decisions", str(len(decisions))), ("Fills", str(len(fills))),
+                # a client-side estimate, always labeled est. (CLAUDE.md)
+                ("Est. cost", f"${payload['cost_usd']:.2f}")),
+        _section("> " + (", ".join(
+            f"{d['ticker']} {d['action']} {d['qty']} ({d['status']})"
+            for d in decisions) or "no decisions")),
+        _section("> " + (", ".join(
+            f"{f['symbol']} {f['side']} {f['filled_qty']}"
+            f"@{f['filled_avg_price']:.2f}"
+            + (" (partial)" if f["partial"] else "") for f in fills)
+            or "no fills")),
+        _context("Inference cost is a client-side estimate"),
+    ]
+    return Post("#pnl", text, blocks)
+
+
+def _signed_usd(usd: float) -> str:
+    """`+$500.00`, not `$+500.00` — the sign goes outside (orchestrator/pnl)."""
+    return f"{'-' if usd < 0 else '+'}${abs(usd):,.2f}"
 
 
 def _render_pnl(payload: dict) -> Post:
     """Post-close P&L vs SPY. Same channel as the digest, deliberately a
     different kind: run_close's already-posted guard matches on kind='digest',
-    so sharing the kind would make a re-fired close skip its own digest."""
-    return Post("#pnl", payload["text"])
+    so sharing the kind would make a re-fired close skip its own digest.
+
+    Every figure keeps its explicit sign: a losing day and a winning one must
+    not differ by a character someone can miss while skimming."""
+    text = payload["text"]
+    if "pnl_usd" not in payload:
+        return Post("#pnl", text)
+    return Post("#pnl", text, [
+        _section(f"*{payload['run_date']} close*"),
+        _fields(("P&L", f"{_signed_usd(payload['pnl_usd'])}"
+                        f" ({payload['pnl_pct']:+.2%})"),
+                ("vs SPY", f"{payload['spy_pct']:+.2%}"),
+                ("Alpha", f"{payload['alpha']:+.2%}"),
+                ("Equity", f"${payload['equity']:,.2f}")),
+    ])
 
 
 def _render_alert(payload: dict) -> Post:

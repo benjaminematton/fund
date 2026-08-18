@@ -96,8 +96,10 @@ def post_eod_pnl(conn, slack, source, clock) -> int:
     else:
         text = f"{pnl['run_date']} close · {format_line(pnl)}"
         log(text)
-        append_event(conn, "pnl", {"text": text, "run_date": pnl["run_date"]},
-                     now)
+        # eod_pnl's figures ride along as fields: render.py lays the P&L out
+        # from them, and must not parse them back out of `text`. text stays as
+        # Slack's notification fallback.
+        append_event(conn, "pnl", {"text": text, **pnl}, now)
     return drain(conn, slack, now)
 
 

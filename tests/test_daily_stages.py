@@ -444,9 +444,41 @@ def _seed_order(fund_db, sim_clock, ticker, status, filled_qty, price):
 
 
 def _digest_text(fund_db) -> str:
+    return _digest_payload(fund_db)["text"]
+
+
+def _digest_payload(fund_db) -> dict:
     return json.loads(fund_db.execute(
         "SELECT payload FROM events WHERE kind='digest'"
-        ).fetchone()["payload"])["text"]
+        ).fetchone()["payload"])
+
+
+def test_the_digest_event_carries_structured_decisions_and_fills(
+        fund_db, sim_clock, tmp_path):
+    """render.py cannot lay out a digest it has to parse back out of prose
+    (and must not query the DB — invariant 6), so run_close emits the rows
+    alongside the text it already composed."""
+    _seed_order(fund_db, sim_clock, "NVDA", "filled", 66, 180.14)
+    run_close(_ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()},
+                   journals_root=tmp_path / "journals"))
+    payload = _digest_payload(fund_db)
+    assert payload["decisions"] == [
+        {"ticker": "NVDA", "action": "buy", "qty": 80, "status": "submitted"}]
+    assert payload["fills"] == [
+        {"symbol": "NVDA", "side": "buy", "filled_qty": 66,
+         "filled_avg_price": 180.14, "partial": False}]
+    assert payload["cost_usd"] == 0
+    # the flat text is still there: it is the Slack notification fallback and
+    # what pre-Block-Kit rows carry
+    assert payload["text"] == _digest_text(fund_db)
+
+
+def test_a_partially_filled_order_is_flagged_in_the_structured_fills(
+        fund_db, sim_clock, tmp_path):
+    _seed_order(fund_db, sim_clock, "NVDA", "partially_filled", 30, 180.14)
+    run_close(_ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()},
+                   journals_root=tmp_path / "journals"))
+    assert _digest_payload(fund_db)["fills"][0]["partial"] is True
 
 
 def test_close_digest_marks_a_partial_fill(fund_db, sim_clock, tmp_path):

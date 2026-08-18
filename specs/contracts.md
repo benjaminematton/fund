@@ -282,7 +282,16 @@ Bodies are Slack **mrkdwn** and are written for a human skimming the channel, no
 
 Rendering adds nothing the event payload does not already carry (invariant 6). Seat labels and reason glosses are constants of `render.py`; `<notional>` is `filled_qty × avg_price`. No renderer reads the database.
 
-`render()` returns a `Post(channel, text, blocks)`. **`text` is populated for every kind, blocks or not** — Slack renders `text`, not `blocks`, in push notifications and to screen readers, so a blocks-only message arrives blank there. The templates below are that `text`. `blocks` is Block Kit layout for the six event kinds a human reads mid-day (signal, decision, gate approval/rejection, fill, alert) and `None` for `digest`, `pnl` and `projection_error`, whose text is already prose composed elsewhere; `SlackPort.post` omits the argument entirely when it is `None`.
+`render()` returns a `Post(channel, text, blocks)`. **`text` is populated for every kind, blocks or not** — Slack renders `text`, not `blocks`, in push notifications and to screen readers, so a blocks-only message arrives blank there. The templates below are that `text`. `blocks` carries Block Kit layout for every kind except `projection_error`; `SlackPort.post` omits the argument entirely when it is `None`.
+
+**A renderer never parses its own `text`.** A kind that wants a layout must carry the pieces as payload fields — parsing values back out of prose is banned outright, and reading the DB would break invariant 6. `digest` and `pnl` therefore emit fields *alongside* the flat `text` their emitters already composed:
+
+| Kind | Emitter | Fields on the payload beyond `text` |
+|---|---|---|
+| `digest` | `run_close` (`orchestrator/daily.py`) | `run_date`, `decisions[{ticker, action, qty, status}]`, `fills[{symbol, side, filled_qty, filled_avg_price, partial}]`, `cost_usd` |
+| `pnl` | `scripts/close_pnl.py` | everything `orchestrator.pnl.eod_pnl` returns: `run_date`, `equity`, `pnl_usd`, `pnl_pct`, `spy_pct`, `alpha` |
+
+The fields are **additive** — rows written before Block Kit carry `text` alone, and both renderers fall back to text-only when the fields are absent. There is no migration, and a digest must never dead-letter: it is cited as acceptance evidence (`HANDOFF-LIVE` §5).
 
 Block bodies use only `section`, `section` + `fields`, and `context`, and every text element is clipped to 3000 chars (`render.TEXT_LIMIT`). Over that, Slack rejects the message with `msg_blocks_too_long`, which `slackkit/real.py` classifies as **permanent** alongside `invalid_blocks` and `invalid_blocks_format` — a malformed payload fails identically on every retry, so it dead-letters rather than stopping the drain forever. Clipping keeps a long thesis from ever reaching that path.
 
@@ -292,7 +301,9 @@ Block bodies use only `section`, `section` + `fields`, and `context`, and every 
 - Gate rejection: `*Risk Gate* · ⛔ *<side> <TICKER>* blocked` + `> <English gloss> (\`<reason>\`)`. An unglossed code degrades to `> (\`<reason>\`)` rather than raising — a reason minted after `render.REASONS` was written must not take the projection down. `tests/test_slackkit.py` statically guards that every `Rejected("<code>")` literal in `gate/` is glossed.
 - Decision: `*Portfolio Manager* · *<TICKER>* — <side> <qty> shares` (a `hold` renders as `hold`, with no share count) + `> <thesis>` in `#trading-floor`.
 - Fill: `*Execution Trader* · 🧾 <bought|sold> *<filled_qty> <TICKER>* at *$<avg_price>* — $<notional>` + `` Ticket `<id[:8]>` `` in `#trade-log`, threaded to the decision message.
-- Alert: `⚠️ *Alert* · <text>` in `#risk` — labelled because `#risk` carries both alerts and gate posts, and they demand different reactions. `digest` and `pnl` post their payload `text` verbatim; that text is composed in `orchestrator/daily.py` and `scripts/close_pnl.py`, not here.
+- Alert: `⚠️ *Alert* · <text>` in `#risk` — labelled because `#risk` carries both alerts and gate posts, and they demand different reactions.
+- Digest: `text` is `<run_date> close` + the `decisions:` and `fills:` lines + `est. inference cost $<n>`, composed in `run_close`. Blocks: a `*<run_date> close*` header, a Decisions / Fills / Est. cost field grid, the two lists as blockquotes, and a context line restating that inference cost is a client-side estimate. A day with neither renders `no decisions` / `no fills` — a full-HOLD day still posts.
+- P&L: `text` is `<run_date> close · ` + `orchestrator.pnl.format_line`. Blocks: the same header, then a P&L / vs SPY / Alpha / Equity grid. **Every figure carries an explicit sign**, dollar sign inside it (`+$500.00`, never `$+500.00`) — a losing day and a winning one must not differ by a character someone can miss while skimming.
 - EOD digest fields: P&L $ and % vs SPY, positions table, decisions + outcomes, est. inference cost.
 
   Under the compressed MVF schedule this is **two messages to `#pnl`, at two times**, because the fund's actions and the fund's outcome do not happen at the same time. `run_day` — including its `close` stage — runs at 09:35 ET, where `daily_pnl_pct` is ten minutes of session and `close_frame` (end − `SIP_DELAY` = 09:24, pre-open) returns the *previous* session's SPY bar.

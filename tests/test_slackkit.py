@@ -110,9 +110,23 @@ def test_alert_is_labelled_so_it_is_not_mistaken_for_a_gate_post():
 
 # --- Block Kit (tier 2) -----------------------------------------------------
 
+DIGEST = {"text": "2026-07-06 close\ndecisions: NVDA buy 80 (executed)\n"
+                  "fills: NVDA buy 66@180.14\nest. inference cost $0.03",
+          "run_date": "2026-07-06", "cost_usd": 0.03,
+          "decisions": [{"ticker": "NVDA", "action": "buy", "qty": 80,
+                         "status": "executed"}],
+          "fills": [{"symbol": "NVDA", "side": "buy", "filled_qty": 66,
+                     "filled_avg_price": 180.14, "partial": False}]}
+
+PNL = {"text": "2026-07-06 close · P&L +$412.00 (+0.41%) · SPY +0.18% ·"
+               " alpha +0.23% · equity $100,412.00",
+       "run_date": "2026-07-06", "equity": 100412.0, "pnl_usd": 412.0,
+       "pnl_pct": 0.0041, "spy_pct": 0.0018, "alpha": 0.0023}
+
 BLOCK_KINDS = [("signal", SIGNAL), ("decision", DECISION),
                ("gate_approved", GATE_OK), ("gate_rejected", GATE_NO),
-               ("fill", FILL), ("alert", {"text": "boom"})]
+               ("fill", FILL), ("alert", {"text": "boom"}),
+               ("digest", DIGEST), ("pnl", PNL)]
 
 
 @pytest.mark.parametrize("kind,payload", BLOCK_KINDS)
@@ -184,13 +198,71 @@ def test_signal_blocks_quote_the_summary_and_credit_the_seat():
                if b["type"] == "context" for e in b["elements"])
 
 
-@pytest.mark.parametrize("kind", ["digest", "pnl", "projection_error"])
-def test_prose_kinds_post_as_plain_text_with_no_blocks(kind):
-    """digest/pnl carry text composed in daily.py and close_pnl.py, and
-    projection_error is already prose. None means the port posts text only."""
-    payload = {"text": "x"} if kind != "projection_error" else {
-        "event_id": 3, "kind": "bogus"}
-    assert render(kind, payload).blocks is None
+def test_projection_error_posts_as_plain_text_with_no_blocks():
+    """Already prose. None means the port posts text only."""
+    assert render("projection_error", {"event_id": 3, "kind": "bogus"}).blocks is None
+
+
+@pytest.mark.parametrize("kind", ["digest", "pnl"])
+def test_a_digest_row_written_before_block_kit_still_renders(kind):
+    """Rows with only the flat `text` already exist in the production DB.
+    They must keep posting as text rather than raising on a missing field —
+    a dead-lettered digest is a lost day of evidence (HANDOFF-LIVE §5)."""
+    post = render(kind, {"text": "2026-07-06 close", "run_date": "2026-07-06"})
+    assert post.blocks is None
+    assert post.text == "2026-07-06 close"
+
+
+def test_digest_blocks_count_the_day_and_flag_the_cost_as_an_estimate():
+    blocks = render("digest", DIGEST).blocks
+    fields = [f["text"] for b in blocks for f in b.get("fields", [])]
+    assert any("*Decisions*\n1" in f for f in fields)
+    assert any("*Fills*\n1" in f for f in fields)
+    # total_cost_usd is a client-side estimate — always labeled est. (CLAUDE.md)
+    assert any("Est. cost" in f and "$0.03" in f for f in fields)
+
+
+def test_digest_blocks_list_the_decisions_and_the_fills():
+    text = " ".join(b["text"]["text"] for b in render("digest", DIGEST).blocks
+                    if "text" in b)
+    assert "NVDA buy 80 (executed)" in text
+    assert "NVDA buy 66@180.14" in text
+
+
+def test_a_partial_fill_stays_marked_in_the_digest_blocks():
+    """`fills: none` beside real shares was a live bug; `(partial)` must keep
+    meaning something in the block layout too."""
+    payload = {**DIGEST, "fills": [{**DIGEST["fills"][0], "partial": True}]}
+    text = " ".join(b["text"]["text"] for b in render("digest", payload).blocks
+                    if "text" in b)
+    assert "(partial)" in text
+
+
+def test_a_hold_only_day_still_renders_a_digest():
+    payload = {**DIGEST, "decisions": [], "fills": []}
+    blocks = render("digest", payload).blocks
+    fields = [f["text"] for b in blocks for f in b.get("fields", [])]
+    assert any("*Decisions*\n0" in f for f in fields)
+    assert all(b["type"] in {"section", "context"} for b in blocks)
+
+
+def test_pnl_blocks_carry_every_figure_with_an_explicit_sign():
+    """A losing day and a winning one must not differ by a character someone
+    can miss while skimming (orchestrator/pnl.format_line)."""
+    fields = [f["text"] for b in render("pnl", PNL).blocks
+              for f in b.get("fields", [])]
+    joined = " ".join(fields)
+    assert "+$412.00" in joined and "+0.41%" in joined
+    assert "+0.18%" in joined and "+0.23%" in joined
+    assert "$100,412.00" in joined
+
+
+def test_a_losing_day_renders_a_minus_not_a_bare_number():
+    losing = {**PNL, "pnl_usd": -412.0, "pnl_pct": -0.0041, "alpha": -0.0023}
+    fields = [f["text"] for b in render("pnl", losing).blocks
+              for f in b.get("fields", [])]
+    joined = " ".join(fields)
+    assert "-$412.00" in joined and "-0.41%" in joined and "-0.23%" in joined
 
 
 def test_outbox_hands_blocks_to_the_port(fund_db):

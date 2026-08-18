@@ -316,33 +316,47 @@ def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> 
     return "done"
 
 
-def _decision_line(conn: sqlite3.Connection, run_date: str) -> str:
-    rows = conn.execute(
-        "SELECT ticker, action, qty, status FROM decisions WHERE run_date = ?"
-        " ORDER BY ticker", (run_date,)).fetchall()
+def _decision_rows(conn: sqlite3.Connection, run_date: str) -> list[dict]:
+    """The digest's decisions as fields, not prose. slackkit/render.py lays
+    the digest out from these: it may not parse them back out of the text
+    (free text is never parsed) nor read the DB itself (invariant 6)."""
+    return [{"ticker": r["ticker"], "action": r["action"], "qty": r["qty"],
+             "status": r["status"]}
+            for r in conn.execute(
+                "SELECT ticker, action, qty, status FROM decisions"
+                " WHERE run_date = ? ORDER BY ticker", (run_date,)).fetchall()]
+
+
+def _decision_line(rows: list[dict]) -> str:
     if not rows:
         return "decisions: none"
     return "decisions: " + ", ".join(
-        f"{r['ticker']} {r['action']} {r['qty']} ({r['status']})" for r in rows)
+        f"{d['ticker']} {d['action']} {d['qty']} ({d['status']})" for d in rows)
 
 
-def _fill_line(conn: sqlite3.Connection, run_date: str) -> str:
+def _fill_rows(conn: sqlite3.Connection, run_date: str) -> list[dict]:
     """Partially-filled orders count (review Fix 7): real shares changed hands,
     so a digest reading `fills: none` beside them is untrue — and the digest is
-    cited as acceptance evidence (HANDOFF-LIVE §5). Marked `(partial)` so the
+    cited as acceptance evidence (HANDOFF-LIVE §5). Marked `partial` so the
     word keeps meaning something on a complete fill."""
-    rows = conn.execute(
-        "SELECT o.symbol, o.side, o.filled_qty, o.filled_avg_price, o.status"
-        " FROM orders o JOIN tickets t ON t.id = o.client_order_id"
-        " JOIN decisions d ON d.id = t.decision_id"
-        " WHERE d.run_date = ? AND o.status IN ('filled', 'partially_filled')"
-        " ORDER BY o.submitted_at", (run_date,)).fetchall()
+    return [{"symbol": r["symbol"], "side": r["side"],
+             "filled_qty": r["filled_qty"],
+             "filled_avg_price": r["filled_avg_price"],
+             "partial": r["status"] == "partially_filled"}
+            for r in conn.execute(
+                "SELECT o.symbol, o.side, o.filled_qty, o.filled_avg_price,"
+                " o.status FROM orders o JOIN tickets t ON t.id = o.client_order_id"
+                " JOIN decisions d ON d.id = t.decision_id"
+                " WHERE d.run_date = ? AND o.status IN ('filled', 'partially_filled')"
+                " ORDER BY o.submitted_at", (run_date,)).fetchall()]
+
+
+def _fill_line(rows: list[dict]) -> str:
     if not rows:
         return "fills: none"
     return "fills: " + ", ".join(
-        f"{r['symbol']} {r['side']} {r['filled_qty']}@{r['filled_avg_price']:.2f}"
-        + (" (partial)" if r["status"] == "partially_filled" else "")
-        for r in rows)
+        f"{f['symbol']} {f['side']} {f['filled_qty']}@{f['filled_avg_price']:.2f}"
+        + (" (partial)" if f["partial"] else "") for f in rows)
 
 
 def _signal_line(conn: sqlite3.Connection, run_date: str, agent: str) -> str:
@@ -379,7 +393,9 @@ def run_close(ctx: StageCtx) -> None:
         "SELECT 1 FROM events WHERE kind = 'digest' AND payload LIKE ?",
         (f"%{marker}%",)).fetchone() is not None
     now = iso(ctx.clock.now())
-    decisions, fills = _decision_line(conn, run_date), _fill_line(conn, run_date)
+    decision_rows, fill_rows = (_decision_rows(conn, run_date),
+                                _fill_rows(conn, run_date))
+    decisions, fills = _decision_line(decision_rows), _fill_line(fill_rows)
     if not digest_posted:
         cost = conn.execute(
             "SELECT COALESCE(SUM(usd_estimate), 0) s FROM costs WHERE run_date = ?",
@@ -387,7 +403,12 @@ def run_close(ctx: StageCtx) -> None:
         # total_cost_usd is a client-side estimate — always labeled "est." (CLAUDE.md)
         text = (f"{run_date} close\n{decisions}\n{fills}\n"
                 f"est. inference cost ${cost:.2f}")
-        append_event(conn, "digest", {"text": text, "run_date": run_date}, now)
+        # text AND fields: text is Slack's notification fallback and what rows
+        # written before Block Kit carry; the rows are what render.py lays out.
+        append_event(conn, "digest",
+                     {"text": text, "run_date": run_date,
+                      "decisions": decision_rows, "fills": fill_rows,
+                      "cost_usd": cost}, now)
     if ctx.journals_root is None:
         return
     for agent in conn.execute("SELECT DISTINCT agent FROM signals"

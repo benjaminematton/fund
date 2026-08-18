@@ -71,6 +71,20 @@ def test_a_clean_run_posts_one_pnl_line_to_pnl(fund_db, clock):
     assert "+$500.00" in text        # dollars, off last_equity, not inverted %
 
 
+def test_the_pnl_event_carries_the_structured_figures(fund_db, clock):
+    """eod_pnl already returns these; close_pnl used to discard them through
+    format_line, leaving render.py nothing but prose to lay out."""
+    import json
+
+    close_pnl.post_eod_pnl(fund_db, FakeSlack(), _Source(), clock)
+    payload = json.loads(fund_db.execute(
+        "SELECT payload FROM events WHERE kind = 'pnl'").fetchone()["payload"])
+    assert payload["pnl_usd"] == 500.0
+    assert set(payload) >= {"text", "run_date", "equity", "pnl_usd", "pnl_pct",
+                            "spy_pct", "alpha"}
+    assert payload["text"].startswith("2026-08-18 close · ")   # fallback intact
+
+
 def test_a_re_fire_does_not_double_post(fund_db, clock):
     """launchd re-fires and manual reruns both happen. The events table is the
     idempotency record, matched on kind='pnl' + run_date."""
