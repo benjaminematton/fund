@@ -4,7 +4,7 @@ The cheap plumbing check before spending a full suite: proves the Alpaca MCP
 server connects, the model id resolves, the fund tools are reachable, and a
 decision row actually lands. ~$0.12.
 
-Usage:  .venv/bin/python3 scripts/eval_one.py <case-id> [trial]
+Usage:  .venv/bin/python3 scripts/eval_one.py <case-id> [trial] [seat]
 """
 
 from __future__ import annotations
@@ -61,7 +61,8 @@ def main() -> int:
 
     case_id = sys.argv[1] if len(sys.argv) > 1 else "a01"
     trial = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    cases = {c.id: c for c in load_cases(ROOT / "evals/cases/pm")}
+    seat = sys.argv[3] if len(sys.argv) > 3 else "pm"
+    cases = {c.id: c for c in load_cases(ROOT / "evals/cases" / seat)}
     case = cases[case_id]
 
     print(f"running {case_id} trial {trial} live ...", flush=True)

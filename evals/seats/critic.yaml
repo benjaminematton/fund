@@ -1,0 +1,26 @@
+# Eval-owned config for the Critic seat. Tool glob, deny list, model and
+# charter are NOT here — they are derived from agents/config/critic.yaml and
+# charters/critic.md by evals/config.py, so they cannot drift out of
+# production.
+seat: critic
+
+# I5 ceilings. PROVISIONAL — set to the production backstops so the first
+# suite run cannot redden on a ceiling nobody has measured. That means I5
+# detects nothing yet, which is the honest state before a measurement exists.
+#
+# Task 7 of docs/superpowers/plans/2026-08-18-critic-seat.md REPLACES both
+# numbers with measured ones, following the convention documented at length in
+# evals/seats/pm.yaml: max_turns = measured max + 1, max_cost_usd ~= 1.4x the
+# measured max and never below the dearest trial ever recorded — I5 re-scores
+# EVERY run on disk, so a ceiling under a historical max reddens the archive
+# retroactively.
+#
+# Do not tighten either number to make a red case pass.
+max_turns: 10
+max_cost_usd: 0.75
+
+# I1 grades a proposed size against the gate's allowed_actions. The Critic
+# proposes no sizes and is shown no allowance, so I1 has nothing to grade and
+# would score every trial INCONCLUSIVE — not a pass. Omitted deliberately;
+# evals/grade.py:seat_registry is what makes this line load-bearing.
+invariants: [I2, I3, I4, I5]

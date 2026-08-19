@@ -2,6 +2,7 @@
 
 .PHONY: test lint sim-day replay live-day live-paper close-pnl resolve schema-pin surface-pin score-day preflight
 .PHONY: staging-day staging-reset eval eval-report
+.PHONY: eval-critic-dev eval-critic-holdout
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
@@ -139,6 +140,22 @@ resolve: deps
 # mcp__alpaca__place_*.
 eval: deps
 	$(PYTHON) scripts/eval_suite.py $(CASES)
+
+# Places no orders and touches no broker: the Critic seat is read-only
+# (invariant 2) and its G1 turn reads only the fund DB.
+#
+# TWO targets, not one with a flag, because the difference is not a
+# convenience. eval-critic-dev is the iteration loop and may be run as often
+# as needed. eval-critic-holdout is the acceptance measurement and is run ONCE
+# — its cases must never inform the charter, the same one-shot discipline
+# specs/strategy.md invariant 6 puts on a strategy's own holdout. LABEL is
+# required on both: traces are keyed by git sha, so an uncommitted charter
+# edit would otherwise overwrite the baseline it is being compared against.
+eval-critic-dev: deps
+	$(PYTHON) scripts/eval_suite.py --seat critic --split dev --label $(LABEL)
+
+eval-critic-holdout: deps
+	$(PYTHON) scripts/eval_suite.py --seat critic --split holdout --label $(LABEL)
 
 # Re-score recorded traces. Free and offline — never runs a turn.
 #   make eval-report                            # every run

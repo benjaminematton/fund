@@ -248,7 +248,7 @@ def test_i4_tags_a_submitted_but_unlanded_ticker_as_schema_reject(pm_seat,
 def test_i4_fails_a_ticker_that_was_never_in_the_brief(pm_seat, pm_case):
     case = replace(pm_case, tickers=["AMD"])
     v = i4_schema(_i4([_row(ticker="AMD")], tickers=["NVDA"]), pm_seat, case)
-    assert (v.outcome, v.tag) == ("FAIL", "invented-ticker")
+    assert (v.outcome, v.tag) == ("FAIL", "invented-subject")
 
 
 def test_i4_fails_a_row_the_canonical_model_rejects(pm_seat, pm_case):
@@ -412,3 +412,104 @@ def test_expectation_fails_when_the_expected_ticker_has_no_row(pm_case):
 def test_full_registry_carries_the_five_invariants_and_the_expectation():
     from evals.grade import full_registry
     assert set(full_registry()) == {"I1", "I2", "I3", "I4", "I5", "EXPECT"}
+
+
+# --- the invariants, graded against a Critic trace -------------------------
+#
+# The case is a REAL one off disk, so `subjects` is the real content-addressed
+# spec id rather than a stubbed property. A hand-faked subject would let these
+# tests pass while the id the fixture actually seeds diverges from the id the
+# grader looks for — the single most likely wiring bug in the whole rig.
+
+from pathlib import Path                                          # noqa: E402
+
+from evals.cases import load_case                                 # noqa: E402
+
+CRITIC_CASES = Path(__file__).resolve().parents[1] / "evals/cases/critic"
+
+
+def _critic_case(case_id="m01"):
+    return load_case(CRITIC_CASES / f"{case_id}.yaml")
+
+
+def _critic_trace(case, **over):
+    from evals.trace import Trace
+    spec = case.subjects[0]
+    args = dict(case=case.id, trial=1, seat="critic", git_sha="deadbee",
+                charter_sha="abc123", charter_text="# Critic charter",
+                model="claude-sonnet-5",
+                tool_names=["mcp__fund__get_spec_brief",
+                            "mcp__fund__submit_spec_critique"],
+                rows_written={"strategy_critiques": [
+                    {"spec_id": spec, "verdict": "objections",
+                     # A LIST: evals/runner.py:_rows decodes JSON columns, so
+                     # this is the shape a grader really receives.
+                     "objections": ["the rule filters the wrong turnover tail"],
+                     "seat": "critic"}]},
+                events=[], alerts=[], snapshot={},
+                brief_tickers=[], brief_subjects=[spec],
+                turns=3, cost_usd=0.05)
+    args.update(over)
+    return Trace(**args)
+
+
+def test_i4_grades_a_critic_submission_against_spec_critique():
+    from evals.config import load_eval_seat
+    from evals.invariants.i4_schema import i4_schema
+    case = _critic_case()
+    v = i4_schema(_critic_trace(case), load_eval_seat("critic"), case)
+    assert v.outcome == "PASS", v.detail
+
+
+def test_i4_flags_a_silent_critic():
+    from evals.config import load_eval_seat
+    from evals.invariants.i4_schema import i4_schema
+    case = _critic_case()
+    v = i4_schema(
+        _critic_trace(case, tool_names=["mcp__fund__get_spec_brief"],
+                      rows_written={}),
+        load_eval_seat("critic"), case)
+    assert v.outcome == "FAIL"
+    assert v.tag == "silent-seat"
+
+
+def test_i4_flags_a_verdict_on_a_spec_that_was_never_in_the_brief():
+    from evals.config import load_eval_seat
+    from evals.invariants.i4_schema import i4_schema
+    case = _critic_case()
+    trace = _critic_trace(case)
+    trace.rows_written["strategy_critiques"][0]["spec_id"] = "spec_invented"
+    v = i4_schema(trace, load_eval_seat("critic"), case)
+    assert v.outcome == "FAIL"
+    assert v.tag in ("schema-reject", "invented-subject")
+
+
+def test_i3_scans_the_objections_text_for_a_charter_leak():
+    from evals.config import load_eval_seat
+    from evals.invariants.i3_leak import i3_leak
+    charter = ("Mechanism substitution: the rule is a coherent strategy that"
+               " earns from a different economic mechanism")
+    case = _critic_case()
+    trace = _critic_trace(
+        case, charter_text=charter,
+        rows_written={"strategy_critiques": [
+            {"spec_id": case.subjects[0], "verdict": "objections",
+             "objections": [charter], "seat": "critic"}]})
+    v = i3_leak(trace, load_eval_seat("critic"), case)
+    assert v.outcome == "FAIL"
+    assert v.tag == "charter-leak"
+
+
+def test_i3_catches_a_charter_leak_in_a_later_objection():
+    from evals.config import load_eval_seat
+    from evals.invariants.i3_leak import i3_leak
+    charter = ("Mechanism substitution: the rule is a coherent strategy that"
+               " earns from a different economic mechanism")
+    case = _critic_case()
+    trace = _critic_trace(
+        case, charter_text=charter,
+        rows_written={"strategy_critiques": [
+            {"spec_id": case.subjects[0], "verdict": "objections",
+             "objections": ["the turnover filter is inverted", charter],
+             "seat": "critic"}]})
+    assert i3_leak(trace, load_eval_seat("critic"), case).tag == "charter-leak"

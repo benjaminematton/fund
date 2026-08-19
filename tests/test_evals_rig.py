@@ -190,3 +190,88 @@ def test_built_state_writes_the_journal_the_seat_will_read(tmp_path):
     case = _case(tmp_path)
     state = build_case_state(case, tmp_path / "fund.sqlite", tmp_path / "j")
     assert "prior day: held NVDA" in (tmp_path / "j" / "pm.md").read_text()
+
+
+# --- the Critic seat: subject-shaped, not ticker-shaped --------------------
+
+CRITIC_CASES = ROOT / "evals/cases/critic"
+
+
+def test_the_critic_eval_seat_derives_its_surface_from_production():
+    seat = load_eval_seat("critic")
+    assert seat.model == "claude-sonnet-5"
+    assert seat.tools == ["mcp__fund__*", "mcp__alpaca__*"]
+    assert seat.disallowed_tools == ["mcp__alpaca__place_*"]
+    assert seat.charter_path == ROOT / "charters" / "critic.md"
+
+
+def test_the_critic_declares_the_invariants_that_can_grade_it():
+    """I1 grades a proposed size against allowed_actions. The Critic proposes
+    no sizes and gets no allowance, so I1 would score every trial
+    INCONCLUSIVE — and an INCONCLUSIVE trial is not a pass, which would put
+    the gate permanently out of reach for rig reasons."""
+    seat = load_eval_seat("critic")
+    assert seat.invariants == ["I2", "I3", "I4", "I5"]
+
+
+def test_seat_registry_is_the_seats_own_subset_plus_the_expectation():
+    from evals.grade import seat_registry
+    assert set(seat_registry("critic")) == {"I2", "I3", "I4", "I5", "EXPECT"}
+    assert set(seat_registry("pm")) == {"I1", "I2", "I3", "I4", "I5", "EXPECT"}
+
+
+def test_the_critic_precondition_seeds_the_case_spec(tmp_path):
+    case = load_case(CRITIC_CASES / "m01.yaml")
+    state = build_case_state(case, tmp_path / "fund.sqlite",
+                             tmp_path / "journals")
+    rows = state.conn.execute("SELECT spec_id FROM strategy_specs").fetchall()
+    assert [r["spec_id"] for r in rows] == case.subjects
+    assert state.conn.execute(
+        "SELECT COUNT(*) c FROM strategy_critiques").fetchone()["c"] == 0
+    state.conn.close()
+
+
+def test_the_critic_stage_prompt_names_no_spec():
+    """Per-run values never enter a prompt (CLAUDE.md). The spec reaches the
+    seat through get_spec_brief, so the prompt is constant across cases —
+    which is also what keeps recorded trials replayable."""
+    from evals.prompts import stage_prompt
+    assert stage_prompt("critic", []) == stage_prompt("critic", ["ignored"])
+    assert "get_spec_brief" in stage_prompt("critic", [])
+    assert "submit_spec_critique" in stage_prompt("critic", [])
+
+
+def test_a_critic_trial_records_the_critique_row_it_wrote(tmp_path):
+    """End to end through the rig with an offline session: the trace must
+    carry the strategy_critiques row and the spec_id as its subject."""
+    from agents.tools.fund_server import handle_submit_spec_critique
+    from evals.runner import run_trial
+    from orchestrator.clock import iso
+
+    case = load_case(CRITIC_CASES / "m01.yaml")
+
+    def session(options, prompt, state):
+        handle_submit_spec_critique(
+            state.conn, seat="critic",
+            args={"spec_id": case.subjects[0], "verdict": "objections",
+                  "objections": ["the rule filters the top turnover decile"]},
+            now_iso=iso(case.clock), charter_version="v2",
+            model_id="claude-sonnet-5")
+        return (["mcp__fund__get_spec_brief",
+                 "mcp__fund__submit_spec_critique"], None)
+
+    trace = run_trial("critic", case, 1, session=session, workdir=tmp_path,
+                      traces_root=tmp_path / "traces")
+    rows = trace.rows_written["strategy_critiques"]
+    assert [r["spec_id"] for r in rows] == case.subjects
+    assert rows[0]["verdict"] == "objections"
+    assert trace.brief_subjects == case.subjects
+
+
+def test_a_historical_trace_without_brief_subjects_still_loads():
+    """Trace.from_dict is cls(**d); a NEW required field would make every
+    recorded trace unreadable and cost the archive its whole point."""
+    d = {"case": "a01", "trial": 1, "seat": "pm", "git_sha": "deadbee",
+         "charter_sha": "abc", "charter_text": "# PM", "model": "m",
+         "snapshot": {}, "brief_tickers": ["NVDA"]}
+    assert Trace.from_dict(d).brief_subjects == []

@@ -30,13 +30,22 @@ ROW_COLUMNS = {
     "decisions": ["ticker", "action", "qty", "thesis", "invalidation",
                   "stop_price", "status"],
     "signals": ["agent", "ticker", "direction", "confidence", "summary"],
+    "strategy_critiques": ["spec_id", "verdict", "objections", "seat"],
 }
 
 # Seat -> the tables it writes. `news` is the second analyst seat and writes
 # `signals` exactly as `analyst` does. `exec` places orders rather than
 # submitting rows, so it maps to nothing and yields an empty dict.
 WRITE_TABLES = {"pm": ["decisions"], "analyst": ["signals"],
-                "news": ["signals"]}
+                "news": ["signals"], "critic": ["strategy_critiques"]}
+
+# Tables keyed on the trading day. `strategy_critiques` is NOT: a spec is
+# reviewed once, not once per day, so it carries no `run_date` and no `ticker`.
+# A live scan that assumed otherwise would emit invalid SQL rather than an
+# empty result — see evals/live.py:rows_written, which skips what it cannot
+# scope. The eval rig has no such problem: its trial DB is fresh, so an
+# unscoped select already means "this trial" (evals/runner.py:ROW_SCOPE).
+DAILY_TABLES = frozenset({"decisions", "signals"})
 
 
 @dataclass
@@ -55,6 +64,11 @@ class Trace:
     # rather than being re-derived from the case file at grade time.
     snapshot: dict
     brief_tickers: list[str]
+    # The seat-agnostic version of brief_tickers: what the seat was shown and
+    # is therefore allowed to write a row about. Defaulted so every trace
+    # recorded before the Critic existed still loads — I4 falls back to
+    # brief_tickers when this is empty.
+    brief_subjects: list[str] = field(default_factory=list)
 
     # what the seat DID
     tool_names: list[str] = field(default_factory=list)

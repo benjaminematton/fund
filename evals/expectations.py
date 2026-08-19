@@ -1,8 +1,8 @@
 """Case-specific expectations — the thin layer on top of the invariant grid.
 
-Deliberately small and declarative: four keys, no expression language. An
-expectation you cannot read at a glance is one you cannot trust when it
-reddens.
+Deliberately small and declarative: a handful of keys per seat, no expression
+language. An expectation you cannot read at a glance is one you cannot trust
+when it reddens.
 
 A case with no expectations is INCONCLUSIVE, never a free pass — a case that
 can only pass is documentation, not a test.
@@ -14,17 +14,65 @@ from evals.verdict import FAIL, INCONCLUSIVE, PASS, Verdict
 
 NAME = "EXPECT"
 
+# Seat -> (write table, key column). Same shape as I4's SUBMISSIONS, and for
+# the same reason: a new seat is a dict entry, not a new branch.
+ROWS = {"pm": ("decisions", "ticker"),
+        "analyst": ("signals", "ticker"),
+        "critic": ("strategy_critiques", "spec_id")}
 
-def _rows(trace) -> dict:
-    return {r["ticker"]: r
-            for r in (trace.rows_written.get("decisions") or [])}
+
+def _rows(trace, seat_name: str = "pm") -> dict:
+    table, key = ROWS[seat_name]
+    return {r[key]: r for r in (trace.rows_written.get(table) or [])}
 
 
 def case_expectations(trace, seat, case) -> Verdict:
     if not case.expect:
         return Verdict(NAME, INCONCLUSIVE,
                        f"case {case.id} declares no expectation", tag="none")
-    rows = _rows(trace)
+    if case.seat == "critic":
+        return _critic_expectations(trace, seat, case)
+    return _decision_expectations(trace, seat, case)
+
+
+def _critic_expectations(trace, seat, case) -> Verdict:
+    """Two keys. `verdict` is the ground truth. `objection_mentions` is the
+    guard against the failure this whole case set exists to detect: a Critic
+    that returns `objections` on a misaligned spec while naming a defect that
+    is not the misalignment has not caught anything — it has guessed, and a
+    gate built on guessing blocks arbitrary specs."""
+    rows = _rows(trace, seat.name)
+    checked = 0
+    for subject in case.subjects:
+        row = rows.get(subject)
+        if row is None:
+            return Verdict(NAME, FAIL, f"no critique row for {subject}",
+                           tag="missing-row")
+        want = case.expect["verdict"]
+        if row["verdict"] != want:
+            return Verdict(NAME, FAIL,
+                           f"{subject}: verdict {row['verdict']!r}, expected"
+                           f" {want!r}",
+                           tag="wrong-verdict")
+        checked += 1
+        mentions = [m.lower() for m in
+                    (case.expect.get("objection_mentions") or [])]
+        if not mentions:
+            continue
+        objections = row["objections"] or []
+        text = " ".join(objections).lower()
+        if not any(m in text for m in mentions):
+            return Verdict(NAME, FAIL,
+                           f"{subject}: objected, but none of {mentions} is"
+                           f" named — right verdict, wrong reason:"
+                           f" {objections}",
+                           tag="wrong-reason")
+        checked += 1
+    return Verdict(NAME, PASS, f"{checked} expectation(s) met")
+
+
+def _decision_expectations(trace, seat, case) -> Verdict:
+    rows = _rows(trace, "pm")
     checked = 0
 
     for ticker, want in (case.expect.get("action") or {}).items():

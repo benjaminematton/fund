@@ -26,6 +26,8 @@ from orchestrator.clock import et_run_date, iso
 from state.critiques import insert_default_critiques
 from state.db import connect
 from state.journal import append_entry
+from state.models import StrategySpec
+from state.specs import insert_strategy_spec
 
 from evals.cases import Case
 
@@ -58,7 +60,21 @@ def _analyst_preconditions(conn, case: Case, now_iso: str,
     return
 
 
-PRECONDITIONS = {"pm": _pm_preconditions, "analyst": _analyst_preconditions}
+def _critic_preconditions(conn, case: Case, now_iso: str,
+                          run_date: str) -> None:
+    """Mirrors the pre-turn half of the G1 review stage: the proposing seat's
+    `submit_strategy_spec` has landed one immutable spec in state SPEC, and
+    NOTHING has written a strategy_critiques row — at G1 there is no default
+    row, ever (the design's inverted default). Written through
+    state.specs.insert_strategy_spec, the same function Phase 5's
+    submit_strategy_spec handler will call, so the fixture cannot construct a
+    spec production could not."""
+    insert_strategy_spec(conn, StrategySpec(**case.spec), now_iso)
+
+
+PRECONDITIONS = {"pm": _pm_preconditions,
+                 "analyst": _analyst_preconditions,
+                 "critic": _critic_preconditions}
 
 
 def build_case_state(case: Case, db_path: Path | str,

@@ -13,6 +13,7 @@ production actually runs, so it never assembles ClaudeAgentOptions itself.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import traceback
 from pathlib import Path
@@ -40,6 +41,25 @@ REQUIRED_SERVERS = {"alpaca", "fund"}          # mirrors scripts/run_day.py:76
 # The reason rows are scoped to the seat's own write table is unchanged: a PM
 # case seeds `signals` as input, and an unscoped scan would report fixture
 # input as agent output.
+#
+# ROW_SCOPE and JSON_COLUMNS stay HERE because they are the RIG's answers, not
+# the live path's. The rig gives every trial a fresh database, which is what
+# makes an unscoped select mean "this trial"; a live database accumulates the
+# whole day and live.py scopes by `seat` instead. Same tables, different
+# question.
+#
+# How a table is scoped to THIS trial and ordered. The trade pipeline keys on
+# run_date; strategy_critiques has no run_date column (a spec is reviewed once,
+# not once per day) and the trial DB is fresh, so an unscoped select is exactly
+# this trial's rows.
+ROW_SCOPE = {"decisions": ("WHERE run_date = ?", "ticker"),
+             "signals": ("WHERE run_date = ?", "ticker"),
+             "strategy_critiques": ("", "spec_id")}
+# Columns stored as JSON text, decoded HERE and only here. Every grader
+# downstream then receives the value the pydantic model declares — a grader
+# that has to ask "string or list?" is a grader carrying storage detail it has
+# no business knowing, and the answer drifts per grader.
+JSON_COLUMNS = frozenset({"objections"})
 
 
 def git_sha() -> str:
@@ -67,16 +87,18 @@ def _rows(conn, seat: str, run_date: str) -> dict:
     out = {}
     for table in WRITE_TABLES[seat]:
         cols = ROW_COLUMNS[table]
+        where, order = ROW_SCOPE[table]
+        params = (run_date,) if where else ()
         rows = conn.execute(
-            f"SELECT {', '.join(cols)} FROM {table} WHERE run_date = ?"
-            " ORDER BY ticker", (run_date,)).fetchall()
+            f"SELECT {', '.join(cols)} FROM {table} {where}"
+            f" ORDER BY {order}", params).fetchall()
         if rows:
-            out[table] = [dict(zip(cols, tuple(r))) for r in rows]
+            out[table] = [{c: json.loads(v) if c in JSON_COLUMNS else v
+                           for c, v in zip(cols, tuple(r))} for r in rows]
     return out
 
 
 def _events(conn, watermark: int) -> list[dict]:
-    import json
     rows = conn.execute(
         "SELECT id, kind, payload FROM events WHERE id > ? ORDER BY id",
         (watermark,)).fetchall()
@@ -141,11 +163,16 @@ def run_trial(seat: str, case: Case, trial: int, *,
     brief_tickers = sorted(set(case.tickers)
                            | set(snapshot.get("allowed_actions") or {})
                            | {s["ticker"] for s in case.signals})
+    # Ticker-shaped cases keep their historical brief_tickers meaning; a
+    # spec-shaped case has no tickers at all, so subjects is what I4 grades
+    # an invented row against.
+    brief_subjects = brief_tickers or list(case.subjects)
 
     trace = Trace(
         case=case.id, trial=trial, seat=seat, git_sha=git_sha(),
         charter_sha=eval_seat.charter_sha, charter_text=eval_seat.charter_text,
         model=eval_seat.model, snapshot=snapshot, brief_tickers=brief_tickers,
+        brief_subjects=brief_subjects,
         tool_names=list(tool_names),
         rows_written=_rows(state.conn, seat, state.run_date),
         events=events, alerts=[e for e in events if e["kind"] == "alert"],

@@ -26,6 +26,20 @@ PROMPT_TEMPLATES = {
     "pm": ("Decision turn. Today's active tickers: {tickers}. Start by"
            " calling get_stage_brief, then follow your charter and end by"
            " calling submit_decision exactly once per ticker."),
+    # The rig has no exec cases and no evals/seats/exec.yaml, so nothing calls
+    # stage_prompt("exec") today. It is pinned anyway: run_day.py sends this
+    # wording, and the drift guard below derives its seat list from run_day's
+    # own SEATS map, so an unpinned production prompt is a hole rather than an
+    # exemption. Added when that guard was tightened and found this one.
+    "exec": "Execution stage: execute all open tickets per your charter.",
+    # G1 names no spec: the brief carries it. Constant across cases, which is
+    # what keeps a recorded trial replayable (CLAUDE.md — no per-run values in
+    # prompts). Not yet sent by scripts/run_day.py; the G1 review stage is the
+    # separate G1 gate change, and tests/test_evals_runner.py pins each
+    # template only for the seats run_day.py actually drives.
+    "critic": ("G1 review turn. Start by calling get_spec_brief, then follow"
+               " your charter and end by calling submit_spec_critique exactly"
+               " once, for the spec in your brief."),
 }
 
 

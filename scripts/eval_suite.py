@@ -4,7 +4,8 @@ Loads .env itself so `make eval` cannot silently half-run on a missing key —
 a suite that fails on credentials burns real trials into INCONCLUSIVE traces
 before anyone notices.
 
-Usage:  .venv/bin/python3 scripts/eval_suite.py [--label NAME] [case-id ...]
+Usage:  .venv/bin/python3 scripts/eval_suite.py [--label NAME] [--seat SEAT]
+                [--split dev|holdout] [case-id ...]
         (no cases = every case; named cases = a targeted probe run)
 
 --label scopes the run's traces to evals/traces/<NAME>/. Use it for anything
@@ -28,9 +29,16 @@ TRIALS = 3
 
 def main(argv: list[str]) -> int:
     label = None
-    if argv and argv[0] == "--label":
-        label = argv[1]
-        argv = argv[2:]
+    seat = "pm"
+    split = None
+    while argv and argv[0] in ("--label", "--seat", "--split"):
+        flag, value, argv = argv[0], argv[1], argv[2:]
+        if flag == "--label":
+            label = value
+        elif flag == "--seat":
+            seat = value
+        else:
+            split = value
     only = argv
     traces_root = (ROOT / "evals/traces" / label) if label else None
     if not ENV.exists():
@@ -44,17 +52,30 @@ def main(argv: list[str]) -> int:
         return 2
 
     from evals.cases import load_cases
-    from evals.grade import full_registry, grade_trace
+    from evals.grade import grade_trace, seat_registry
     from evals.report import build_report, render
     from evals.runner import run_trial
 
-    cases = load_cases(ROOT / "evals/cases/pm")
+    cases = load_cases(ROOT / "evals/cases" / seat)
+    # --split runs one half of a split set. The Critic's holdout half must
+    # never be run during charter iteration: a threshold measured on cases the
+    # charter was tuned against measures the tuning. Refuses an unknown split
+    # rather than silently running everything, which is the failure that would
+    # burn the holdout without anyone noticing.
+    if split is not None:
+        known = {c.split for c in cases}
+        if split not in known:
+            print(f"no cases with split {split!r} — have {sorted(known)}",
+                  file=sys.stderr)
+            return 2
+        cases = [c for c in cases if c.split == split]
     if only:
         cases = [c for c in cases if c.id in only]
         if not cases:
             print(f"no cases matching {only}", file=sys.stderr)
             return 2
 
+    registry = seat_registry(seat)
     traces, results = [], []
     for case in cases:
         for trial in range(1, TRIALS + 1):
@@ -62,7 +83,7 @@ def main(argv: list[str]) -> int:
             trace = run_trial(case.seat, case, trial,
                               traces_root=traces_root)
             traces.append(trace)
-            results.append(grade_trace(trace, case, full_registry()))
+            results.append(grade_trace(trace, case, registry))
 
     reports = build_report(results)
     print("\n" + render(reports))
@@ -75,9 +96,11 @@ def main(argv: list[str]) -> int:
         print(f"turns: mean {sum(turns) / len(turns):.2f}, max {max(turns)}")
 
     # Tier M: measured, never blocking. Compare against the baseline run —
-    # a DROP is the signal, not any single vague invalidation.
-    from evals.metrics import stop_discipline
-    print(f"stop discipline: {stop_discipline(traces)}")
+    # a DROP is the signal, not any single vague invalidation. PM-shaped: it
+    # reads decision invalidations, of which a Critic run has none.
+    if seat == "pm":
+        from evals.metrics import stop_discipline
+        print(f"stop discipline: {stop_discipline(traces)}")
 
     for r in results:
         for v in r.verdicts:
