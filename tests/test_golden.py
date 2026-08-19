@@ -17,9 +17,9 @@ def test_golden_pass_path():
     r = run_backtest(spec=spec, params=GOLDEN_PARAMS, close=close,
                      registry=reg, seat="quant", now_iso=NOW)
 
-    assert r["data_snapshot_hash"] == "dat_a4d2ee4153d5df6d"
+    assert r["data_snapshot_hash"] == "dat_adfbd511dae060bd"
     assert r["config_hash"] == "cfg_2ad6bd632a066999"
-    assert r["run_key"] == "run_549f306118a70c4e"
+    assert r["run_key"] == "run_7b4a168abfd09ced"
     assert r["n_trades"] == 740
     assert r["span_years"] == 8.448
     assert round(r["net_sharpe"], 6) == 1.827113
