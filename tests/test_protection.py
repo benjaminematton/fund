@@ -91,6 +91,24 @@ def test_no_positions_is_silent(fund_db):
     assert _alerts(fund_db) == []
 
 
+def test_a_hand_placed_stop_with_no_db_row_still_counts_as_protection(fund_db):
+    """Real configuration as of 2026-08-19 11:41 PDT: the NVDA stop was placed
+    by hand via REST, deliberately outside the gate, so it exists at the broker
+    with NO row in `orders` and no gate ticket.
+
+    The check asks one question in one direction — did a promised stop survive
+    at the broker — and the BROKER is the authority on what exists. It must
+    never assert the converse (that every live order maps back to a DB row):
+    that would alert on exactly the human intervention this module's alerts
+    ask for, and be correct in principle while useless in practice."""
+    _promised(fund_db, stop_price=215.0)          # the fund's buy, ticketed
+    hand_placed = _stop(qty="80")                 # no orders row, no ticket
+    n = assert_positions_protected(
+        fund_db, broker=Broker([_long(qty="80")], [hand_placed]), now_iso=NOW)
+    assert n == 0
+    assert _alerts(fund_db) == []
+
+
 def test_a_promised_stop_that_is_gone_alerts(fund_db):
     """THE incident. NVDA 80 was ticketed with a stop at 215, the OTO leg
     expired at the bell on 2026-08-17, and for two sessions the database said

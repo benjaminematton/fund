@@ -656,6 +656,7 @@ def test_run_day_alerts_when_a_position_has_no_protective_order(fund_db,
     tests/test_protection.py."""
     slack = FakeSlack()
     ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock, slack=slack,
+                   research_seats=("analyst",),
                    market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                    id_factory=lambda: TID, journals_root=tmp_path / "journals")
     run_day(ctx, execution_turn=None, broker=_NakedBroker(),
@@ -679,7 +680,7 @@ def test_the_protection_alert_reaches_slack_even_when_close_is_done(fund_db,
     next run."""
     def day():
         ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock,
-                       slack=FakeSlack(),
+                       slack=FakeSlack(), research_seats=("analyst",),
                        market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                        id_factory=lambda: TID,
                        journals_root=tmp_path / "journals")
