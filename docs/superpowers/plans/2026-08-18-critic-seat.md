@@ -3407,7 +3407,27 @@ git commit -m "chore: prove the Critic eval path offline before spending on it"
 
 Everything before this was plumbing. This task produces the number the design's central assumption stands or falls on, and it is the last task in this plan either way.
 
-**Cost:** each half is 6 cases × 3 trials = 18 live Sonnet trials, roughly **$0.75–1.25** and ~8 minutes. One dev run plus one holdout run is the floor; each extra charter iteration adds a dev run. Needs `ANTHROPIC_API_KEY` + Alpaca keys in `.env.eval` (or `.env`); the scripts refuse without `ALPACA_PAPER_TRADE=true`.
+**Cost — budget against the ceiling, not the floor.** Each half is 6 cases × 3 trials = 18 live Sonnet trials, roughly **$0.75–1.25** and ~8 minutes.
+
+- **Floor: ~$1.50 / ~15 min.** One dev run that clears, plus the holdout.
+- **Ceiling: ~$4–6 / ~50 min.** Step 4 permits three dev rounds, so the worst case is 4 runs × 18 = **72 trials**, not 36. The Critic's prompt carries a full spec and a longer charter than the PM's, so the $0.045/trial PM mean is a lower bound on its per-trial cost.
+
+Do not quote the floor as the estimate. Print the running total after each dev round (Step 3) so the number is visible while it accrues rather than after:
+
+```bash
+.venv/bin/python3 - <<'PY'
+import json
+from pathlib import Path
+spent = [t for label in Path("evals/traces").glob("critic-v2-*")
+         for p in label.rglob("*.json")
+         for t in [json.loads(p.read_text())]]
+priced = [t["cost_usd"] for t in spent if t["cost_usd"] is not None]
+print(f"{len(spent)} Critic trials so far, ${sum(priced):.2f} est."
+      f" ({len(spent) - len(priced)} without an estimate)")
+PY
+```
+
+Needs `ANTHROPIC_API_KEY` + Alpaca keys in `.env.eval` (or `.env`); the scripts refuse without `ALPACA_PAPER_TRADE=true`. Every trial spawns an Alpaca MCP subprocess the Critic never calls — `build_seat_options` builds it for every seat and `run_seat_turn` waits on it. That is deliberate: the rig must evaluate the seat production actually runs, and trimming the server map here would measure a seat that does not exist. It costs seconds per trial and `evals/runner.py:96` already names the cfg-driven fix as deferred work.
 
 **The rule that governs this whole task:** the dev half may be run as often as you like. **The holdout half is run once**, after charter iteration has stopped, and its cases must never have informed the charter. If you run the holdout, read it, edit the charter, and re-run it, you no longer have a measurement — you have a tuning run wearing its label. This is the same one-shot discipline `specs/strategy.md` invariant 6 puts on a strategy's own holdout, applied to the eval that gates strategies.
 
