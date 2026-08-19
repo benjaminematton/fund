@@ -1,5 +1,5 @@
 [Unit]
-Description=fund — close_pnl.py (P&L $ and %% vs SPY)
+Description=fund — post-close jobs (P&L $ and %% vs SPY; nightly resolutions)
 Documentation=file:///opt/fund/ops/README.md
 OnFailure=fund-alert@%n.service
 
@@ -17,4 +17,11 @@ EnvironmentFile=/etc/fund/env
 # missed it.
 Environment=PATH=/home/fund/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/close_pnl.py
+# The nightly reflection job shares this unit because it shares its one timing
+# constraint: close_frame's SIP_DELAY shift means an earlier fire asks for a
+# bar the closing auction has not written. Type=oneshot runs ExecStart lines in
+# order and stops at the first failure, so a broken P&L post holds back the
+# resolutions write — acceptable, since both are retried on the next fire and
+# resolve_day selects only what is still outstanding.
+ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/resolve_day.py
 TimeoutStartSec=10min

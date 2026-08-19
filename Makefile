@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl schema-pin preflight
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve schema-pin preflight
 .PHONY: staging-day staging-reset eval eval-report
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
@@ -100,6 +100,12 @@ live-paper: live-day
 # the closing auction has not written, and the job correctly posts nothing.
 close-pnl: deps
 	$(PYTHON) scripts/close_pnl.py
+
+# Nightly reflection: decisions at their horizon -> resolutions (design §8).
+# Rides the same 16:35 fire as close-pnl for the same SIP_DELAY reason, and is
+# safe to re-run — a decision that already resolved is not selected again.
+resolve: deps
+	$(PYTHON) scripts/resolve_day.py
 
 # Eval suite: REAL LLM turns against the REAL charters, 6 cases x 3 trials.
 # Needs .env loaded. MEASURED 2026-08-17: 18 trials, $0.81 est., ~7 minutes.

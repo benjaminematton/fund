@@ -29,7 +29,7 @@ journal: `journalctl -u fund-daily`.
 | unit | fires | runs |
 |---|---|---|
 | `fund-daily.timer` | 09:35 ET Mon–Fri | `scripts/run_day.py` |
-| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py` |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py` |
 | `fund-backup.timer` | 17:30 ET daily | `ops/backup.sh` |
 | `fund-alert@.service` | on any of the above failing | `ops/notify_failure.sh` |
 
@@ -473,7 +473,7 @@ journalctl -u fund-daily -n 100 --no-pager     # the day's log
 journalctl -u fund-daily --since "09:30"       # this morning
 systemctl list-timers 'fund-*' --no-pager      # when does it next fire
 systemctl --failed                             # anything broken
-systemctl start fund-pnl.service               # run the P&L digest by hand
+systemctl start fund-pnl.service               # P&L digest + resolutions by hand
 ls -la /var/lib/fund/backups/                  # snapshots
 ```
 
