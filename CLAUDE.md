@@ -69,6 +69,10 @@ Issues live as GitHub issues on `benjaminematton/fund`, via the `gh` CLI. See `d
 
 The domain docs are single-context: `CONTEXT.md` and `docs/adr/`, both at the repo root. See `docs/agents/domain.md`.
 
+### Regression ratchet
+
+A real failure becomes a permanent eval case, written by a human, once. Eligibility and the procedure: `docs/agents/regression-ratchet.md`.
+
 ## Compact instructions
 
 When compacting, preserve verbatim: the test invariants in the Test invariants section; which plan tasks are complete with commit SHAs; any deviation from `plans/phase-1a.md` / `plans/phase-1b.md` and why. Discard file reads, test output, and exploration traces.
