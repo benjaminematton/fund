@@ -22,6 +22,8 @@
 - **Commit only when the user asks.** Steps show the command; run it on his say-so.
 - **Do not weaken or delete a red acceptance test. Never update a golden fixture or expected value to make a test pass — STOP and ask.** Tasks 4 and 5 hit this; each carries an explicit gate.
 - Charters follow `charters/_template.md`: seven sections in order, ≤120 lines, `# <Seat name> — v<N>` header, `changelog:` line at the bottom. New charters start at **v1**.
+- **Test baselines, both verified 2026-08-18 on arm64.** `811 passed, 6 deselected` at `3ff004e` (this plan's original base); `819 passed, 6 deselected` at `5694b05` (after Tasks 1–2 land). A step's "Expected: N passed" means *the baseline you started from plus that task's new tests* — an executor starting from a branch where Tasks 1–2 already landed should not read the higher starting number as a failure. On x86_64 expect one known failure (`test_golden` is arm64-only, root cause in `PROGRESS.md`); do not re-record it.
+- **Cite symbols, not line numbers.** Two other branches are editing these same files, so line numbers go stale between writing a step and running it. Prefer "the `insert_default_critiques` call in `run_decision`" over a line reference — it survives both their edits and the next rewrite of that function.
 
 ## Design decisions already settled
 
@@ -55,19 +57,19 @@ kept — no merge may take one side wholesale:
 | File | This branch adds | Other branch adds |
 |---|---|---|
 | `agents/tools/fund_server.py` — `SEAT_CAPS` | `news` | `critic` |
-| `tests/test_exec_seat_tool_surface.py:35` — `SEATS` | `news` | `critic` |
-| `tests/test_exec_seat_tool_surface.py:79,:100` — parametrize lists | `news` | `critic` |
+| `tests/test_exec_seat_tool_surface.py` — module-level `SEATS` tuple | `news` | `critic` |
+| `tests/test_exec_seat_tool_surface.py` — the two `["analyst", "pm"]` parametrize lists (`test_read_only_seats_cannot_trade`, `test_read_only_seats_carry_no_order_hooks`) | `news` | `critic` |
 | `evals/prompts.py` — `PROMPT_TEMPLATES` | `news` | `critic` |
 
 **Refusal-string format is shared:** `f"{tool} is not granted to seat {seat!r}"`. The
 Critic branch writes its two new handlers to match, so `fund_server.py` ships one idiom.
 
-**`test_brief_is_analyst_and_pm_only` (`tests/test_fund_tools.py:119`) stays** — the Critic
+**`test_brief_is_refused_to_seats_without_the_capability` (`tests/test_fund_tools.py`, renamed from `test_brief_is_analyst_and_pm_only` in Task 2) stays** — the Critic
 is deliberately among the seats refused `get_stage_brief` (it wants `get_spec_brief`), and
 that remains true. Only its error-string assertion and its now-inaccurate name change here.
 
 **A third branch owns attribution columns** (`charter_version`, `model_id`) on `signals` and
-`decisions`. Relevant to this plan because **it owns the INSERT at `daily.py:154` that Task 1
+`decisions`. Relevant to this plan because **it owns the defaulted-signal INSERT inside `run_research` that Task 1
 rewrites**, and will bind the literal `'none'` there in the same commit that adds the columns.
 Do not add those columns here. The agreed semantics, which Task 1's per-seat change makes
 load-bearing:
@@ -493,7 +495,7 @@ git commit -m "refactor: one seat capability table replaces four parallel lists"
 
 **Files:**
 - Create: `charters/news.md`, `agents/config/news.yaml`
-- Modify: `tests/test_exec_seat_tool_surface.py:79`, `:100`
+- Modify: `tests/test_exec_seat_tool_surface.py` — module-level `SEATS`, plus both `["analyst", "pm"]` parametrize lists
 
 **Interfaces:**
 - Consumes: `"news"` registered in `SEAT_CAPS` (Task 2).
@@ -501,7 +503,7 @@ git commit -m "refactor: one seat capability table replaces four parallel lists"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/test_exec_seat_tool_surface.py`, change both parametrize lists from `["analyst", "pm"]` to `["analyst", "news", "pm"]` — line 79 (`test_read_only_seats_cannot_trade`) and line 100. If the module-level `SEATS` constant is a literal list of seat names, add `"news"` there too.
+In `tests/test_exec_seat_tool_surface.py` there are **three** seat lists, not two — confirmed 2026-08-18. Add `"news"` to all of them: the module-level `SEATS` tuple (which drives six parametrized tests), and both `["analyst", "pm"]` parametrize lists on `test_read_only_seats_cannot_trade` and `test_read_only_seats_carry_no_order_hooks`. Missing the last two would leave a new read-only seat outside the invariant-2 assertions — no `trading` toolset, and no order-gate/recorder hooks — which are exactly the checks a new read-only seat most needs.
 
 Then add to `tests/test_fund_tools.py` the consistency test deferred from Task 2 — it can only pass once `news.yaml` exists, which is this task:
 
@@ -634,12 +636,12 @@ git commit -m "feat: the news/sentiment seat, read-only and blind to the book"
 
 ⚠️ **GATE — get explicit sign-off before Step 5.** This changes two expected values in `tests/test_sim_day.py` that a second seat necessarily invalidates: the cost-row count (`2` → `3`, line 299) and the signal assertion (line 226). `CLAUDE.md` forbids editing an expected value to make a test pass. These are the tests tracking a deliberate scope change rather than a masked regression — but the rule says stop and ask, so **stop and ask, showing him the failure output.**
 
-`scripts/run_day.py:83` maps one seat per stage, so two analysts compose behind the single `"research"` key. Sequential, not concurrent (`specs/design.md` §3). `make_turn` already swallows and alerts per seat, so one seat failing cannot take the other down.
+`scripts/run_day.py`'s module-level `SEATS` dict maps one seat per stage, so two analysts compose behind the single `"research"` key. Sequential, not concurrent (`specs/design.md` §3). `make_turn` already swallows and alerts per seat, so one seat failing cannot take the other down.
 
 **Files:**
-- Modify: `scripts/run_day.py:83`, `:472-479`
+- Modify: `scripts/run_day.py` — the `SEATS` dict, and the `ctx.run_turn` assembly inside `_trading_day`
 - Create: `tests/recordings/mvf_news.jsonl`
-- Modify: `tests/test_sim_day.py:88`, `:149-153`, `:226`, `:299`
+- Modify: `tests/test_sim_day.py` — `sim_day`'s signature, its `StageCtx` construction, the NVDA signal assertion, and the `costs` row count
 
 **Interfaces:**
 - Consumes: `StageCtx.research_seats` (Task 1), `SEAT_CAPS["news"]` (Task 2), `agents/config/news.yaml` (Task 3).
@@ -688,7 +690,7 @@ Replace the `StageCtx` construction (lines 149-153):
 
 - [ ] **Step 2b: Test the composition's failure mode**
 
-The claim "one seat failing leaves the other intact" is invariant 4 applied to the new composition, and no existing test covers it — every failure test so far is single-seat. Follow the `_seat_session` monkeypatch pattern at `tests/test_run_day.py:484`, but make the fake seat-aware so one seat fails while the other succeeds:
+The claim "one seat failing leaves the other intact" is invariant 4 applied to the new composition, and no existing test covers it — every failure test so far is single-seat. Follow the `_seat_session` monkeypatch pattern in `tests/test_run_day.py`'s `test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land`, but make the fake seat-aware so one seat fails while the other succeeds:
 
 ```python
 def test_one_seat_failing_leaves_the_other_analysts_turn_intact(
@@ -720,7 +722,7 @@ Expected: PASS — this documents existing `make_turn` behavior under the new co
 
 - [ ] **Step 2c: Assert the PM actually receives both signals**
 
-This is the branch's whole payoff, and Task 2 just restructured `handle_get_stage_brief`, so proving the rows reached the *database* is not proving they reached the *PM*. Extend the existing test at `tests/test_sim_day.py:434` ("the PM can actually see the analyst's work") — keep its current assertions and add:
+This is the branch's whole payoff, and Task 2 just restructured `handle_get_stage_brief`, so proving the rows reached the *database* is not proving they reached the *PM*. Extend the existing "the PM can actually see the analyst's work" test in `tests/test_sim_day.py` — keep its current assertions and add:
 
 ```python
     pm = _brief(sim, "decision")
@@ -762,7 +764,7 @@ At line 299:
 
 - [ ] **Step 6: Wire the production path**
 
-Replace `SEATS` at `scripts/run_day.py:83`:
+Replace the `SEATS` dict in `scripts/run_day.py`:
 
 ```python
 # Stage -> seat. Research runs TWO seats sequentially behind one stage key
