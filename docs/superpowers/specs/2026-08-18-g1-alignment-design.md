@@ -33,6 +33,14 @@ In the trade pipeline a missing critique defaults to `clear` (`specs/contracts.m
 
 This inversion is the feature. Without it a Critic timeout silently waves through exactly the specs nobody reviewed, and the change is decorative.
 
+## Dependency — the Critic seat does not exist yet
+
+`charters/critic.md` is written, but there is no `agents/config/critic.yaml`, no runtime for the seat, and `evals/` supports PM only (`evals/seats/pm.yaml`, `evals/cases/pm/`). `orchestrator/daily.py:166` currently inserts default `clear` critiques with the note `no_critic_seat`, and `state/critiques.py` documents why: without them the critique-row guard in `submit_decision` would refuse every PM call.
+
+So this design has a hard prerequisite. **Standing up the Critic seat is a separate plan and must land first**, carrying the alignment eval set (§ "The unvalidated assumption") as its acceptance criteria. The 80% gate is evaluated there, before any G1 code is written.
+
+Note the same fail-open shape already exists in the trade pipeline: its critique guard is currently satisfied by rows the orchestrator writes to itself. That is a deliberate, labelled MVF placeholder rather than a bug — but it is the exact pattern G1's inverted default exists to avoid, and the Critic-seat plan should replace it with real critiques.
+
 ## Architecture
 
 No new lifecycle state and no new transition. `SPEC → BACKTEST` gains a precondition, and the existing `SPEC → REJECTED` transition gains two new triggers (`g1_no_review`, `g1_misaligned`) alongside G2 fail / budget exhausted / 30d idle.
