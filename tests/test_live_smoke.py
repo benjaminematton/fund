@@ -239,6 +239,20 @@ def test_schema_pin_place_stock_order_takes_a_flat_stop_leg():
     for field in ("client_order_id", "symbol", "side", "qty", "order_class"):
         assert field in props, f"place_stock_order lost {field!r}"
 
+    # The 2026-08-19 rule (gate/tickets.py): a stop-carrying order must be
+    # gtc, because a DAY stop leg expires at the close of the session it was
+    # placed in and leaves the position naked overnight. That rule is only
+    # satisfiable if the tool actually EXPOSES time_in_force — the captured
+    # output omits it (tests/fixtures/alpaca/place_stock_order.json), and a
+    # gate rule the seat cannot satisfy is an unplaceable order, not a guard.
+    assert "time_in_force" in props, (
+        "place_stock_order does not expose time_in_force — validate_order's "
+        "gtc rule would deny every stopped order with no way for the seat to "
+        f"comply. Present: {sorted(props)}")
+    tif_types = props["time_in_force"].get("anyOf") or [props["time_in_force"]]
+    assert any(t.get("type") == "string" for t in tif_types), (
+        f"time_in_force is not a string: {props['time_in_force']}")
+
 
 def test_a_stopped_ticket_places_with_a_flat_stop_leg(tmp_path):
     """The path the 2026-08-17 outage lived on, end to end against the real
