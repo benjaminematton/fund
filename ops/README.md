@@ -406,9 +406,36 @@ cd /opt/fund && git diff <old-sha>..origin/master -- state/migrations.py
 Read what it does before you run it. Additive `ALTER TABLE ADD COLUMN` with a
 default is safe and idempotent; anything that drops, renames, rewrites or
 backfills a column is not a deploy step and needs planning on its own.
-Take a fresh backup immediately before the pull rather than trusting the
-night's timer — the migration runs on the first `connect()` after it, which is
-usually `make preflight`, not a moment you choose.
+Take a fresh backup immediately before the pull.
+
+**`make preflight` does NOT run the migration, and a green preflight is not
+evidence that it ran.** Preflight drives `eval_suite.py`, which builds a fresh
+per-trial DB under `evals/traces/` and never opens `$FUND_DB`. Measured on
+2026-08-19: after a clean pull and a green preflight, the live DB still had
+zero of the six new columns. Left there, the first `connect()` against it would
+have been the next 09:35 `run_day` — the schema changing unattended, mid-day,
+with a green preflight standing as false reassurance that it already had.
+
+So fire it deliberately, while you are watching and the backup is fresh:
+
+```bash
+su - fund -c 'cd /opt/fund && set -a && . /etc/fund/env && set +a && \
+  .venv/bin/python3 -c "from state.db import connect; import os; \
+  connect(os.environ[\"FUND_DB\"])"'
+```
+
+Then assert against the source of truth rather than trusting the exit code —
+the columns exist AND the row counts are unchanged:
+
+```bash
+sqlite3 "$FUND_DB" 'PRAGMA table_info(signals);'   # charter_version, model_id
+sqlite3 "$FUND_DB" 'SELECT count(*) FROM signals;' # vs the pre-pull number
+sqlite3 "$FUND_DB" 'PRAGMA integrity_check;'
+```
+
+`ADD COLUMN` cannot lose rows, so this is meant to be boring. Run it anyway:
+every incident on this deployment so far has been the system reporting success
+for something nobody compared against the database.
 
 **4. Finish with `make preflight`, not with a green `git pull`.** A pull that
 succeeded proves files moved. Preflight proves the seats still start under
