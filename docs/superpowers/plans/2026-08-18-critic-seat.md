@@ -1073,7 +1073,7 @@ This task also fixes a live trap: `state/db.py` only applies `schema.sql` when t
 - Produces:
   - `state.models.StrategySpec` — pydantic model, fields exactly the `SPEC_FIELDS` set from Task 1. `universe`, `signal_rule`, `param_ranges`, `predicted` are `dict`; everything else scalar.
   - `state.models.SpecCritique(spec_id: str, verdict: Literal["clear","objections"], objections: list[str], seat: str)`.
-  - `state.specs.insert_strategy_spec(conn, spec: StrategySpec, now_iso: str) -> str` — returns the computed `spec_id`; idempotent (`INSERT OR IGNORE`).
+  - `state.specs.insert_strategy_spec(conn, spec: StrategySpec, now_iso: str) -> str` — returns the computed `spec_id`; idempotent (`INSERT OR IGNORE`). `lineage_parent` stays NULL: nothing can set it until Phase 5's re-registration flow exists, and an untested parameter on the only write path into an immutable table is one a later reader trusts.
   - `state.specs.specs_awaiting_critique(conn, *, limit=1) -> list[dict]` — `strategy_specs` rows with no `strategy_critiques` row, oldest first, JSON columns already decoded. Defaults to ONE: the design assigns one turn per spec, so a brief carrying the backlog would put N reviews in a turn budgeted for one.
 - Task 3 consumes both models and both functions. Task 5 calls `insert_strategy_spec` from the eval fixture.
 
@@ -1450,8 +1450,7 @@ COLUMNS = ("family", "seat", "hypothesis", "mechanism_class", "universe",
 
 
 def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
-                         now_iso: str, *,
-                         lineage_parent: str | None = None) -> str:
+                         now_iso: str) -> str:
     """INSERT one immutable spec; return its content-addressed id.
 
     Idempotent by construction: the id IS the hash of the fields, so a
@@ -1463,9 +1462,9 @@ def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
               else fields[c] for c in COLUMNS]
     conn.execute(
         f"INSERT OR IGNORE INTO strategy_specs"
-        f" (spec_id, {', '.join(COLUMNS)}, lineage_parent, created_at)"
-        f" VALUES ({', '.join(['?'] * (len(COLUMNS) + 3))})",
-        [sid, *values, lineage_parent, now_iso])
+        f" (spec_id, {', '.join(COLUMNS)}, created_at)"
+        f" VALUES ({', '.join(['?'] * (len(COLUMNS) + 2))})",
+        [sid, *values, now_iso])
     conn.commit()
     return sid
 
@@ -1800,15 +1799,30 @@ def test_brief_is_critic_only(db, seat, tmp_path):
     assert "critic-seat-only" in r["error"]
 
 
-def test_brief_degrades_an_unbuildable_section_rather_than_raising(db,
+def test_brief_degrades_an_unbuildable_journal_rather_than_raising(db,
                                                                    spec_id):
     """invariant 4 in the brief: an unbound journals root names itself in
-    `unavailable` instead of taking the turn down."""
+    `unavailable` instead of taking the turn down. The SPEC survives — a
+    missing journal is absent context, not a missing subject."""
     r = handle_get_spec_brief(db, seat="critic", journals_root=None)
     assert r["ok"] is True
     assert r["brief"]["journal"] == ""
     assert any("journal" in u for u in r["brief"]["unavailable"])
     assert [s["spec_id"] for s in r["brief"]["specs"]] == [spec_id]
+
+
+def test_an_unreadable_spec_queue_is_an_error_not_an_empty_queue(db, tmp_path):
+    """The one section that must NOT degrade. [] would read to the seat as
+    'nothing pending', so it would end its turn writing nothing and the spec
+    would stay unreviewed behind a clean-looking trace. Safe either way — no
+    verdict, no advance — but only the error is legible afterwards."""
+    db.execute("DROP TABLE strategy_critiques")
+    db.commit()
+    r = handle_get_spec_brief(db, seat="critic",
+                              journals_root=tmp_path / "journals")
+    assert r["ok"] is False
+    assert "spec queue" in r["error"]
+    assert "brief" not in r
 
 
 # --- server wiring ---------------------------------------------------------
@@ -1907,22 +1921,38 @@ def handle_submit_spec_critique(conn: sqlite3.Connection, *, seat: str,
 
 def handle_get_spec_brief(conn: sqlite3.Connection, *, seat: str,
                           journals_root=None) -> dict:
-    """The Critic's G1 read half: every registered spec still awaiting a
-    verdict, plus its own journal. Writes nothing.
+    """The Critic's G1 read half: the spec awaiting a verdict, plus its own
+    journal. Writes nothing.
 
     Seat-scoped and deliberately narrow — the Critic gets no book, no
     positions and no allowed_actions, because at G1 there is no position to
-    reason about and a wider read surface is a wider seat. Same degradation
-    contract as get_stage_brief (invariant 4): a section that cannot be built
-    falls back to its empty default and names itself in `unavailable`."""
+    reason about and a wider read surface is a wider seat.
+
+    The journal degrades like get_stage_brief's sections do (invariant 4):
+    unbuildable means empty plus a name in `unavailable`.
+
+    THE SPEC QUEUE DOES NOT DEGRADE. Falling back to [] would be
+    indistinguishable from "nothing is pending", so a failed read would hand
+    the seat a brief it correctly reads as an empty queue; it would end the
+    turn writing nothing and the spec would stay unreviewed with a clean-looking
+    trace. The outcome is safe either way — no verdict, no advance — but only
+    one of the two is legible afterwards. A brief whose subject cannot be read
+    is not a degraded brief, it is no brief, so this returns an error and the
+    turn fails loudly."""
     if seat not in SPEC_CRITIQUE_SEATS:
         return {"ok": False,
                 "error": f"get_spec_brief is critic-seat-only (seat={seat!r})"}
+    try:
+        specs = specs_awaiting_critique(conn)
+    except Exception as exc:
+        return {"ok": False,
+                "error": f"could not read the G1 spec queue"
+                         f" ({type(exc).__name__}: {exc}) — refusing to report"
+                         " an empty queue that has not been read"}
     missing: list[str] = []
     brief = {
         "seat": seat,
-        "specs": _section(missing, "pending specs",
-                          lambda: specs_awaiting_critique(conn), []),
+        "specs": specs,
         "journal": _section(missing, "journal",
                             lambda: _journal(journals_root, seat), ""),
     }
@@ -2375,7 +2405,6 @@ Append to `tests/test_evals_invariants.py`:
 # tests pass while the id the fixture actually seeds diverges from the id the
 # grader looks for — the single most likely wiring bug in the whole rig.
 
-import json                                                      # noqa: E402
 from pathlib import Path                                          # noqa: E402
 
 from evals.cases import load_case                                 # noqa: E402
@@ -2397,8 +2426,9 @@ def _critic_trace(case, **over):
                             "mcp__fund__submit_spec_critique"],
                 rows_written={"strategy_critiques": [
                     {"spec_id": spec, "verdict": "objections",
-                     "objections": json.dumps(
-                         ["the rule filters the wrong turnover tail"]),
+                     # A LIST: evals/runner.py:_rows decodes JSON columns, so
+                     # this is the shape a grader really receives.
+                     "objections": ["the rule filters the wrong turnover tail"],
                      "seat": "critic"}]},
                 events=[], alerts=[], snapshot={},
                 brief_tickers=[], brief_subjects=[spec],
@@ -2448,13 +2478,13 @@ def test_i3_scans_the_objections_text_for_a_charter_leak():
         case, charter_text=charter,
         rows_written={"strategy_critiques": [
             {"spec_id": case.subjects[0], "verdict": "objections",
-             "objections": json.dumps([charter]), "seat": "critic"}]})
+             "objections": [charter], "seat": "critic"}]})
     v = i3_leak(trace, load_eval_seat("critic"), case)
     assert v.outcome == "FAIL"
     assert v.tag == "charter-leak"
 ```
 
-`tests/test_evals_invariants.py` defines neither `json` nor a `ROOT`, which is why the block above imports what it needs at the point of use — the file already uses that `# noqa: E402` mid-file import style throughout.
+`tests/test_evals_invariants.py` defines no `ROOT`, which is why the block above imports what it needs at the point of use — the file already uses that `# noqa: E402` mid-file import style throughout.
 
 Create `tests/test_evals_critic_expectations.py`:
 
@@ -2464,11 +2494,13 @@ Create `tests/test_evals_critic_expectations.py`:
 Real cases off disk, so the spec id under grade is the real content-addressed
 one: m01 expects `objections` naming turnover/momentum, a01 expects `clear`.
 Faking the id would let these pass while the fixture seeds a different one.
+
+`objections` is a LIST in these fixtures, not a JSON string: evals/runner.py
+decodes JSON columns once, so that is what a grader actually receives.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from evals.cases import load_case
@@ -2492,7 +2524,7 @@ def _trace(case, verdict, objections=()):
         tool_names=["mcp__fund__submit_spec_critique"],
         rows_written={"strategy_critiques": [
             {"spec_id": spec, "verdict": verdict,
-             "objections": json.dumps(list(objections)), "seat": "critic"}]},
+             "objections": list(objections), "seat": "critic"}]},
         turns=3, cost_usd=0.05)
 
 
@@ -2583,6 +2615,11 @@ ROW_COLUMNS = {
 ROW_SCOPE = {"decisions": ("WHERE run_date = ?", "ticker"),
              "signals": ("WHERE run_date = ?", "ticker"),
              "strategy_critiques": ("", "spec_id")}
+# Columns stored as JSON text, decoded HERE and only here. Every grader
+# downstream then receives the value the pydantic model declares — a grader
+# that has to ask "string or list?" is a grader carrying storage detail it has
+# no business knowing, and the answer drifts per grader.
+JSON_COLUMNS = frozenset({"objections"})
 ```
 
 Replace `_rows`:
@@ -2598,9 +2635,12 @@ def _rows(conn, seat: str, run_date: str) -> dict:
             f"SELECT {', '.join(cols)} FROM {table} {where}"
             f" ORDER BY {order}", params).fetchall()
         if rows:
-            out[table] = [dict(zip(cols, tuple(r))) for r in rows]
+            out[table] = [{c: json.loads(v) if c in JSON_COLUMNS else v
+                           for c, v in zip(cols, tuple(r))} for r in rows]
     return out
 ```
+
+`import json` at the top of `evals/runner.py` (it is currently imported inside `_events`; hoist it and drop the local import).
 
 Replace the `brief_tickers` computation and the `Trace(...)` call's identity block:
 
@@ -2748,9 +2788,8 @@ SUBMISSIONS = {
                SpecCritique, "spec_id"),
 }
 DB_OWNED = ("status",)
-# Columns stored as JSON text but modelled as a list. Handing the model a raw
-# string would fail validation for the storage format, not for the agent.
-JSON_COLUMNS = ("objections",)
+# JSON columns are decoded in evals/runner.py:_rows, so a row reaches here in
+# the shape its pydantic model declares. Nothing to unwrap.
 
 
 def i4_schema(trace, seat, case) -> Verdict:
@@ -2780,9 +2819,6 @@ def i4_schema(trace, seat, case) -> Verdict:
                            f"{row[key]} was never in the brief {allowed}",
                            tag="invented-subject")
         payload = {k: v for k, v in row.items() if k not in DB_OWNED}
-        for col in JSON_COLUMNS:
-            if isinstance(payload.get(col), str):
-                payload[col] = json.loads(payload[col])
         if "run_date" in model.model_fields:
             payload["run_date"] = case.clock.date()
         try:
@@ -2795,21 +2831,59 @@ def i4_schema(trace, seat, case) -> Verdict:
     return Verdict(NAME, PASS, f"{len(rows)} valid row(s)")
 ```
 
-Add `import json` at the top of that file, and update the module docstring's tag paragraph to name `invented-subject` where it said `invented-ticker`.
+Update the module docstring's tag paragraph to name `invented-subject` where it said `invented-ticker`. No `json` import is needed — the runner decodes JSON columns before a grader sees them.
 
 > Note: the tag renames from `invented-ticker` to `invented-subject`. Grep for the old string (`grep -rn invented-ticker tests/ evals/`) and update every assertion — the tag is the triage handle, and two names for one defect is the drift these graders exist to prevent.
 
 - [ ] **Step 9: Teach I3 about the objections field**
+
+Two edits, and the second is not optional. `objections` is a **list** by the time a grader sees it (Step 4 decodes JSON once in the runner), and `_norm` calls `.split()` — handed a list it raises, which `grade_trace` catches as INCONCLUSIVE with a `grader-error` tag. Fails safe, grades nothing, and looks like a grader bug rather than a missing coercion.
 
 In `evals/invariants/i3_leak.py`, extend `TEXT_FIELDS`:
 
 ```python
 TEXT_FIELDS = {"decisions": ("thesis", "invalidation"),
                "signals": ("summary",),
-               # Stored as a JSON array; scanning the raw text is correct —
-               # a charter paragraph pasted into an objection leaks whether or
-               # not it survives json round-tripping.
+               # A LIST, not a string — decoded in evals/runner.py:_rows.
+               # _flatten below is what makes that safe.
                "strategy_critiques": ("objections",)}
+```
+
+and add the coercion, used in the field-gathering comprehension:
+
+```python
+def _flatten(value) -> str:
+    """One text blob per field. A list column (objections) is joined rather
+    than str()'d: str(["a", "b"]) embeds quotes and brackets mid-text, which
+    would break a 40-char window that happens to straddle a boundary and let
+    a real leak through."""
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(v) for v in value)
+    return value or ""
+```
+
+Then in `i3_leak`, change the last line of the comprehension:
+
+```python
+              for value in [_flatten(row.get(field))] if value]
+```
+
+Add a test alongside the Step 1 I3 case, asserting a leak inside the **second** objection is still caught — that is the one a naive `objections[0]` or a bad join would miss:
+
+```python
+def test_i3_catches_a_charter_leak_in_a_later_objection():
+    from evals.config import load_eval_seat
+    from evals.invariants.i3_leak import i3_leak
+    charter = ("Mechanism substitution: the rule is a coherent strategy that"
+               " earns from a different economic mechanism")
+    case = _critic_case()
+    trace = _critic_trace(
+        case, charter_text=charter,
+        rows_written={"strategy_critiques": [
+            {"spec_id": case.subjects[0], "verdict": "objections",
+             "objections": ["the turnover filter is inverted", charter],
+             "seat": "critic"}]})
+    assert i3_leak(trace, load_eval_seat("critic"), case).tag == "charter-leak"
 ```
 
 - [ ] **Step 10: Make `seat.invariants` load-bearing**
@@ -2884,8 +2958,6 @@ can only pass is documentation, not a test.
 
 from __future__ import annotations
 
-import json
-
 from evals.verdict import FAIL, INCONCLUSIVE, PASS, Verdict
 
 NAME = "EXPECT"
@@ -2935,8 +3007,7 @@ def _critic_expectations(trace, seat, case) -> Verdict:
                     (case.expect.get("objection_mentions") or [])]
         if not mentions:
             continue
-        raw = row["objections"]
-        objections = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        objections = row["objections"] or []
         text = " ".join(objections).lower()
         if not any(m in text for m in mentions):
             return Verdict(NAME, FAIL,
