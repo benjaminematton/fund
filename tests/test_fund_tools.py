@@ -230,14 +230,55 @@ def _server(conn, clock, seat):
     return build_fund_server(lambda: conn, clock, seat)["instance"]
 
 
+def _handlers(server):
+    """(list_tools, call_tool) as plain awaitables, across mcp 1.x and 2.x.
+
+    mcp 2.0 replaced the `request_handlers` dict — keyed by request type, handler
+    taking a whole request and returning a ServerResult wrapper — with
+    `get_request_handler(method)`, whose handler takes (ctx, params) and returns
+    the result directly. These tests pin the registered MCP surface, so they have
+    to reach it whichever way the installed mcp exposes it. Production never
+    touches either: it hands the instance to the SDK.
+    """
+    import mcp.types as mcp
+
+    if hasattr(server, "get_request_handler"):              # mcp >= 2.0
+        listing = server.get_request_handler("tools/list")
+        calling = server.get_request_handler("tools/call")
+
+        async def list_tools():
+            return await listing.handler(None, None)
+
+        async def call_tool(name, args):
+            return await calling.handler(
+                None, calling.params_type(name=name, arguments=args))
+    else:                                                    # mcp 1.x
+        listing = server.request_handlers[mcp.ListToolsRequest]
+        calling = server.request_handlers[mcp.CallToolRequest]
+
+        async def list_tools():
+            req = mcp.ListToolsRequest(method="tools/list")
+            return (await listing(req)).root
+
+        async def call_tool(name, args):
+            req = mcp.CallToolRequest(
+                method="tools/call",
+                params=mcp.CallToolRequestParams(name=name, arguments=args))
+            return (await calling(req)).root
+
+    return list_tools, call_tool
+
+
+def _is_error(result) -> bool:
+    """mcp 2.0 renamed CallToolResult.isError to is_error."""
+    return result.is_error if hasattr(result, "is_error") else result.isError
+
+
 def _tool_names(conn, clock, seat) -> set[str]:
     import asyncio
 
-    import mcp.types as mcp
-
-    handler = _server(conn, clock, seat).request_handlers[mcp.ListToolsRequest]
-    result = asyncio.run(handler(mcp.ListToolsRequest(method="tools/list")))
-    return {t.name for t in result.root.tools}
+    list_tools, _ = _handlers(_server(conn, clock, seat))
+    return {t.name for t in asyncio.run(list_tools()).tools}
 
 
 def _call(conn, clock, seat, name, args):
@@ -245,13 +286,8 @@ def _call(conn, clock, seat, name, args):
     seat's call takes, wrappers included."""
     import asyncio
 
-    import mcp.types as mcp
-
-    handler = _server(conn, clock, seat).request_handlers[mcp.CallToolRequest]
-    request = mcp.CallToolRequest(
-        method="tools/call",
-        params=mcp.CallToolRequestParams(name=name, arguments=args))
-    return asyncio.run(handler(request)).root
+    _, call_tool = _handlers(_server(conn, clock, seat))
+    return asyncio.run(call_tool(name, args))
 
 
 SIGNAL_ARGS = {"ticker": "NVDA", "direction": "bullish", "confidence": 72,
@@ -290,8 +326,6 @@ def test_a_refused_call_comes_back_as_is_error_through_the_wrapper(
     """
     import asyncio
 
-    import mcp.types as mcp
-
     from agents.tools import fund_server
 
     # Build the server while the analyst still HOLDS submit_signal so the tool
@@ -299,16 +333,12 @@ def test_a_refused_call_comes_back_as_is_error_through_the_wrapper(
     # SEAT_CAPS (ADR-0002), so revoking first unregisters the tool and the call
     # dies at the MCP layer ("Tool 'submit_signal' not found") without ever
     # reaching the handler guard this test exists to pin.
-    handler = _server(fund_db, sim_clock,
-                      "analyst").request_handlers[mcp.CallToolRequest]
+    _, call_tool = _handlers(_server(fund_db, sim_clock, "analyst"))
     monkeypatch.setitem(fund_server.SEAT_CAPS, "analyst",
                         frozenset({"get_stage_brief", "read_account"}))
-    result = asyncio.run(handler(mcp.CallToolRequest(
-        method="tools/call",
-        params=mcp.CallToolRequestParams(name="submit_signal",
-                                         arguments=SIGNAL_ARGS)))).root
+    result = asyncio.run(call_tool("submit_signal", SIGNAL_ARGS))
 
-    assert result.isError is True
+    assert _is_error(result) is True
     assert "submit_signal is not granted to seat 'analyst'" in result.content[0].text
     assert result.content[0].text.startswith("error: ")
     assert fund_db.execute("SELECT COUNT(*) c FROM signals").fetchone()["c"] == 0
@@ -320,7 +350,7 @@ def test_a_refused_decision_is_never_reported_as_recorded(fund_db, sim_clock):
     result = _call(fund_db, sim_clock, "pm", "submit_decision",
                    {"ticker": "NVDA", "action": "buy", "qty": 80,
                     "thesis": "t", "invalidation": "i"})
-    assert result.isError is True
+    assert _is_error(result) is True
     assert "no critique row" in result.content[0].text
     assert "decision recorded" not in result.content[0].text
     assert fund_db.execute("SELECT COUNT(*) c FROM decisions").fetchone()["c"] == 0
@@ -333,7 +363,7 @@ def test_the_wrapper_stamps_the_run_date_from_the_injected_clock(fund_db,
     wrapper reading the wall clock would key rows to the wrong day and break
     replay."""
     result = _call(fund_db, sim_clock, "analyst", "submit_signal", SIGNAL_ARGS)
-    assert result.isError is False
+    assert _is_error(result) is False
     assert result.content[0].text == "signal recorded: NVDA"
     assert fund_db.execute("SELECT run_date FROM signals").fetchone()[
         "run_date"] == RUN
