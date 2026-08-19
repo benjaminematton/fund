@@ -203,8 +203,9 @@ def test_watchlist_stays_within_the_cost_bound():
 
 
 def test_every_stage_seat_has_a_committed_config():
-    for seat in run_day_script.SEATS.values():
-        assert (run_day_script.SEAT_CONFIG / f"{seat}.yaml").exists()
+    for stage_seats in run_day_script.SEATS.values():
+        for seat in stage_seats:
+            assert (run_day_script.SEAT_CONFIG / f"{seat}.yaml").exists(), seat
 
 
 # --- nothing after connect() may die silently (Fixes 2 & 3) -----------------
@@ -470,6 +471,33 @@ def _turn(conn, clock, seat="analyst", **over):
 
 def _alert_texts(conn) -> list[str]:
     return [p["text"] for p in _alert_payloads(conn)]
+
+
+def test_one_seat_failing_leaves_the_other_analysts_turn_intact(
+        wired, monkeypatch):
+    """The COMPOSITION, not the part. Research now runs two seats behind one
+    stage key, so a dead analyst must not swallow the news seat's turn —
+    otherwise one seat's outage silently shrinks the OTHER seat's calibration
+    sample too, which is the survivorship bias the per-seat default exists to
+    prevent. Every pre-existing failure test is single-seat."""
+    conn, _, clock = wired
+    ran = []
+
+    async def _seat_aware(cfg, *a, **k):
+        if cfg.get("seat") == "analyst":
+            raise TimeoutError("session never connected")
+        ran.append(cfg.get("seat"))
+        return ([], _Result(turns=3))
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _seat_aware)
+    for seat in run_day_script.SEATS["research"]:
+        _turn(conn, clock, seat=seat, cfg={"seat": seat})()   # neither raises
+
+    assert ran == ["news"]                     # the healthy seat still ran
+    texts = _alert_texts(conn)
+    assert len(texts) == 1                     # exactly one seat was alerted
+    assert "analyst_turn_failed" in texts[0] and "TimeoutError" in texts[0]
+    assert "default is HOLD" in texts[0]
 
 
 def test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land(

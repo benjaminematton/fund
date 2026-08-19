@@ -86,6 +86,7 @@ class SimResult:
 
 def sim_day(tmp_path, *, market: dict,
             analyst_recs=("mvf_analyst.jsonl",),
+            news_recs=("mvf_news.jsonl",),
             pm_recs=("mvf_pm.jsonl",),
             exec_recs=("mvf_exec.jsonl",),
             feed_break: dict | None = None,
@@ -128,13 +129,17 @@ def sim_day(tmp_path, *, market: dict,
 
         def run() -> None:
             turns[stage] += 1
-            outcomes[stage] = asyncio.run(replay_turn(
+            # EXTEND, never assign: a stage can now hold more than one seat's
+            # turn (research runs both analysts), and assignment silently drops
+            # the earlier seat's tool calls — which is exactly the evidence a
+            # two-analyst sim exists to check.
+            outcomes.setdefault(stage, []).extend(asyncio.run(replay_turn(
                 decisions,
                 pre_hooks=[make_order_gate(lambda: conn, clock)],
                 executor=make_executor(lambda: conn, clock, broker, seat=seat,
                                        snapshot=_snapshot,
                                        journals_root=journals),
-                post_hooks=[make_order_recorder(lambda: conn, clock)]))
+                post_hooks=[make_order_recorder(lambda: conn, clock)])))
             record_cost(conn, run_date, seat, f"sim-{seat}", SIM_TURN_COST_USD,
                         iso(clock.now()))
             if after is not None:
@@ -146,11 +151,21 @@ def sim_day(tmp_path, *, market: dict,
         for ticker, over in (feed_break or {}).items():
             market[ticker].update(over)
 
+    analyst_turn = _turn("research", "analyst", analyst_recs)
+    news_turn = _turn("research", "news", news_recs)
+
+    def research_turn() -> None:
+        """Both analysts, sequentially — design §3 staggers starts for rate
+        limits. Each _turn isolates its own failure, so a seat that raises
+        leaves the other's signal and its own neutral/0 default."""
+        analyst_turn()
+        news_turn()
+
     ctx = StageCtx(
         conn=conn, run_date=run_date, clock=clock, slack=slack,
-        research_seats=("analyst",),
+        research_seats=("analyst", "news"),
         market_inputs=market,
-        run_turn={"research": _turn("research", "analyst", analyst_recs),
+        run_turn={"research": research_turn,
                   "decision": _turn("decision", "pm", pm_recs, after=break_feed)},
         id_factory=id_factory or (lambda: TID), journals_root=journals)
     run_day(ctx, execution_turn=_turn("execution", "exec", exec_recs),
@@ -221,10 +236,12 @@ def test_golden_day(tmp_path):
     order fills at 180.14 through the real fill-poll."""
     sim = golden_day(tmp_path)
 
-    # the analyst's OWN signal, not run_research's neutral/0 default
-    sig = sim.conn.execute("SELECT * FROM signals").fetchone()
-    assert (sig["agent"], sig["ticker"], sig["direction"], sig["confidence"]) \
-        == ("analyst", "NVDA", "bullish", 72)
+    # each seat's OWN signal, not run_research's neutral/0 default. Both
+    # lenses land under distinct agents — the whole point of a second seat.
+    rows = {r["agent"]: (r["ticker"], r["direction"], r["confidence"])
+            for r in sim.conn.execute("SELECT * FROM signals").fetchall()}
+    assert rows == {"analyst": ("NVDA", "bullish", 72),
+                    "news": ("NVDA", "neutral", 45)}
 
     # the PM's ask survives on the decision; the gate's cap lives on the ticket
     d = _decision(sim, "NVDA")
@@ -271,12 +288,12 @@ def test_golden_day(tmp_path):
     assert [p["max_qty"] for p in _event_payloads(sim, "gate_approved")] == [66]
 
     # every turn that ran recorded its cost, and the digest reports the sum
-    assert sim.turns == {"research": 1, "decision": 1, "execution": 1}
-    assert _count(sim, "costs") == 3
+    assert sim.turns == {"research": 2, "decision": 1, "execution": 1}
+    assert _count(sim, "costs") == 4   # analyst + news + pm + exec
     digest = _event_payloads(sim, "digest")[0]["text"]
     assert "decisions: NVDA buy 80 (executed)" in digest
     assert "fills: NVDA buy 66@180.14" in digest
-    assert "est. inference cost $0.03" in digest
+    assert "est. inference cost $0.04" in digest   # 4 turns: +news seat
 
     assert (sim.journals / "exec.md").read_text().count("NVDA buy 66@180.14") == 1
     _assert_day_completed(sim)
@@ -296,11 +313,11 @@ def test_all_hold_day(tmp_path):
     assert _count(sim, "orders") == 0
     assert sim.broker.place_attempts == []           # zero broker attempts
     assert sim.turns["execution"] == 0               # counted, not inferred
-    assert sim.turns == {"research": 1, "decision": 1, "execution": 0}
-    assert _count(sim, "costs") == 2                 # analyst + pm only
+    assert sim.turns == {"research": 2, "decision": 1, "execution": 0}
+    assert _count(sim, "costs") == 3        # analyst + news + pm, no exec
     assert "#trade-log" not in sim.slack.posts
     assert _event_payloads(sim, "digest")[0]["text"].endswith(
-        "decisions: NVDA hold 0 (held)\nfills: none\nest. inference cost $0.02")
+        "decisions: NVDA hold 0 (held)\nfills: none\nest. inference cost $0.03")
 
     # Fix 5: pin the risk channel too — a spurious gate_rejected/gate_approved/
     # alert on a hold-only day would otherwise pass unnoticed.
@@ -428,7 +445,7 @@ def test_two_orders_same_day(tmp_path):
     assert any("bought *66 NVDA* at *$180.14*" in t for t in texts)
     assert any("sold *40 MSFT* at *$505.00*" in t for t in texts)
 
-    assert sim.turns == {"research": 1, "decision": 1, "execution": 1}
+    assert sim.turns == {"research": 2, "decision": 1, "execution": 1}
     _assert_day_completed(sim)
 
 
@@ -455,17 +472,27 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
     assert analyst["unavailable"] == []
     assert "signals" not in analyst and "allowed_actions" not in analyst
 
-    # the PM's brief: the analyst's ACTUAL signal row, submitted this same day
+    # the PM's brief: BOTH analysts' ACTUAL signal rows, submitted this same
+    # day. This is the branch's payoff — one missing seat here would silently
+    # halve the evidence the decision is made on.
     pm = _brief(sim, "decision")
     assert pm["seat"] == "pm"
     assert pm["unavailable"] == []
+    assert {s["agent"] for s in pm["signals"]} == {"analyst", "news"}
     assert pm["signals"] == [{
         "agent": "analyst", "ticker": "NVDA", "direction": "bullish",
         "confidence": 72,
         "summary": "DC capex guides re-accelerating; fwd P/E below 3y median;"
-                   " reclaimed 50d on volume."}]
-    assert pm["signals"][0]["summary"] == sim.conn.execute(
-        "SELECT summary FROM signals WHERE ticker = 'NVDA'").fetchone()["summary"]
+                   " reclaimed 50d on volume."},
+        {"agent": "news", "ticker": "NVDA", "direction": "neutral",
+         "confidence": 45,
+         "summary": "Capex headline is 3 sessions old and already faded; no"
+                    " fresh primary reporting today."}]
+    # not re-derived from the same dict — the row the brief carried IS the row
+    # the seat wrote
+    assert [s["summary"] for s in pm["signals"]] == [r["summary"] for r in
+        sim.conn.execute("SELECT summary FROM signals WHERE ticker = 'NVDA'"
+                         " ORDER BY agent").fetchall()]
 
     # THE claim: the snapshot the PM was shown IS the cap the gate enforced and
     # the size the broker was sent. The PM asked for 80 over a 66 budget, so

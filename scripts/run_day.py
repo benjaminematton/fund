@@ -77,10 +77,15 @@ REQUIRED_SERVERS = {"alpaca", "fund"}
 WATCHLIST_YAML = ROOT / "config" / "watchlist.yaml"
 SECTORS_YAML = ROOT / "config" / "sectors.yaml"
 SEAT_CONFIG = ROOT / "agents" / "config"
-# Stage -> (seat, config file). The exec seat is the only one carrying the
-# `trading` toolset (invariant 2); every seat is built by build_seat_options,
-# never hand-rolled here.
-SEATS = {"research": "analyst", "decision": "pm", "execution": "exec"}
+# Stage -> the seats that run it, in run order. ALWAYS a tuple, even for a
+# single-seat stage: a str|tuple union reads fine here and then silently
+# iterates characters at the first call site that forgets to check. Research
+# runs two seats sequentially (design §3: staggered starts, API rate limits).
+# The exec seat is the only one carrying `trading` (invariant 2); every seat is
+# built by build_seat_options, never hand-rolled here.
+SEATS = {"research": ("analyst", "news"),
+         "decision": ("pm",),
+         "execution": ("exec",)}
 LOCK_NAME = "run_day.lock"
 
 
@@ -449,7 +454,7 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
     journals_root.mkdir(parents=True, exist_ok=True)
 
     ctx = StageCtx(conn=conn, run_date=run_date, clock=clock, slack=slack,
-                   research_seats=(SEATS["research"],),
+                   research_seats=SEATS["research"],
                    market_inputs=market_inputs,
                    id_factory=lambda: str(uuid.uuid4()),
                    journals_root=journals_root)
@@ -470,16 +475,31 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
         f" -> allowed {actions}")
     if active:
         tickers = ", ".join(active)
+        research_prompt = (
+            f"Research turn. Today's active tickers: {tickers}. Start by"
+            " calling get_stage_brief, then follow your charter and end by"
+            " calling submit_signal exactly once per ticker.")
+        research_turns = [
+            make_turn(seat, load_seat_config(SEAT_CONFIG / f"{seat}.yaml"),
+                      db_path, clock, conn, run_date, research_prompt,
+                      snapshot=lambda: brief, journals_root=journals_root)
+            for seat in SEATS["research"]]
+
+        def run_research_turns() -> None:
+            """Sequential, in SEATS['research'] order — NOT asyncio.gather.
+            make_turn wraps each seat in its own asyncio.run + client context,
+            so sequential keeps exactly one ClaudeSDKClient subprocess alive at
+            a time, and the 09:00->11:00 gap to the decision stage means there
+            is no wall-clock reason to overlap them. make_turn also swallows
+            and alerts per seat, so one seat's failure leaves the other's
+            signal intact and its own neutral/0 default lands."""
+            for run in research_turns:
+                run()
+
         ctx.run_turn = {
-            "research": make_turn(
-                SEATS["research"], load_seat_config(SEAT_CONFIG / "analyst.yaml"),
-                db_path, clock, conn, run_date,
-                f"Research turn. Today's active tickers: {tickers}. Start by"
-                " calling get_stage_brief, then follow your charter and end by"
-                " calling submit_signal exactly once per ticker.",
-                snapshot=lambda: brief, journals_root=journals_root),
+            "research": run_research_turns,
             "decision": make_turn(
-                SEATS["decision"], load_seat_config(SEAT_CONFIG / "pm.yaml"),
+                SEATS["decision"][0], load_seat_config(SEAT_CONFIG / "pm.yaml"),
                 db_path, clock, conn, run_date,
                 f"Decision turn. Today's active tickers: {tickers}. Start by"
                 " calling get_stage_brief, then follow your charter and end by"
@@ -492,7 +512,7 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
         log("no active tickers — running the day with zero seat turns")
 
     execution_turn = make_turn(
-        SEATS["execution"], load_seat_config(SEAT_CONFIG / "exec.yaml"),
+        SEATS["execution"][0], load_seat_config(SEAT_CONFIG / "exec.yaml"),
         db_path, clock, conn, run_date,
         "Execution stage: execute all open tickets per your charter.")
 
