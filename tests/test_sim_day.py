@@ -91,7 +91,8 @@ def sim_day(tmp_path, *, market: dict,
             exec_recs=("mvf_exec.jsonl",),
             feed_break: dict | None = None,
             slack=None,
-            id_factory=None) -> SimResult:
+            id_factory=None,
+            broker_mode: str = "fill") -> SimResult:
     """One simulated trading day. `feed_break` applies market-input overrides
     AFTER the decision turn — a feed that goes bad between the PM's submit and
     the gate's enforcement pass, which is the only way a ticker can be live at
@@ -103,7 +104,7 @@ def sim_day(tmp_path, *, market: dict,
     conn = connect(tmp_path / "fund.sqlite")
     clock = SimClock(START)
     run_date = et_run_date(clock.now())
-    broker = FakeAlpaca(PRICES, FILL_PRICES, mode="fill")
+    broker = FakeAlpaca(PRICES, FILL_PRICES, mode=broker_mode)
     slack = slack if slack is not None else FakeSlack()
     turns = {"research": 0, "decision": 0, "execution": 0}
     outcomes: dict[str, list] = {}
@@ -507,3 +508,39 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
         == [shown["buy"]]
 
     _assert_day_completed(sim)
+
+
+# --- 5. the stop that expired at the bell (2026-08-19) ----------------------
+
+def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path):
+    """2026-08-19, reproduced end to end. A stopped NVDA entry fills, its OTO
+    stop leg then EXPIRES at the close exactly as the real one did on 08-17,
+    and the day must not end quietly.
+
+    Before this assertion existed the run was clean — holds, AUDIT CLEAN, a
+    digest posted — while the position sat naked for two sessions. A green
+    suite proved nothing then. This is what proving looks like: the real gate,
+    the real hooks, the real fill-poll, and a broker whose protection dies on
+    schedule."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  pm_recs=("mvf_pm_stop.jsonl",),
+                  exec_recs=("mvf_exec_stop_gtc.jsonl",),
+                  broker_mode="stop_expires_at_the_bell")
+
+    # the entry really happened, carrying the ticket's stop
+    placed = sim.broker.place_attempts[0]
+    assert (placed["order_class"], placed["time_in_force"]) == ("oto", "gtc")
+    assert placed["stop_loss_stop_price"] == "168.0"
+    assert sim.conn.execute(
+        "SELECT stop_price FROM tickets").fetchone()["stop_price"] == 168.0
+
+    # ...and the broker is now holding the position with nothing guarding it
+    assert sim.broker.open_positions() == [
+        {"symbol": "NVDA", "qty": "66", "side": "long"}]
+    assert sim.broker.open_orders() == []
+
+    texts = [p["text"] for p in _event_payloads(sim, "alert")]
+    assert any("NVDA" in t and "stop at 168" in t for t in texts), (
+        f"the naked position was not reported; alerts were {texts}")
+    assert any("NO live protective order" in p["text"]
+               for p in sim.slack.posts["#risk"])
