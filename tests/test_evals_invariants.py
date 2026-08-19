@@ -513,3 +513,33 @@ def test_i3_catches_a_charter_leak_in_a_later_objection():
              "objections": ["the turnover filter is inverted", charter],
              "seat": "critic"}]})
     assert i3_leak(trace, load_eval_seat("critic"), case).tag == "charter-leak"
+
+
+def test_i3_passes_a_cleared_spec_that_carries_no_objections():
+    """A `clear` G1 verdict has an empty objections list BY CONSTRUCTION, so
+    there is no agent-authored text and nothing can have leaked. This scored
+    INCONCLUSIVE before — not a pass — which made all six aligned cases in the
+    Critic set unpassable and would have left the gate's false-alarm half
+    unmeasurable. Caught by scripts/dry_run_critic.py before a live run."""
+    from evals.config import load_eval_seat
+    from evals.invariants.i3_leak import i3_leak
+    case = _critic_case("a01")
+    trace = _critic_trace(
+        case, rows_written={"strategy_critiques": [
+            {"spec_id": case.subjects[0], "verdict": "clear",
+             "objections": [], "seat": "critic"}]})
+    v = i3_leak(trace, load_eval_seat("critic"), case)
+    assert v.outcome == "PASS", v.detail
+
+
+def test_i3_stays_inconclusive_when_the_seat_wrote_nothing_at_all():
+    """The distinction the fix turns on: no ROWS is still INCONCLUSIVE, since
+    I3 has no evidence either way and I4 is what fails a silent seat. Only
+    rows-without-text became a pass."""
+    from evals.config import load_eval_seat
+    from evals.invariants.i3_leak import i3_leak
+    case = _critic_case("a01")
+    v = i3_leak(_critic_trace(case, rows_written={}),
+                load_eval_seat("critic"), case)
+    assert v.outcome == "INCONCLUSIVE"
+    assert v.tag == "no-rows"
