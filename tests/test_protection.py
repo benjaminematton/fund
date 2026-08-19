@@ -265,6 +265,48 @@ def test_a_short_position_alerts(fund_db):
     assert n == 1
 
 
+def test_an_unreadable_order_type_alerts_rather_than_downgrading_cover(fund_db):
+    """A sell order on the right symbol whose `type` cannot be read might BE
+    the stop. Skipping it silently shrinks cover and then reports "NO live
+    protective order" — a false statement about an order we merely could not
+    classify. Unknown is the honest answer."""
+    _promised(fund_db)
+    for bad in (None, "", 7, ["stop"]):
+        before = len(_alerts(fund_db))
+        order = _stop()
+        order["type"] = bad
+        n = assert_positions_protected(
+            fund_db, broker=Broker([_long()], [order]), now_iso=NOW)
+        assert n == 1, f"type={bad!r} was silently skipped"
+        assert "could not be read" in _alerts(fund_db)[before]
+
+
+def test_an_unreadable_order_side_alerts_rather_than_downgrading_cover(fund_db):
+    """Same reasoning as `type`: if we cannot read which side an order is on,
+    we cannot rule out that it is the protective one."""
+    _promised(fund_db)
+    for bad in (None, "", 3):
+        before = len(_alerts(fund_db))
+        order = _stop()
+        order["side"] = bad
+        n = assert_positions_protected(
+            fund_db, broker=Broker([_long()], [order]), now_iso=NOW)
+        assert n == 1, f"side={bad!r} was silently skipped"
+        assert "could not be read" in _alerts(fund_db)[before]
+
+
+def test_a_readable_non_stop_order_is_skipped_not_treated_as_unknown(fund_db):
+    """The other half: a plain sell LIMIT is readable and genuinely not
+    protection, so it must be skipped quietly and the position reported as
+    uncovered — not reported as unverifiable."""
+    _promised(fund_db)
+    n = assert_positions_protected(
+        fund_db, broker=Broker([_long()], [_stop(type="limit")]), now_iso=NOW)
+    assert n == 1
+    assert "stop at 215" in _alerts(fund_db)[0]
+    assert "could not be read" not in _alerts(fund_db)[0]
+
+
 def test_an_unreadable_order_alerts_rather_than_being_skipped(fund_db):
     """An order whose qty will not parse might be the protective one. Skipping
     it would silently downgrade cover; the position is reported unproven. This
@@ -348,6 +390,28 @@ def test_a_leg_that_is_still_missing_after_the_re_read_alerts(fund_db):
         fund_db, broker=Broker([_long()], []), now_iso=NOW, sleep=naps.append)
     assert n == 1
     assert naps == [3.0]
+
+
+def test_a_position_closed_during_the_wait_is_not_alerted_on(fund_db):
+    """The stop can FILL during the 3s wait, which closes the position. Using
+    the pre-nap positions list would alert about a holding that no longer
+    exists — and the alert would tell a human to go protect nothing."""
+    class FillsDuringWait(Broker):
+        def __init__(self):
+            super().__init__([_long()], [])
+            self.reads = 0
+
+        def open_positions(self):
+            self.reads += 1
+            return self._positions if self.reads == 1 else []
+
+    _promised(fund_db)
+    broker = FillsDuringWait()
+    n = assert_positions_protected(
+        fund_db, broker=broker, now_iso=NOW, sleep=lambda _s: None)
+    assert n == 0, "alerted on a position that closed during the wait"
+    assert _alerts(fund_db) == []
+    assert broker.reads == 2, "positions were not re-read after the wait"
 
 
 def test_the_re_read_waits_once_per_run_not_once_per_position(fund_db):

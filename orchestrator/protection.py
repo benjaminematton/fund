@@ -78,9 +78,20 @@ def _covering_qty(orders: list, symbol: str, closing_side: str) -> int | None:
             return None
         if str(o.get("symbol") or "") != symbol:
             continue
-        if str(o.get("side") or "").lower() != closing_side:
+        # `side` and `type` are what decide whether this order PROTECTS the
+        # position, so a value we cannot READ makes cover unknown — never
+        # silently smaller. Skipping an unreadable one would quietly downgrade
+        # cover and then report "NO live protective order", which is a false
+        # statement about an order we simply could not classify. Only a
+        # readable, genuinely non-matching value is skipped.
+        side, order_type = o.get("side"), o.get("type")
+        if not isinstance(side, str) or not side.strip():
+            return None
+        if not isinstance(order_type, str) or not order_type.strip():
+            return None
+        if side.strip().lower() != closing_side:
             continue
-        if str(o.get("type") or "").lower() not in _STOP_TYPES:
+        if order_type.strip().lower() not in _STOP_TYPES:
             continue
         n = _qty(o.get("qty"))
         if n is None:
@@ -89,10 +100,15 @@ def _covering_qty(orders: list, symbol: str, closing_side: str) -> int | None:
     return total
 
 
-def _promised_stop(conn: sqlite3.Connection, symbol: str):
-    """The stop the fund promised when it LAST opened this symbol: the price,
-    None if that buy deliberately carried no stop, or _UNKNOWN if there is no
-    filled buy order for it at all.
+def _promised_stop(conn: sqlite3.Connection, symbol: str) -> float | None | object:
+    """The stop the fund promised when it LAST opened this symbol.
+
+    Three distinct answers, which is why the return type is widened rather
+    than Optional: a float (a stop was promised at that price), None (that buy
+    deliberately carried no stop — charter-sanctioned), or the _UNKNOWN
+    sentinel (no filled buy order at all, so the promise cannot be read).
+    Collapsing "no stop promised" into "cannot tell" would either silence a
+    real fault or alert on every sanctioned stopless buy.
 
     Most-recent rather than any: a symbol sold and re-bought without a stop is
     read on its current terms instead of inheriting an old promise forever.
@@ -163,7 +179,16 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
                                sleep: Callable[[float], None] | None = None
                                ) -> int:
     """Alert on every open position whose promised stop is not live at the
-    broker. Returns the number of alerts appended. Never raises."""
+    broker. Returns the number of alerts appended.
+
+    Never raises on a BROKER or DATA problem — unreachable, unparseable,
+    unclassifiable all become alerts, because the day must finish and the
+    finding must be recorded. A SQLite write failure DOES propagate, and
+    deliberately: SQLite is the source of truth (invariant 6), every stage
+    writes to it, and reconcile.py's own fail-closed path appends outside any
+    try for the same reason. Swallowing a failed write here would mean the
+    alert this module exists to raise was silently never recorded — the exact
+    failure it is built to prevent."""
     nap = sleep or (lambda _s: None)
 
     def alert(text: str) -> None:
@@ -210,6 +235,13 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
         # per position.
         nap(_RETRY_S)
         try:
+            # BOTH sides are re-read, not just the orders. A stop can FILL
+            # during the wait, which closes the position and cancels nothing
+            # — re-reading orders alone would then alert about a position that
+            # no longer exists, using a stale list from before the nap.
+            positions = list(broker.open_positions())
+            if not positions:
+                return 0
             problems = _evaluate(conn, positions, read_orders())
         except Exception as e:
             alert(unread("re-read", e))

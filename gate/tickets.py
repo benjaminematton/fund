@@ -102,12 +102,18 @@ def _as_price(value):
 
 
 def _as_time_in_force(value):
-    """Lowercased time-in-force from a string; None otherwise. The Alpaca MCP
-    place tool OMITS this field unless the seat passes it, and its schema
-    default is 'day' (both schema-pinned in tests/test_live_smoke.py) — so a
-    missing key arrives here as None and denies. Case is normalized on input
-    and compared exactly. Non-strings (bool included, since bool is not a str)
-    deny: a lifetime the gate cannot read is a stop it cannot verify."""
+    """Lowercased time-in-force from a string; None otherwise.
+
+    The Alpaca MCP place tool omits this field from its OUTPUT unless the seat
+    passes it (captured 2026-07-12 in tests/fixtures/alpaca/place_stock_order.json),
+    and its schema default is 'day' — that default is what the 08-17 stop leg
+    inherited, and it is pinned in tests/test_live_smoke.py's schema pin along
+    with the field's presence and string type. So a missing key arrives here as
+    None and denies.
+
+    Case is normalized on input and compared exactly. Non-strings (bool
+    included, since bool is not a str) deny: a lifetime the gate cannot read is
+    a stop it cannot verify."""
     if isinstance(value, str):
         return value.strip().lower()
     return None
@@ -115,7 +121,11 @@ def _as_time_in_force(value):
 
 def validate_order(conn: sqlite3.Connection, tool_input,
                    now_iso: str) -> tuple[bool, str]:
-    """The five acceptance checks + malformed-input denial (invariant 4)."""
+    """The five acceptance §Hook deny cases (no ticket / expired / over
+    max_qty / wrong symbol / stop leg != ticket stop_price), plus the rules a
+    stop exit must satisfy to be deliverable at all — flat leg parameters, no
+    nested object, order_class 'oto', and time_in_force 'gtc' — plus
+    malformed-input denial (invariant 4)."""
     if not isinstance(tool_input, dict):
         return False, "malformed tool input: not an object"
     coid = tool_input.get("client_order_id")

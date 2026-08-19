@@ -19,7 +19,8 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 - [x] Sim: seed an `open` ticket → fire execution stage → exactly one `orders` row, `client_order_id == ticket.id`, FakeSlack `#trade-log` has one fill message.
 - [x] **Idempotency**: fire the execution stage twice with the same ticket → still exactly one order row, one Slack message.
 - [x] **Hook**: replayed trader turn attempting `place_order` with no ticket / expired ticket / qty > max_qty / wrong symbol / stop leg ≠ ticket `stop_price` → `PreToolUse` deny in all five cases; zero order rows.
-- [x] **Stop-exit orders**: ticket with `stop_price` set → trader submits an `oto` order with that stop leg; ticket with `stop_price` NULL → plain order, no stop leg.
+- [x] **Stop-exit orders**: ticket with `stop_price` set → trader submits an `oto` order with that stop leg **and `time_in_force` `gtc`**; ticket with `stop_price` NULL → plain order, no stop leg, time-in-force unconstrained. A stop-carrying order that is not `gtc` is DENIED at the gate: the tool defaults to `day`, and a `day` stop leg expires at the close of the session it was placed in (2026-08-17: it did, and the position was naked for two sessions).
+- [x] **Position protection**: after reconciliation, every open broker position whose originating ticket promised a `stop_price` has a live stop-family order at the broker covering its full size → otherwise an `alert` event. A position whose ticket promised no stop is standing exposure, not a fault, and is silent here.
 - [x] Expiry: `SimClock` past `expires_at` → ticket `expired`, order attempt denied.
 - [x] Crash resume: kill the stage after ticket consumption, restart → checkpoint prevents re-execution.
 - [ ] `@live` smoke: 1-share paper order round-trips (submitted → filled/canceled), fill lands in real Slack.
