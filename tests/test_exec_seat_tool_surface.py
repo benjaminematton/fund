@@ -32,7 +32,7 @@ BANNED_BUILTINS = (
     "Read", "Skill", "ToolSearch",
 )
 
-SEATS = ("exec", "analyst", "news", "pm")
+SEATS = ("exec", "analyst", "news", "pm", "critic")
 
 
 def _cfg(seat: str) -> dict:
@@ -100,7 +100,7 @@ def test_permission_mode_is_dont_ask(seat, tmp_path):
     assert _opts(seat, tmp_path).permission_mode == "dontAsk"
 
 
-@pytest.mark.parametrize("seat", ["analyst", "news", "pm"])
+@pytest.mark.parametrize("seat", ["analyst", "news", "pm", "critic"])
 def test_read_only_seats_cannot_trade(seat, tmp_path):
     opts = _opts(seat, tmp_path)
     assert "trading" not in _cfg(seat)["alpaca_toolsets"]
@@ -121,7 +121,7 @@ def test_only_exec_has_trading_toolset(tmp_path):
     assert "trading" in env["ALPACA_TOOLSETS"]
 
 
-@pytest.mark.parametrize("seat", ["analyst", "news", "pm"])
+@pytest.mark.parametrize("seat", ["analyst", "news", "pm", "critic"])
 def test_read_only_seats_carry_no_order_hooks(seat, tmp_path):
     # Only the trading seat may carry the PreToolUse order gate / PostToolUse
     # recorder (CLAUDE.md: hooks attach only to a seat that trades).

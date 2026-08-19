@@ -237,6 +237,22 @@ def test_the_critic_gets_no_trade_pipeline_tools():
     assert not _can("critic", "list_open_tickets")
 
 
+def test_the_critic_charter_header_yields_a_real_version_not_unknown():
+    """A coupling that did not exist before this seat. `_parse_charter_version`
+    reads the version out of the charter's FIRST LINE and returns 'unknown'
+    when it cannot — deliberately, so a formatting slip never takes a trading
+    day down (invariant 4). But strategy_critiques forbids 'unknown', so for
+    THIS seat that graceful degradation turns into every submit_spec_critique
+    failing at the INSERT. The charter's formatting is load-bearing on the
+    write path; pinned here because nothing else would say so."""
+    from agents.seats import charter_version_for
+    version = charter_version_for({"seat": "critic"})
+    assert version != "unknown", (
+        "charters/critic.md's first line lost its vN — every G1 verdict would"
+        " fail at the INSERT, because strategy_critiques forbids 'unknown'")
+    assert version.startswith("v")
+
+
 def test_no_other_seat_carries_the_g1_capabilities():
     """The inverse lock. Task 2's table takes one row per spec ever, so a
     second seat able to write it could spend the Critic's only verdict."""
