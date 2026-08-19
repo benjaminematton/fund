@@ -16,6 +16,22 @@ RUN = "2026-07-06"
 TID = "a3f90000-0000-0000-0000-000000000000"
 
 
+class _FlatBroker:
+    """Holds nothing, so the protection assertion is silent. Stage tests are
+    about the stage machine; protection has its own file."""
+    def open_positions(self): return []
+
+    def open_orders(self): return []
+
+
+class _NakedBroker:
+    """Holds NVDA 80 with nothing protecting it — the 2026-08-19 account."""
+    def open_positions(self):
+        return [{"symbol": "NVDA", "qty": "80", "side": "long"}]
+
+    def open_orders(self): return []
+
+
 def _ctx(fund_db, sim_clock, market, turns=None, journals_root=None,
          research_seats=("analyst",)):
     """market: {ticker: gate-input dict (pre-validated by risk later)}."""
@@ -415,7 +431,7 @@ def test_pre_gate_alerts_on_gate_error_but_stays_silent_on_no_headroom(fund_db, 
     market = {"NVDA": _nvda_inputs(vol_60d=float("nan")),          # gate_error both shapes
               "AAPL": _nvda_inputs(ticker="AAPL", cash=0.0, held_qty=0)}  # legit skip
     ctx = _ctx(fund_db, sim_clock, market)
-    run_day(ctx, execution_turn=None, broker=None, sleep=lambda s: None)
+    run_day(ctx, execution_turn=None, broker=_FlatBroker(), sleep=lambda s: None)
     alerts = fund_db.execute(
         "SELECT payload FROM events WHERE kind='alert'").fetchall()
     texts = [json.loads(r["payload"])["text"] for r in alerts]
@@ -578,7 +594,7 @@ def test_full_hold_day_completes_every_stage(fund_db, sim_clock, tmp_path):
                    research_seats=("analyst",),
                    market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                    id_factory=lambda: TID, journals_root=tmp_path / "journals")
-    run_day(ctx, execution_turn=None, broker=None, sleep=lambda s: None)
+    run_day(ctx, execution_turn=None, broker=_FlatBroker(), sleep=lambda s: None)
     stages = dict(fund_db.execute(
         "SELECT stage, status FROM checkpoints WHERE run_date=?", (RUN,)).fetchall())
     assert set(stages) == {"pre_gate", "research", "decision", "gate",
@@ -600,7 +616,7 @@ def test_full_hold_day_is_rerunnable(fund_db, sim_clock, tmp_path):
                        market_inputs={"NVDA": _nvda_inputs()},
                        run_turn={}, id_factory=lambda: TID,
                        journals_root=tmp_path / "journals")
-        run_day(ctx, execution_turn=None, broker=None, sleep=lambda s: None)
+        run_day(ctx, execution_turn=None, broker=_FlatBroker(), sleep=lambda s: None)
         return ctx
 
     day()
@@ -618,13 +634,65 @@ def test_execution_turn_skipped_when_no_open_tickets(fund_db, sim_clock, tmp_pat
                    research_seats=("analyst",),
                    market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                    id_factory=lambda: TID, journals_root=tmp_path / "journals")
-    run_day(ctx, execution_turn=lambda: calls.append(1), broker=None,
+    run_day(ctx, execution_turn=lambda: calls.append(1), broker=_FlatBroker(),
             sleep=lambda s: None)
     assert calls == []
     assert fund_db.execute("SELECT status FROM checkpoints WHERE stage='execution'"
                            ).fetchone()["status"] == "done"
     # a hold day has nothing open, so it must not raise the no-order alert
     assert not any("after exec turn" in t for t in _alert_texts(fund_db))
+
+
+def test_run_day_alerts_when_a_position_has_no_protective_order(fund_db,
+                                                                sim_clock,
+                                                                tmp_path):
+    """A full-HOLD day with a naked position must not be a quiet day. This is
+    the 2026-08-19 shape exactly: holds, no tickets, no orders, AUDIT CLEAN —
+    and NVDA 80 sitting unprotected the whole time.
+
+    This exercises the wiring (the assertion runs at all, and its alert
+    reaches Slack), via the unknown-provenance path: the DB here has no filled
+    buy for NVDA, which fails closed. The promise logic itself is covered in
+    tests/test_protection.py."""
+    slack = FakeSlack()
+    ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock, slack=slack,
+                   market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
+                   id_factory=lambda: TID, journals_root=tmp_path / "journals")
+    run_day(ctx, execution_turn=None, broker=_NakedBroker(),
+            sleep=lambda s: None)
+
+    texts = _alert_texts(fund_db)
+    assert any("NVDA" in t and "NO live protective order" in t for t in texts)
+    # and it REACHED Slack the same day, not just the database
+    assert any("NO live protective order" in p["text"]
+               for p in slack.posts["#risk"])
+    assert fund_db.execute("SELECT COUNT(*) c FROM events WHERE posted_at IS NULL"
+                           ).fetchone()["c"] == 0
+
+
+def test_the_protection_alert_reaches_slack_even_when_close_is_done(fund_db,
+                                                                    sim_clock,
+                                                                    tmp_path):
+    """The assertion is not a stage, so a resumed day re-checks — but the
+    close stage IS a stage, and a 'done' close returns before draining.
+    Without an explicit drain the alert would sit in the outbox until the
+    next run."""
+    def day():
+        ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock,
+                       slack=FakeSlack(),
+                       market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
+                       id_factory=lambda: TID,
+                       journals_root=tmp_path / "journals")
+        run_day(ctx, execution_turn=None, broker=_NakedBroker(),
+                sleep=lambda s: None)
+        return ctx
+
+    day()
+    second = day()          # every stage 'done'; only the assertion re-runs
+    assert any("NO live protective order" in p["text"]
+               for p in second.slack.posts["#risk"])
+    assert fund_db.execute("SELECT COUNT(*) c FROM events WHERE posted_at IS NULL"
+                           ).fetchone()["c"] == 0
 
 
 # --- execution: the silent no-order day (D2) ---------------------------------

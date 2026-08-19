@@ -605,6 +605,15 @@ class _QuietSource:
     def get_order(self, client_order_id):        # reconcile_orders' broker
         raise AssertionError("no orders were placed on a zero-ticker day")
 
+    # The account holds nothing, so it must be able to SAY it holds nothing.
+    # orchestrator/protection.py fails closed on a broker it cannot read, so
+    # a source that stays silent here would alert and red the audit.
+    def open_positions(self) -> list[dict]:
+        return []
+
+    def open_orders(self) -> list[dict]:
+        return []
+
 
 def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
         wired, tmp_path, monkeypatch, capsys):
