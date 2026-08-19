@@ -65,8 +65,17 @@ no-debate shape.
   lands it also touches the PM eval baseline for no functional gain.
 - Consequence accepted for now: the seat performing technical analysis is still called
   `analyst`, which reads oddly beside `news`. The existing `signals` history under
-  `agent = 'analyst'` is preserved rather than orphaned, which is the one upside. Revisit the
-  rename once the eval rig is seat-agnostic; the cost only grows with accumulated history.
+  `agent = 'analyst'` is preserved rather than orphaned, which is the one upside.
+- **The deferral is not free, and this is the part that grows.** `signals.agent` is the
+  grouping key for `calibration/rows.py` (analyst scoring → PM weights) and for the per-seat
+  day scorecard. A rename landing *mid-corpus* does not orphan one day's history — it
+  **splits one seat's history across two names**, so both consumers see two short samples
+  instead of one long one, and `specs/calibration.md` §4 already puts a seat under 50 graded
+  calls at provisional. Renaming today costs one live day (2026-08-17). Renaming after a
+  quarter of live running costs a split in exactly the number this branch exists to produce.
+  So: revisit as soon as the eval rig is seat-agnostic, not "eventually", and treat it as a
+  data migration (rewrite `signals.agent` in place) rather than a code rename — the two
+  consumers above must be told either way.
 - Both seats cover the full active set rather than splitting it. `specs/calibration.md` §4
   puts a seat below 50 graded calls at provisional; at three tickers with `N_eff ≈ N/5`, full
   overlap reaches an `N_eff` of 50 in roughly 83 trading days, and splitting the watchlist
