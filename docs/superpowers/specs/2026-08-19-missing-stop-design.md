@@ -79,8 +79,16 @@ never grow a method that does (invariant 2).
 `AlpacaSource` implements them over `get_all_positions()` and
 `get_orders(GetOrdersRequest(status=OPEN))`. Verified against alpaca-py 0.44:
 `Position` carries `symbol`, `qty`, `side`; `Order` carries `symbol`, `side`,
-`qty`, `type`, `status`. `nested` defaults to false, so an OTO's stop leg comes
-back as its own top-level row — which is exactly the row this check needs.
+`qty`, `order_type`, `status`. `nested` defaults to false, so an OTO's stop leg
+comes back as its own top-level row — which is exactly the row this check needs.
+
+**Enum values, not enum reprs.** alpaca-py returns `(str, Enum)` members, and
+`str(OrderSide.SELL)` is `'OrderSide.SELL'`, not `'sell'`. Coercing with a plain
+`str()` would make every stop order unmatchable and every long position
+unclassifiable, so the check would alert on a fully protected book every single
+day. The source unwraps with `str(getattr(v, "value", v))`, and the offline
+tests build their fakes from the **real enums** — a fake made of plain strings
+would pass while production failed, which is the 2026-08-17 pattern exactly.
 
 ### The check
 
@@ -105,12 +113,19 @@ symbol carried a `stop_price`.
 ```sql
 SELECT t.stop_price
   FROM orders o JOIN tickets t ON t.id = o.client_order_id
- WHERE o.symbol = ? AND o.side = 'buy' AND o.status = 'filled'
- ORDER BY COALESCE(o.closed_at, o.submitted_at) DESC LIMIT 1
+ WHERE o.symbol = ? AND o.side = 'buy'
+   AND (o.status = 'filled' OR o.filled_qty > 0)
+ ORDER BY o.submitted_at DESC LIMIT 1
 ```
 
 *Most recent* rather than *any*, so a symbol sold and re-bought without a stop
 is read on its current terms instead of inheriting an old promise.
+
+`filled_qty > 0` as well as `status = 'filled'`, because `reconcile.py` records
+a timed-out partial as **canceled with shares held** and comments that
+`filled_qty > 0` is a real position. Matching on status alone would call that
+position unknown-provenance and print an alert claiming the fund never opened
+it.
 
 An **alert** fires when a position is not covered **and** either a stop was
 promised, or the fund has no record of opening the position at all (no matching
@@ -134,6 +149,21 @@ them may pass quietly:
 
 Every one of these is a test, not a comment. A check that can pass while lying
 is the exact failure of all three incidents.
+
+**One bounded re-read before it accuses.** An OTO stop leg is created `held` and
+can lag its parent in the API by moments — and this runs immediately after
+reconciliation, which is exactly when a fill just happened. So when anything
+looks unprotected, the check waits 3 seconds (via the injected `sleep`, so tests
+stay deterministic) and re-reads the orders once before alerting. Once per run,
+never once per position. Without it the fund would alert on positions it
+correctly protects, on every day it actually trades — which is how an alert
+channel dies.
+
+**A truncated order page is a failure, not an empty result.** `open_orders`
+requests an explicit page limit and raises if the response fills it, because
+protective orders dropped off the end of a page would read as "nothing is
+protecting this". The caller turns that raise into an *unverified* alert. No
+silent caps.
 
 **It is an assertion, not a stage.** No checkpoint, no CAS, no resumability. It
 re-runs on a resumed day rather than being skipped as `done`, and duplicate
@@ -241,6 +271,18 @@ instrument for the second tier:
   promised)." Visible every day, costs nothing when it is fine, and cannot cause
   fatigue because it is not an interrupt. This also matches invariant 6: SQLite
   is truth, Slack is a projection.
+
+Two smaller items belong in that same follow-up:
+
+- **A second trigger.** The assertion runs only inside `run_day`. On 2026-08-18
+  the run died before any seat started, so on that day nothing would have
+  checked — while NVDA was already naked. `OnFailure` still pings, but it cannot
+  say "and you are holding an unprotected position". A second trigger in the EOD
+  `close_pnl` unit, which runs on its own timer, closes that.
+- **Unifying share-count coercion.** `gate/tickets.py:_as_share_count`,
+  `reconcile.py:_parse_fill` and `protection.py:_qty` are three near-copies of
+  the same rule. The DRY fix means editing reconcile's fill parsing, which does
+  not belong in a risk-control diff.
 
 The digest line is a **follow-up branch**, not scope here. It is a rendering
 change (`render.py`, `run_close`, the digest payload, ~30 lines across three

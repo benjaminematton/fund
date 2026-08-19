@@ -86,6 +86,8 @@ Expected: PASS. It only does `initialize` + `tools/list` — no order is placed,
 
 **If it FAILS** because `time_in_force` is absent: stop. Do not implement Task 2. Report to Benjamin — the design's change 1 is not deliverable as written and needs a different mechanism.
 
+The second live pin agreed in review — that a resting OTO stop leg is actually visible to `open_orders()` — lives in **Task 7**, not here. This task only does `initialize` + `tools/list`; a resting leg needs an order to exist, and Task 7 already places and cleans up exactly one.
+
 - [ ] **Step 3: Commit**
 
 ```bash
@@ -339,13 +341,17 @@ def test_installed_alpaca_py_exposes_the_read_apis_we_call():
     assert "status" in GetOrdersRequest.model_fields
 
 
-def test_open_positions_carries_symbol_qty_and_side_as_strings():
-    """Every numeric off this API is a string everywhere else in this repo;
-    the caller coerces and denies on anything it cannot read, so the source
-    must not quietly int() here and swallow a malformed qty."""
+def test_open_positions_unwraps_alpaca_enums():
+    """THE trap. alpaca-py returns (str, Enum) members and str(PositionSide.
+    LONG) is 'PositionSide.LONG', not 'long'. A plain str() here makes every
+    position unclassifiable and every stop unmatchable, so the protection
+    check would alert on a fully protected book every day — and a fake built
+    from plain strings would never show it. This fake uses the REAL enums."""
+    from alpaca.trading.enums import PositionSide
+
     class Trading:
         def get_all_positions(self):
-            return [_Clock(symbol="NVDA", qty="80", side="long")]
+            return [_Clock(symbol="NVDA", qty="80", side=PositionSide.LONG)]
     src = _bare_source()
     src._trading = Trading()
     assert src.open_positions() == [
@@ -368,14 +374,18 @@ def test_open_positions_propagates_broker_errors():
 def test_open_orders_requests_open_status_and_flattens_legs():
     """nested=False (the default) is deliberate: an OTO's stop leg must come
     back as its OWN row, because the leg is the protective order the check is
-    looking for. Grouped under the parent it would be invisible."""
+    looking for. Grouped under the parent it would be invisible. Built from
+    the REAL enums for the same reason as the positions test above."""
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
+
     seen = {}
     class Trading:
         def get_orders(self, filter=None):
             seen["status"] = str(filter.status)
             seen["nested"] = filter.nested
-            return [_Clock(symbol="NVDA", side="sell", qty="80",
-                           type="stop", status="new")]
+            seen["limit"] = filter.limit
+            return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="80",
+                           order_type=OrderType.STOP, status=OrderStatus.NEW)]
     src = _bare_source()
     src._trading = Trading()
     assert src.open_orders() == [
@@ -383,6 +393,24 @@ def test_open_orders_requests_open_status_and_flattens_legs():
          "type": "stop", "status": "new"}]
     assert "open" in seen["status"].lower()
     assert not seen["nested"]
+    assert seen["limit"] == 500
+
+
+def test_open_orders_raises_rather_than_returning_a_truncated_page():
+    """A full page means orders were dropped, and a dropped protective order
+    reads as 'nothing is protecting this'. The caller turns this raise into an
+    'unverified' alert — the honest answer. No silent caps."""
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
+
+    class Trading:
+        def get_orders(self, filter=None):
+            return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="1",
+                           order_type=OrderType.STOP, status=OrderStatus.NEW)
+                    for _ in range(500)]
+    src = _bare_source()
+    src._trading = Trading()
+    with pytest.raises(RuntimeError, match="page limit"):
+        src.open_orders()
 
 
 def test_open_orders_propagates_broker_errors():
@@ -445,7 +473,8 @@ In `market/source_alpaca.py`, after `cancel_order` (line 88):
         exactly as they arrive — orchestrator/protection.py coerces them and
         denies on anything it cannot read, which it cannot do if this method
         has already guessed. Deliberately does NOT swallow (see BrokerPort)."""
-        return [{"symbol": p.symbol, "qty": str(p.qty), "side": str(p.side)}
+        return [{"symbol": p.symbol, "qty": _enum_str(p.qty),
+                 "side": _enum_str(p.side)}
                 for p in self._trading.get_all_positions()]
 
     def open_orders(self) -> list[dict]:
@@ -454,14 +483,43 @@ In `market/source_alpaca.py`, after `cancel_order` (line 88):
         nested=False (the default) is the point: an OTO's stop leg comes back
         as its own top-level row, and that leg IS the protective order the
         check looks for. Grouped under its parent it would be invisible —
-        which is how the 2026-08-17 stop stayed dead for two sessions."""
+        which is how the 2026-08-17 stop stayed dead for two sessions.
+
+        RAISES if the response fills the page. A truncated list would drop
+        protective orders off the end and report covered positions as naked;
+        the caller turns this raise into an 'unverified' alert, which is the
+        honest answer. No silent caps."""
         from alpaca.trading.enums import QueryOrderStatus
         from alpaca.trading.requests import GetOrdersRequest
-        orders = self._trading.get_orders(
-            GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=False))
-        return [{"symbol": o.symbol, "side": str(o.side), "qty": str(o.qty),
-                 "type": str(o.order_type), "status": str(o.status)}
+        orders = list(self._trading.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, nested=False,
+            limit=_ORDER_PAGE_LIMIT)))
+        if len(orders) >= _ORDER_PAGE_LIMIT:
+            raise RuntimeError(
+                f"open-orders response hit the {_ORDER_PAGE_LIMIT}-row page"
+                " limit — cover cannot be computed from a truncated list")
+        return [{"symbol": o.symbol, "side": _enum_str(o.side),
+                 "qty": _enum_str(o.qty), "type": _enum_str(o.order_type),
+                 "status": _enum_str(o.status)}
                 for o in orders]
+```
+
+And above the class, next to the other module-level helpers:
+
+```python
+# alpaca-py returns (str, Enum) members, and str(OrderSide.SELL) is
+# 'OrderSide.SELL', NOT 'sell' — so a plain str() here would make every stop
+# order and every long position unmatchable, and orchestrator/protection.py
+# would alert on a fully protected book every single day. Tests that build
+# fakes out of plain strings cannot catch that, which is why
+# tests/test_source_alpaca_helpers.py builds them from the real enums.
+def _enum_str(v) -> str:
+    return str(getattr(v, "value", v))
+
+
+# One page, requested explicitly. Alpaca's list endpoint paginates, and a
+# silently truncated page reads as "nothing is protecting this".
+_ORDER_PAGE_LIMIT = 500
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
@@ -469,7 +527,7 @@ In `market/source_alpaca.py`, after `cancel_order` (line 88):
 Run: `.venv/bin/python -m pytest tests/test_source_alpaca_helpers.py -v`
 Expected: PASS
 
-Note: `_Clock` in the test file is a plain attribute bag, so `_Clock(type="stop")` sets `.type`, but the implementation reads `o.order_type`. Update the test's fake to set `order_type="stop"` if the assertion fails on that attribute — the real `Order` model has both `type` and `order_type`, and `order_type` is the canonical one.
+Note: `_Clock` is a plain attribute bag (`tests/test_source_alpaca_helpers.py:67`), so the fakes above set `order_type=`, matching what the implementation reads. The real `Order` model carries both `type` and `order_type`; `order_type` is the canonical one.
 
 - [ ] **Step 6: Run the full suite and commit**
 
@@ -535,25 +593,31 @@ def _stop(symbol="NVDA", qty="80", type="stop"):
 
 def _promised(conn, *, symbol="NVDA", stop_price=215.0, qty=80,
               tid="a3f90000-0000-4000-8000-000000000001",
-              closed_at="2026-08-17T20:00:00+00:00"):
+              submitted_at="2026-08-17T19:59:00+00:00",
+              status="filled", filled_qty=None):
     """A filled buy order and the ticket behind it — the fund's own record of
     what it opened and what protection it promised. `stop_price=None` is the
-    charter-sanctioned stopless buy (charters/pm.md:25)."""
+    charter-sanctioned stopless buy (charters/pm.md:25).
+
+    The ticket lands as 'consumed', the real post-execution state
+    (state/transition.py:13 — open -> consumed | expired). There is no
+    'filled' ticket state, and a fixture must not invent one."""
     cur = conn.execute(
         "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
         " invalidation, stop_price, status, created_at) VALUES"
         " ('2026-08-17', ?, 'buy', ?, 't', 'i', ?, 'executed', ?)",
-        (symbol, qty, stop_price, closed_at))
+        (symbol, qty, stop_price, submitted_at))
     conn.execute(
         "INSERT INTO tickets (id, decision_id, ticker, side, max_qty,"
         " stop_price, expires_at, status, created_at)"
-        " VALUES (?, ?, ?, 'buy', ?, ?, ?, 'filled', ?)",
-        (tid, cur.lastrowid, symbol, qty, stop_price, closed_at, closed_at))
+        " VALUES (?, ?, ?, 'buy', ?, ?, ?, 'consumed', ?)",
+        (tid, cur.lastrowid, symbol, qty, stop_price, submitted_at,
+         submitted_at))
     conn.execute(
         "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
-        " filled_qty, submitted_at, closed_at) VALUES"
-        " (?, ?, 'buy', ?, 'filled', ?, ?, ?)",
-        (tid, symbol, qty, qty, closed_at, closed_at))
+        " filled_qty, submitted_at) VALUES (?, ?, 'buy', ?, ?, ?, ?)",
+        (tid, symbol, qty, status, qty if filled_qty is None else filled_qty,
+         submitted_at))
     conn.commit()
 
 
@@ -610,12 +674,92 @@ def test_the_most_recent_buy_decides_the_promise(fund_db):
     """A symbol sold and re-bought without a stop is read on its CURRENT
     terms. Inheriting the older promise would alert forever on a position
     deliberately held stopless."""
-    _promised(fund_db, stop_price=215.0, closed_at="2026-08-17T20:00:00+00:00")
-    _promised(fund_db, stop_price=None, tid="b4f90000-0000-4000-8000-000000000002",
-              closed_at="2026-08-19T14:00:00+00:00")
+    _promised(fund_db, stop_price=215.0,
+              submitted_at="2026-08-17T19:59:00+00:00")
+    _promised(fund_db, stop_price=None,
+              tid="b4f90000-0000-4000-8000-000000000002",
+              submitted_at="2026-08-19T14:00:00+00:00")
     n = assert_positions_protected(
         fund_db, broker=Broker([_long()], []), now_iso=NOW)
     assert n == 0
+
+
+def test_a_partial_fill_that_was_canceled_still_counts_as_opening_it(fund_db):
+    """orchestrator/reconcile.py:197-206 records a timed-out partial as
+    CANCELED with filled_qty > 0, commenting that filled_qty > 0 is a REAL
+    position. Matching only on status='filled' would call that position
+    unknown-provenance and print an alert claiming the fund has no record of
+    opening it — which is false."""
+    _promised(fund_db, stop_price=215.0, status="canceled", filled_qty=30)
+    n = assert_positions_protected(
+        fund_db, broker=Broker([_long(qty="30")], []), now_iso=NOW)
+    assert n == 1
+    assert "stop at 215" in _alerts(fund_db)[0]
+    assert "no fund record" not in _alerts(fund_db)[0]
+
+
+def test_a_covered_symbol_and_a_naked_one_alert_exactly_once(fund_db):
+    """A mixed book is where cross-symbol matching bugs show up: MSFT's stop
+    must not cover NVDA, and NVDA's absence must not implicate MSFT."""
+    _promised(fund_db, symbol="NVDA")
+    _promised(fund_db, symbol="MSFT",
+              tid="c5f90000-0000-4000-8000-000000000003")
+    n = assert_positions_protected(
+        fund_db,
+        broker=Broker([_long("NVDA"), _long("MSFT")], [_stop("MSFT")]),
+        now_iso=NOW)
+    assert n == 1
+    assert "NVDA" in _alerts(fund_db)[0]
+    assert "MSFT" not in _alerts(fund_db)[0]
+
+
+# ---- the re-read: an OTO leg is created 'held' and can lag its parent ----
+
+class SlowLeg:
+    """A broker whose protective order only becomes visible on the second
+    read — the real shape of an OTO child just after its parent fills."""
+    def __init__(self, positions):
+        self._positions, self.reads = positions, 0
+    def open_positions(self): return self._positions
+    def open_orders(self):
+        self.reads += 1
+        return [_stop()] if self.reads > 1 else []
+
+
+def test_a_leg_that_appears_on_the_second_read_is_not_an_alert(fund_db):
+    """Without this, the fund alerts on every position it correctly protects,
+    on every day it actually trades — the alert channel would be dead inside
+    a week."""
+    _promised(fund_db)
+    naps = []
+    n = assert_positions_protected(
+        fund_db, broker=SlowLeg([_long()]), now_iso=NOW, sleep=naps.append)
+    assert n == 0
+    assert _alerts(fund_db) == []
+    assert naps == [3.0]
+
+
+def test_a_leg_that_is_still_missing_after_the_re_read_alerts(fund_db):
+    _promised(fund_db)
+    naps = []
+    n = assert_positions_protected(
+        fund_db, broker=Broker([_long()], []), now_iso=NOW, sleep=naps.append)
+    assert n == 1
+    assert naps == [3.0]
+
+
+def test_the_re_read_waits_once_per_run_not_once_per_position(fund_db):
+    """Three naked positions must not become three sequential waits inside a
+    live trading day."""
+    for i, sym in enumerate(("NVDA", "MSFT", "AAPL")):
+        _promised(fund_db, symbol=sym, tid=f"d{i}f90000-0000-4000-8000-00000000000{i}")
+    naps = []
+    n = assert_positions_protected(
+        fund_db,
+        broker=Broker([_long("NVDA"), _long("MSFT"), _long("AAPL")], []),
+        now_iso=NOW, sleep=naps.append)
+    assert n == 3
+    assert naps == [3.0]
 
 
 def test_a_sell_limit_is_not_protection(fund_db):
@@ -789,8 +933,14 @@ all (invariant 4)."""
 from __future__ import annotations
 
 import sqlite3
+from typing import Callable
 
 from slackkit.outbox import append_event
+
+# One short wait before calling a position naked. Matches reconcile_orders'
+# poll_s default. Deliberately NOT max_wait_s (90s): this sits on the critical
+# path of a live trading day, just before the digest posts.
+_RETRY_S = 3.0
 
 # Order types that actually cap a loss. A sell LIMIT is a take-profit: it caps
 # the upside and leaves the downside fully exposed, so it is not protection.
@@ -809,7 +959,13 @@ _UNKNOWN = object()
 def _qty(value) -> int | None:
     """Whole-share count from a string or int; None if unreadable. Broker
     numerics arrive as strings. Fractional, negative, bool and unparseable all
-    return None and therefore alert."""
+    return None and therefore alert.
+
+    Twin of gate/tickets.py:_as_share_count (which coerces adversarial AGENT
+    input) and a cousin of reconcile.py:_parse_fill. Kept separate on purpose:
+    this one coerces BROKER output and the two may legitimately diverge.
+    Unifying all three into a shared helper is a follow-up — it would mean
+    editing reconcile's fill parsing, which does not belong in this diff."""
     if isinstance(value, bool):
         return None
     try:
@@ -852,20 +1008,79 @@ def _promised_stop(conn: sqlite3.Connection, symbol: str):
     row = conn.execute(
         "SELECT t.stop_price AS stop_price FROM orders o"
         " JOIN tickets t ON t.id = o.client_order_id"
-        " WHERE o.symbol = ? AND o.side = 'buy' AND o.status = 'filled'"
-        " ORDER BY COALESCE(o.closed_at, o.submitted_at) DESC LIMIT 1",
+        " WHERE o.symbol = ? AND o.side = 'buy'"
+        "   AND (o.status = 'filled' OR o.filled_qty > 0)"
+        " ORDER BY o.submitted_at DESC LIMIT 1",
         (symbol,)).fetchone()
     if row is None:
         return _UNKNOWN
     return row["stop_price"]
 
 
+def _evaluate(conn: sqlite3.Connection, positions: list,
+              orders: list) -> list[str]:
+    """Alert texts for ONE snapshot of the account. Reads only; appends
+    nothing, so the caller can evaluate a snapshot, wait, and evaluate a
+    fresher one without having written anything it must retract."""
+    out: list[str] = []
+    for raw in positions:
+        p = raw if isinstance(raw, dict) else {}
+        symbol = str(p.get("symbol") or "?")
+        side = str(p.get("side") or "").lower()
+        held = _qty(p.get("qty"))
+        closing_side = _CLOSING_SIDE.get(side)
+        if held is None or closing_side is None:
+            out.append(f"{symbol} position UNVERIFIED — cannot read"
+                       f" side={p.get('side')!r} qty={p.get('qty')!r}, so"
+                       " whether it is protected is unknown")
+            continue
+        covered = _covering_qty(orders, symbol, closing_side)
+        if covered is None:
+            out.append(f"{symbol} {held} UNVERIFIED — a live order for it"
+                       " could not be read, so its cover cannot be confirmed")
+            continue
+        if covered >= held:
+            continue
+        promised = _promised_stop(conn, symbol)
+        if promised is _UNKNOWN:
+            out.append(f"{symbol} {held} is held with NO live protective order"
+                       " and no fund record of opening it — provenance"
+                       " unknown, so whether it should be protected cannot be"
+                       " established")
+        elif promised is not None:
+            # "NO live protective order (30 of 80 stopped)" contradicts
+            # itself. Say which of the two situations this actually is.
+            shortfall = ("the broker has NO live protective order" if not covered
+                         else f"the broker covers only {covered} of {held}"
+                              " shares")
+            out.append(f"{symbol} {held} was ticketed with a stop at"
+                       f" {promised} but {shortfall} — the position is exposed"
+                       " and no code path will protect it; place or restore a"
+                       " stop manually")
+        # promised is None: the PM opened this without a stop on purpose
+        # (charters/pm.md:25). Standing exposure, not a fault — reported in
+        # the EOD digest, not as an alert.
+    return out
+
+
 def assert_positions_protected(conn: sqlite3.Connection, *, broker,
-                               now_iso: str) -> int:
-    """Alert on every open position without a live protective order covering
-    it. Returns the number of alerts appended. Never raises."""
+                               now_iso: str,
+                               sleep: Callable[[float], None] | None = None
+                               ) -> int:
+    """Alert on every open position whose promised stop is not live at the
+    broker. Returns the number of alerts appended. Never raises."""
+    nap = sleep or (lambda _s: None)
+
     def alert(text: str) -> None:
         append_event(conn, "alert", {"text": text}, now_iso)
+
+    def why(e: Exception) -> str:
+        # The type alone ("ConnectionError") is not actionable at 16:05 on a
+        # day nobody is reading logs; "401 unauthorized" is.
+        return f"{type(e).__name__}: {str(e)[:120]}"
+
+    def read_orders() -> list:
+        return list(broker.open_orders())
 
     if broker is None:
         alert("position protection UNVERIFIED — no broker wired into the run;"
@@ -875,57 +1090,37 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
         positions = list(broker.open_positions())
     except Exception as e:
         alert("position protection UNVERIFIED — could not read positions"
-              f" ({type(e).__name__}); a held position could be unprotected"
-              " and nothing would say so")
+              f" ({why(e)}); a held position could be unprotected and nothing"
+              " would say so")
         return 1
     if not positions:
         return 0
-    try:
-        orders = list(broker.open_orders())
-    except Exception as e:
-        alert("position protection UNVERIFIED — holding"
-              f" {len(positions)} position(s) but could not read live orders"
-              f" ({type(e).__name__}); cover is unknown, not confirmed")
-        return 1
+    def unread(how: str, e: Exception) -> str:
+        return (f"position protection UNVERIFIED — holding {len(positions)}"
+                f" position(s) but could not {how} live orders ({why(e)});"
+                " cover is unknown, not confirmed")
 
-    alerts = 0
-    for p in positions:
-        symbol = str((p or {}).get("symbol") or "?")
-        side = str((p or {}).get("side") or "").lower()
-        held = _qty((p or {}).get("qty"))
-        closing_side = _CLOSING_SIDE.get(side)
-        if held is None or closing_side is None:
-            alert(f"{symbol} position UNVERIFIED — cannot read"
-                  f" side={(p or {}).get('side')!r}"
-                  f" qty={(p or {}).get('qty')!r}, so whether it is protected"
-                  " is unknown")
-            alerts += 1
-            continue
-        covered = _covering_qty(orders, symbol, closing_side)
-        if covered is None:
-            alert(f"{symbol} {held} UNVERIFIED — a live order for it could not"
-                  " be read, so its cover cannot be confirmed")
-            alerts += 1
-            continue
-        if covered >= held:
-            continue
-        promised = _promised_stop(conn, symbol)
-        if promised is _UNKNOWN:
-            alert(f"{symbol} {held} is held with NO live protective order and"
-                  " no fund record of opening it — provenance unknown, so"
-                  " whether it should be protected cannot be established")
-            alerts += 1
-        elif promised is not None:
-            alert(f"{symbol} {held} was ticketed with a stop at {promised} but"
-                  f" the broker has NO live protective order ({covered} of"
-                  f" {held} shares stopped) — the position is exposed and no"
-                  " code path will protect it; place or restore a stop"
-                  " manually")
-            alerts += 1
-        # promised is None: the PM opened this without a stop on purpose
-        # (charters/pm.md:25). Standing exposure, not a fault — reported in
-        # the EOD digest, not as an alert.
-    return alerts
+    try:
+        problems = _evaluate(conn, positions, read_orders())
+    except Exception as e:
+        alert(unread("read", e))
+        return 1
+    if problems:
+        # An OTO stop leg is created 'held' and can lag its parent in the API
+        # by moments — and this runs immediately after reconciliation, which
+        # is exactly when a fill just happened. Without one short wait and a
+        # re-read, the fund would alert on every position it correctly
+        # protects, on every day it actually trades. Once per run, never once
+        # per position.
+        nap(_RETRY_S)
+        try:
+            problems = _evaluate(conn, positions, read_orders())
+        except Exception as e:
+            alert(unread("re-read", e))
+            return 1
+    for text in problems:
+        alert(text)
+    return len(problems)
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -969,6 +1164,13 @@ class _FlatBroker:
     about the stage machine; protection has its own file."""
     def open_positions(self): return []
     def open_orders(self): return []
+
+
+class _NakedBroker:
+    """Holds NVDA 80 with nothing protecting it — the 2026-08-19 account."""
+    def open_positions(self):
+        return [{"symbol": "NVDA", "qty": "80", "side": "long"}]
+    def open_orders(self): return []
 ```
 
 Then replace `broker=None` with `broker=_FlatBroker()` at all four call sites (lines 363, 525, 546, 563).
@@ -989,16 +1191,11 @@ def test_run_day_alerts_when_a_position_has_no_protective_order(fund_db,
     reaches Slack), via the unknown-provenance path: the DB here has no filled
     buy for NVDA, which fails closed. The promise logic itself is covered in
     tests/test_protection.py."""
-    class Naked:
-        def open_positions(self):
-            return [{"symbol": "NVDA", "qty": "80", "side": "long"}]
-        def open_orders(self): return []
-
     slack = FakeSlack()
     ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock, slack=slack,
                    market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                    id_factory=lambda: TID, journals_root=tmp_path / "journals")
-    run_day(ctx, execution_turn=None, broker=Naked(), sleep=lambda s: None)
+    run_day(ctx, execution_turn=None, broker=_NakedBroker(), sleep=lambda s: None)
 
     texts = _alert_texts(fund_db)
     assert any("NVDA" in t and "NO live protective order" in t for t in texts)
@@ -1015,18 +1212,13 @@ def test_the_protection_alert_reaches_slack_even_when_close_is_done(fund_db,
     """The assertion is not a stage, so a resumed day re-checks — but the
     close stage IS a stage, and a 'done' close returns before draining. Without
     an explicit drain the alert would sit in the outbox until the next run."""
-    class Naked:
-        def open_positions(self):
-            return [{"symbol": "NVDA", "qty": "80", "side": "long"}]
-        def open_orders(self): return []
-
     def day():
         ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock,
                        slack=FakeSlack(),
                        market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                        id_factory=lambda: TID,
                        journals_root=tmp_path / "journals")
-        run_day(ctx, execution_turn=None, broker=Naked(), sleep=lambda s: None)
+        run_day(ctx, execution_turn=None, broker=_NakedBroker(), sleep=lambda s: None)
         return ctx
 
     day()
@@ -1060,9 +1252,11 @@ Then in `run_day`, between the reconciliation stage and the close stage:
     # skipped as 'done'. Drained explicitly because a resumed day can find
     # close already 'done', and run_stage returns before draining — which
     # would leave a naked-position alert sitting in the outbox until the
-    # next run.
+    # next run. `sleep` is threaded through for the one short re-read a
+    # just-created OTO leg needs to become visible.
     now = iso(ctx.clock.now())
-    if assert_positions_protected(ctx.conn, broker=broker, now_iso=now):
+    if assert_positions_protected(ctx.conn, broker=broker, now_iso=now,
+                                  sleep=sleep):
         drain(ctx.conn, ctx.slack, now)
     run_stage(ctx, "close", lambda: run_close(ctx))
 ```
@@ -1310,6 +1504,19 @@ Immediately after the existing `assert stop_price in leg_stops, (...)` block, ad
     assert str(order.get("time_in_force")).lower() == "gtc", order
     for leg in (order.get("legs") or []):
         assert str(leg.get("time_in_force")).lower() == "gtc", leg
+
+    # And the leg is VISIBLE to the protection check. open_orders() filters
+    # QueryOrderStatus.OPEN; a resting OTO child sits in 'held', and if
+    # Alpaca's OPEN filter excluded it, orchestrator/protection.py would
+    # report every correctly-stopped position as naked. Offline tests cannot
+    # settle this — it is server-side semantics, the same class of assumption
+    # that caused 2026-08-17.
+    from market.source_alpaca import AlpacaSource
+    live = [o for o in AlpacaSource().open_orders() if o["symbol"] == "AAPL"]
+    assert any(o["type"].startswith("stop") and o["side"] == "sell"
+               for o in live), (
+        "the resting stop leg is invisible to open_orders() — protection.py "
+        f"would call this position naked. Saw: {live}")
 ```
 
 - [ ] **Step 2: Run it against paper**
@@ -1321,6 +1528,7 @@ Expected: PASS. It places a real paper order and cancels it.
 
 - **The leg comes back `day` while the parent is `gtc`.** The gate rule is necessary but not sufficient — Alpaca is not handing the lifetime down. Stop and report; the design needs a second mechanism.
 - **Alpaca rejects `gtc` on an OTO market parent (422).** The rule is not deliverable as written. Stop and report; Task 2 must be reconsidered.
+- **The resting leg does not come back from `open_orders()`.** Alpaca's `OPEN` status filter excludes `held`, so the protection check cannot see any OTO stop leg and would report every correctly-stopped position as naked. Fix is to widen the filter (or drop it and filter client-side); stop and report before shipping the assertion.
 - **The seat never sends `gtc` and the gate denies it.** This is the one to watch. No charter, seat config, or spec sets `time_in_force` — by design, the denial message is the only thing teaching the seat, and it must learn within the turn. If the seat cannot get there, the fix is one line in `charters/exec.md`, **which contradicts a stated non-goal of this work and therefore needs Benjamin's explicit sign-off before it is written.** Do not add it unilaterally.
 
 - [ ] **Step 3: Commit**
