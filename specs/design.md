@@ -61,6 +61,7 @@ Assembled from proven repos: role structure and debates from TradingAgents, Alpa
 | CEO (human) | Direction, approvals, capital allocation, reviews | — | — | veto only |
 | Portfolio Manager | Reads research + debate, issues buy/sell/hold + size per ticker | strong | read-only | no |
 | Fundamentals Analyst | Financials, valuation, filings → daily report + signal | fast | `stock-data,news,account` | no |
+| ↳ **DEFERRED** — Alpaca carries no financial-statement data, and quarterly evidence does not fit a daily research stage. Needs an external source *and* a non-daily stage before it can be staffed. See `docs/adr/0001`. |||||
 | Technical Analyst | Price action, momentum, levels → daily report + signal | fast | `stock-data,account` | no |
 | News/Sentiment Analyst | News flow, sentiment → reports + intraday alerts | fast | `news,stock-data` | no |
 | Macro Analyst | Rates, Fed, sector rotation → daily context report | fast | `stock-data` + web | no |
@@ -207,8 +208,8 @@ fund/
 Phases and their checkable done-criteria live in `specs/acceptance.md`. Summary:
 
 1. **Plumbing (1 agent).** Test infra (Clock, FakeSlack, recorder/replay) + Execution Trader alone: scheduled loop, Alpaca paper via MCP, ticket-gated hook, idempotent orders, everything posted to `#trade-log`. Proves SDK ↔ Slack ↔ Alpaca end to end.
-2. **The desk (4 agents).** PM + fundamentals + technical + real gate. Full daily cycle: research → decision → gate → execution. Journals and nightly reflection ship here — memory is load-bearing.
-3. **The firm (all seats).** Bull/bear debates, risk persona, critic (draft→critique→final decision flow), news + macro, ops (standup/digest/scoreboard/invalidation watch), CEO approval flow, event-driven interrupts. Until the critic seat exists (phases 1–2), the Decision stage collapses to a single 11:00 slot: PM posts and submits in one turn.
+2. **The desk (4 agents).** PM + technical + news/sentiment + real gate (fundamentals deferred — see `docs/adr/0001`). Full daily cycle: research → decision → gate → execution. Journals and nightly reflection ship here — memory is load-bearing.
+3. **The firm (all seats).** Bull/bear debates, risk persona, critic (draft→critique→final decision flow), macro, ops (standup/digest/scoreboard/invalidation watch), CEO approval flow, event-driven interrupts. Until the critic seat exists (phases 1–2), the Decision stage collapses to a single 11:00 slot: PM posts and submits in one turn.
 4. **Running it.** Chaos tests, week-long sim, 30-day paper burn-in; tune charters from scoreboard data, adjust watchlist and limits, add/retire seats. No new infrastructure.
 5. **The lab.** Strategy platform per `specs/strategy.md` + `specs/strategy-contracts.md`. `fundbt/`, `stratgate/`, and `calibration/` arrive pre-built and tested from the starter kit — the work here is integration: expose `run_backtest` via the fund MCP server (seats), invoke gate evaluators from the orchestrator only, reconcile the trial registry into the fund DB, add incubation/shadow P&L, allocation ramps and kill rules. First strategy through the pipe: family F1 (liquid mean reversion). The discretionary desk (phases 2–3) keeps running; validated strategies earn sleeves alongside it.
 
