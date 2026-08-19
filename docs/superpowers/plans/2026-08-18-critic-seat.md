@@ -1074,7 +1074,7 @@ This task also fixes a live trap: `state/db.py` only applies `schema.sql` when t
   - `state.models.StrategySpec` — pydantic model, fields exactly the `SPEC_FIELDS` set from Task 1. `universe`, `signal_rule`, `param_ranges`, `predicted` are `dict`; everything else scalar.
   - `state.models.SpecCritique(spec_id: str, verdict: Literal["clear","objections"], objections: list[str], seat: str)`.
   - `state.specs.insert_strategy_spec(conn, spec: StrategySpec, now_iso: str) -> str` — returns the computed `spec_id`; idempotent (`INSERT OR IGNORE`).
-  - `state.specs.specs_awaiting_critique(conn) -> list[dict]` — every `strategy_specs` row with no `strategy_critiques` row, oldest first, JSON columns already decoded.
+  - `state.specs.specs_awaiting_critique(conn, *, limit=1) -> list[dict]` — `strategy_specs` rows with no `strategy_critiques` row, oldest first, JSON columns already decoded. Defaults to ONE: the design assigns one turn per spec, so a brief carrying the backlog would put N reviews in a turn budgeted for one.
 - Task 3 consumes both models and both functions. Task 5 calls `insert_strategy_spec` from the eval fixture.
 
 - [ ] **Step 1: Write the failing test**
@@ -1145,6 +1145,23 @@ def test_schema_reaches_a_db_that_predates_the_new_tables(tmp_path):
     c2.close()
 
 
+def test_a_complete_db_does_not_rerun_the_schema_script(tmp_path, monkeypatch):
+    """connect() runs per TOOL CALL (agents/seats.py:44 hands
+    build_fund_server a conn_factory), so an unconditional executescript would
+    take a write lock on every submit_signal and every gate hook. One
+    sqlite_master query decides; the script runs only when a table is
+    missing."""
+    import sqlite3 as _sq
+    path = tmp_path / "fund.sqlite"
+    connect(path).close()                       # first open builds everything
+    calls = []
+    original = _sq.Connection.executescript
+    monkeypatch.setattr(_sq.Connection, "executescript",
+                        lambda self, sql: (calls.append(sql), original(self, sql))[1])
+    connect(path).close()
+    assert calls == [], "schema re-applied on a database that was already complete"
+
+
 def test_reopening_a_db_never_wipes_data(tmp_path):
     path = tmp_path / "fund.sqlite"
     c = connect(path)
@@ -1184,6 +1201,24 @@ def test_awaiting_critique_decodes_json_and_drops_reviewed_specs(conn):
     assert [p["spec_id"] for p in pending] == [sid]
     assert pending[0]["universe"]["index"] == "Russell 1000"
     assert pending[0]["param_ranges"]["sigma"] == [1.0, 2.5, 0.25]
+
+
+def test_a_backlog_yields_one_spec_per_turn_oldest_first(conn):
+    """One turn reviews one spec. A brief carrying the whole backlog would put
+    N reviews in a turn budgeted for one, and would make the seat's max_turns
+    a function of research throughput — so the ceiling measured on a one-spec
+    eval case would redden on the first busy day."""
+    older = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    newer = insert_strategy_spec(conn, StrategySpec(**dict(SPEC, search_budget=25)),
+                                 "2026-07-07T15:00:00+00:00")
+    assert [p["spec_id"] for p in specs_awaiting_critique(conn)] == [older]
+    assert {p["spec_id"] for p in specs_awaiting_critique(conn, limit=10)} == \
+        {older, newer}
+    conn.execute(
+        "INSERT INTO strategy_critiques (spec_id, verdict, objections, seat,"
+        " created_at) VALUES (?, 'clear', '[]', 'critic', ?)", (older, NOW))
+    conn.commit()
+    assert [p["spec_id"] for p in specs_awaiting_critique(conn)] == [newer]
     conn.execute(
         "INSERT INTO strategy_critiques (spec_id, verdict, objections, seat,"
         " created_at) VALUES (?, 'clear', '[]', 'critic', ?)", (sid, NOW))
@@ -1294,19 +1329,38 @@ In `state/db.py`, replace lines 18-22:
 with:
 
 ```python
-    # Applied on EVERY open, not just first creation. The old `tickets`
-    # sentinel meant a table added to schema.sql later never reached an
-    # existing DB — fresh eval trial DBs would have it and the droplet's live
-    # /var/lib/fund/fund.sqlite would not, which is a silent divergence
-    # between what is tested and what runs. Every statement is IF NOT EXISTS,
-    # so this is idempotent and never touches data.
+    # Guard on EVERY expected table, not one sentinel. The old `tickets` check
+    # meant a table added to schema.sql later never reached an existing DB —
+    # fresh eval trial DBs would have it and the droplet's live
+    # /var/lib/fund/fund.sqlite would not, a silent divergence between what is
+    # tested and what runs. `_TABLES` is parsed from the schema itself, so a
+    # new table is picked up with no second list to keep in sync.
     #
-    # This handles new TABLES only: CREATE TABLE IF NOT EXISTS is a no-op
-    # against a table that already exists, so a new COLUMN needs an ALTER and
-    # is not covered here.
-    conn.executescript(_SCHEMA.read_text())
-    conn.commit()
+    # One cheap query, and the script runs only when something is missing:
+    # connect() is called per TOOL CALL (agents/seats.py:44 hands
+    # build_fund_server a conn_factory), so an unconditional executescript
+    # would take a write lock on every submit_signal and every gate hook.
+    #
+    # New TABLES only. CREATE TABLE IF NOT EXISTS is a no-op against an
+    # existing table, so a new COLUMN needs an ALTER and is not covered here.
+    have = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if not _TABLES <= have:
+        conn.executescript(_SCHEMA.read_text())
+        conn.commit()
     return conn
+```
+
+and add the parsed table set beside `_SCHEMA` at the top of the module:
+
+```python
+import re
+
+_SCHEMA = Path(__file__).with_name("schema.sql")
+# Parsed, not restated: a hand-maintained list is a second source of truth
+# that drifts the first time someone adds a table and forgets this line.
+_TABLES = frozenset(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)",
+                               _SCHEMA.read_text()))
 ```
 
 > **Coordination — `connect()` has a second editor.** The `improvement-loops` plan adds `state/migrations.py` (idempotent `ALTER TABLE` for existing databases) and calls `migrations.apply(conn)` from the end of `connect()`. The two halves compose and do not compete: this change handles new tables, theirs handles new columns. Agreed order is **apply schema, then migrate**, and this task lands first — so expect their one-line call to arrive at the end of `connect()`, after the `executescript`. Do not remove it if it is already there.
@@ -1416,20 +1470,37 @@ def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
     return sid
 
 
-def specs_awaiting_critique(conn: sqlite3.Connection) -> list[dict]:
-    """Every registered spec with no G1 verdict yet, oldest first.
+def specs_awaiting_critique(conn: sqlite3.Connection, *,
+                            limit: int = 1) -> list[dict]:
+    """Registered specs with no G1 verdict yet, oldest first.
 
     The absence of a `strategy_critiques` row is the whole selector: at G1 a
     spec with no verdict has not been reviewed, and nothing anywhere writes a
-    default row (the design's inverted default). JSON columns are decoded here
-    so the tool layer hands the seat structured data, never a string it might
-    try to parse.
+    default row (the design's inverted default).
+
+    DEFAULT LIMIT 1, deliberately. The design has the orchestrator assign the
+    Critic a turn when a spec enters SPEC — one turn per spec — so a brief
+    carrying the whole backlog would put N reviews in a turn budgeted for one.
+    It would also make max_turns a function of research throughput rather than
+    of the seat, so the ceiling measured against a one-spec eval case would
+    redden on the first busy day. A future batched turn is a `limit=` argument,
+    not a refactor.
+
+    KNOWN DIVERGENCE from strategy-contracts.md §4: the canonical selector for
+    a reviewable spec is `strategies.state == 'SPEC'`, but the `strategies`
+    lifecycle table is Phase-5 work and is deliberately not created here.
+    "Has no critique row" is equivalent while nothing else writes either table,
+    and is the condition to replace when `strategies` lands.
+
+    JSON columns are decoded here so the tool layer hands the seat structured
+    data, never a string it might try to parse.
     """
     rows = conn.execute(
         "SELECT s.* FROM strategy_specs s"
         " LEFT JOIN strategy_critiques c ON c.spec_id = s.spec_id"
         " WHERE c.spec_id IS NULL"
-        " ORDER BY s.created_at, s.spec_id").fetchall()
+        " ORDER BY s.created_at, s.spec_id"
+        " LIMIT ?", (limit,)).fetchall()
     out = []
     for row in rows:
         spec = dict(row)
@@ -1442,7 +1513,7 @@ def specs_awaiting_critique(conn: sqlite3.Connection) -> list[dict]:
 - [ ] **Step 7: Run the tests**
 
 Run: `.venv/bin/python3 -m pytest tests/test_state_specs.py -v`
-Expected: 10 passed.
+Expected: 12 passed.
 
 - [ ] **Step 8: Run the full suite — `state/db.py` is under everything**
 
@@ -1455,6 +1526,8 @@ In `specs/strategy-contracts.md` §2, immediately after the `strategy_specs` blo
 
 ```markdown
 `strategies`, `sleeves`, and `shadow_fills` have **no implementing code yet** — they are Phase-5 integration work. `strategy_specs` and `strategy_critiques` are live in `state/schema.sql`; their write paths are `state/specs.py` and `submit_spec_critique` (§3.4) respectively. Nothing yet READS `strategy_critiques` — G1 enforcement is a separate change.
+
+**Known divergence, to be closed when `strategies` lands.** §4 makes `strategies.state == 'SPEC'` the canonical condition for a spec awaiting review, but that table does not exist yet. `state/specs.py:specs_awaiting_critique` therefore selects on the absence of a `strategy_critiques` row instead. The two are equivalent while nothing but `submit_strategy_spec` writes `strategy_specs` and nothing but `submit_spec_critique` writes `strategy_critiques`; the Phase-5 change that creates `strategies` should replace the selector rather than add a second one.
 ```
 
 - [ ] **Step 10: Commit**
@@ -1863,11 +1936,12 @@ In `build_fund_server`, add both `@tool` wrappers after `submit_decision`:
 
 ```python
     @tool("get_spec_brief",
-          "Critic only. Read-only: every registered strategy spec still"
-          " awaiting your G1 verdict, plus your own recent journal entries."
+          "Critic only. Read-only: the strategy spec awaiting your G1 verdict"
+          " (the oldest unreviewed one — you review one per turn), plus your"
+          " own recent journal entries."
           " Always call it once, first, before anything else in your turn —"
           " the stage prompt names no spec, so this is where your whole"
-          " context comes from. Each spec carries its hypothesis (the claimed"
+          " context comes from. The spec carries its hypothesis (the claimed"
           " economic mechanism) and its signal_rule (the coded rule)."
           " `unavailable` names any section that could not be built; treat a"
           " missing section as absent evidence, never as permission to guess."
@@ -1886,7 +1960,8 @@ In `build_fund_server`, add both `@tool` wrappers after `submit_decision`:
 
     @tool("submit_spec_critique",
           "Critic only. Record your G1 mechanism-alignment verdict for one"
-          " spec. Call exactly once per spec in your brief. Written once —"
+          " spec. Call it exactly once, for the spec in your brief. Written"
+          " once —"
           " there is no revising it. A spec with no verdict does not advance,"
           " so skipping the call is not the same as clearing it.",
           {"type": "object",
@@ -1984,7 +2059,7 @@ In `specs/strategy-contracts.md`, add a new §3.4 immediately after §3.3:
 
 ```python
 @tool("submit_spec_critique",
-      "Critic only. Record your G1 mechanism-alignment verdict for one spec. Call exactly once per spec in your brief. Written once — there is no revising it. A spec with no verdict does not advance, so skipping the call is not the same as clearing it.",
+      "Critic only. Record your G1 mechanism-alignment verdict for one spec. Call it exactly once, for the spec in your brief. Written once — there is no revising it. A spec with no verdict does not advance, so skipping the call is not the same as clearing it.",
       {"type": "object",
        "properties": {
          "spec_id":    {"type": "string"},
@@ -2128,7 +2203,7 @@ Two duties. **Trade pipeline:** review the PM's draft verdict for each contested
 - Slack: post your review as a reply in the relevant thread (the ticker's debate thread, or the spec's #research thread), before recording it.
 - `get_spec_brief` — G1 only. Call it exactly once, first. It writes nothing.
 - `submit_critique` — trade turns. End every critique turn by calling it exactly once per assigned ticker. A turn without the call counts as CLEAR (advisory seats never stall the trading day).
-- `submit_spec_critique` — G1 turns. End every G1 turn by calling it exactly once per spec in your brief. **A turn without the call does NOT count as clear — the spec stops.** The verdict is written once; there is no revising it.
+- `submit_spec_critique` — G1 turns. Your brief carries ONE spec; end every G1 turn by calling this exactly once, for that spec. **A turn without the call does NOT count as clear — the spec stops.** The verdict is written once; there is no revising it.
 
 ## Output contract
 **Trade:** Slack reply (≤150 words): `CRITIQUE <TICKER>: CLEAR` or `CRITIQUE <TICKER>: <n> OBJECTION(S)` followed by numbered objections, each one sentence, each naming the specific defect and the evidence it conflicts with. Then the matching `submit_critique` call — verdict `clear` or `objections`, objections copied verbatim (≤3, each ≤200 chars).
@@ -2596,7 +2671,7 @@ PROMPT_TEMPLATES = {
     # template only for the seats run_day.py actually drives.
     "critic": ("G1 review turn. Start by calling get_spec_brief, then follow"
                " your charter and end by calling submit_spec_critique exactly"
-               " once per spec in your brief."),
+               " once, for the spec in your brief."),
 }
 
 
@@ -2634,9 +2709,14 @@ def test_stage_prompt_is_verbatim_the_one_production_sends():
 
     raw = (ROOT / "scripts" / "run_day.py").read_text()
     src = norm(raw)
-    production_seats = set(
-        re.findall(r'"\w+": "(\w+)"',
-                   re.search(r"SEATS = \{(.*?)\}", raw, re.S).group(1)))
+    # SEATS values are TUPLES of seat names, one stage to many seats
+    # ({"research": ("analyst", "news"), ...}). Parsed as "every quoted word in
+    # the block, minus the keys" so this reads both that shape and the bare
+    # string it used to be — the parse should not be the thing that breaks when
+    # a stage gains a seat, since gaining a seat is exactly what it must catch.
+    block = re.search(r"SEATS = \{(.*?)\}", raw, re.S).group(1)
+    production_seats = (set(re.findall(r'"(\w+)"', block))
+                        - set(re.findall(r'"(\w+)"\s*:', block)))
     assert production_seats, "could not read SEATS out of run_day.py"
     assert production_seats <= set(PROMPT_TEMPLATES), \
         f"run_day.py drives {production_seats - set(PROMPT_TEMPLATES)} with" \
@@ -3426,5 +3506,7 @@ Add every dev round's traces directory that exists (`critic-v2-dev2`, `critic-v2
 ## After this plan
 
 - **Gate passed** → the G1 gate plan is unblocked: `stratgate.evaluate_g1()`, `run_backtest` check 0, the `SPEC → BACKTEST` precondition and the two new `SPEC → REJECTED` triggers, the orchestrator's G1 stage, and the remaining spec edits listed in the design's *Spec changes* section (§4 state machine, §5 failure semantics).
+
+  **Budget for the sim-day blast radius there, not here.** This plan adds no stage to `scripts/run_day.py`, so `make sim-day` is untouched by it. The G1 gate plan does add one, and the `second-analyst-seat` branch measured what that costs when a second seat joined the research stage: turn counters, cost rows, two Slack digest cost strings, the signal assertion, the PM brief's signal list, and three outbox counts in `tests/test_audit_day.py` — each fix uncovering the next, because the first assertion short-circuits the rest. Also note `tests/test_sim_day.py`'s `_turn` helper assigned rather than accumulated per stage, so two turns in one stage silently dropped the first seat's tool calls; that is fixed on their branch, and it fails as a confusing "expected one brief, got 0" if you meet it unfixed.
 - **Gate failed** → nothing downstream ships. The finding stands on its own.
 - **Either way, still open:** the trade-pipeline Critic. `run_decision` in `orchestrator/daily.py` still writes `no_critic_seat` rows, and wiring the real seat in requires resolving `specs/contracts.md` §4's Slack-only PM draft against CLAUDE.md invariant 6. That is a design conversation, not an implementation task.
