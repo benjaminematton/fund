@@ -14,6 +14,7 @@ document is arranged around that.
 | `/opt/fund` | git checkout + `.venv` — disposable, re-clonable |
 | `/var/lib/fund/fund.sqlite` | **the fund** — outside the checkout, so no re-clone or `git clean -x` can reach it |
 | `/var/lib/fund/journals/` | agent memory (`FUND_JOURNALS`) |
+| `/var/lib/fund/traces/` | one trace per seat turn (`FUND_TRACES`) — the corpus every day-review reads |
 | `/var/lib/fund/backups/` | dated snapshots, kept indefinitely |
 | `/etc/fund/env` | job secrets, `0600 fund:fund` |
 | `/etc/fund/alert-env` | alert secrets only, `0600 fund:fund` |
@@ -68,7 +69,7 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\n' > /etc/systemd/journ
 systemctl restart systemd-journald
 
 apt-get update && apt-get install -y git curl sqlite3 jq rsync
-mkdir -p /var/lib/fund/journals /var/lib/fund/backups /etc/fund /opt/fund
+mkdir -p /var/lib/fund/journals /var/lib/fund/traces /var/lib/fund/backups /etc/fund /opt/fund
 chown -R fund:fund /var/lib/fund /opt/fund
 chmod 750 /var/lib/fund && chmod 700 /etc/fund
 ```
@@ -101,15 +102,26 @@ uvx "$(.venv/bin/python3 -c 'from agents.seats import ALPACA_MCP_SPEC as s; prin
 
 ### Secrets
 
-`/etc/fund/env` is the Mac's `.env` with **`FUND_DB` rewritten to an absolute
-path**. It is relative in the original and works there only because launchd sets
-`WorkingDirectory`; under systemd it would resolve against `/opt/fund` and put
+`/etc/fund/env` is the Mac's `.env` with **every state path rewritten absolute**.
+They are relative in the original and work there only because launchd sets
+`WorkingDirectory`; under systemd they would resolve against `/opt/fund` and put
 the fund inside the checkout.
 
 ```
 FUND_DB=/var/lib/fund/fund.sqlite
 FUND_JOURNALS=/var/lib/fund/journals
+FUND_TRACES=/var/lib/fund/traces
 ```
+
+**`FUND_TRACES` unset records nothing.** It is deliberately not in
+`REQUIRED_ENV` — an older env file runs the day exactly as before rather than
+refusing to start over an evidence feature — which also means a missing line
+here fails silently. Both units that need it read this file
+(`fund-daily.service` writes the traces, `fund-backup.service` archives them),
+so one line covers both. A day that recorded nothing is visible in the log:
+`run_day` prints `recording seat traces under <path>` when the sink is live.
+Traces cannot be reconstructed afterwards, so the cost of forgetting is the
+corpus itself.
 
 `/etc/fund/env` also carries the heartbeat target, which is why the units can
 stay free of any hardcoded monitoring URL:
@@ -460,6 +472,7 @@ ssh root@HOST 'systemctl list-timers "fund-*" --no-pager'    # verify gone FIRST
 ssh root@HOST "sqlite3 /var/lib/fund/fund.sqlite \".backup '/tmp/back.sqlite'\""
 scp root@HOST:/tmp/back.sqlite state/fund.sqlite
 rsync -az root@HOST:/var/lib/fund/journals/ journals/
+rsync -az root@HOST:/var/lib/fund/traces/ traces/
 
 mv .env.MIGRATED-TO-VM .env
 cp ~/fund-rollback/com.fund.daily.plist ~/Library/LaunchAgents/
