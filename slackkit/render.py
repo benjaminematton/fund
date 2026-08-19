@@ -269,6 +269,35 @@ def _render_model_fallback_used(payload: dict) -> Post:
         _context("Rows from this seat name the configured model")])
 
 
+def _render_spec_critique(payload: dict) -> Post:
+    """The Critic's G1 verdict on one strategy spec.
+
+    Carries a face, unlike `scorecard` and `model_fallback_used`. Those are
+    machinery reporting on models; `objections` is the model's own prose, the
+    same class of content as a signal's summary or a decision's thesis — and
+    the rule ICONS states is that a reader must be able to tell a model's
+    words from code that cannot be argued with.
+
+    Posts to #research, not #risk: at G1 nothing has been risked yet. A clear
+    verdict is announced as flatly as an objecting one — the seat's value
+    depends on objections being rare, so dramatizing them invites the
+    manufactured ones its charter forbids."""
+    spec_id, verdict = payload["spec_id"], payload["verdict"]
+    seat = _seat(payload.get("seat", "critic"))
+    username, icon = _persona(payload.get("seat", "critic"))
+    objections = payload.get("objections") or []
+    headline = (f"G1 *{verdict}* · `{spec_id}`" if verdict == "clear"
+                else f"G1 *{verdict}* ({len(objections)}) · `{spec_id}`")
+    body = "\n".join(f"> {o}" for o in objections)
+    blocks = [_section(headline)]
+    if body:
+        blocks.append(_section(body))
+    blocks.append(_context(seat, "mechanism alignment"))
+    return Post("#research", f"*{seat}* · {headline}" + (f"\n{body}" if body
+                                                         else ""),
+                blocks, username, icon)
+
+
 def _render_projection_error(payload: dict) -> Post:
     return Post("#risk",
                 f"⚠️ projection error: event {payload['event_id']} "
@@ -286,6 +315,7 @@ RENDERERS: dict[str, Callable[[dict], Post]] = {
     "alert": _render_alert,
     "model_fallback_used": _render_model_fallback_used,
     "scorecard": _render_scorecard,
+    "spec_critique": _render_spec_critique,
     "projection_error": _render_projection_error,
 }
 

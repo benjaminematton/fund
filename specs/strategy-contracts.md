@@ -199,6 +199,31 @@ Wrapper enforcement order (fail → tool error, no trial row except where noted)
 
 G2 runs automatically when a seat requests promotion; G3 runs only on G2 pass + PM sponsorship; both write verdict JSON to `strategies.gate_results` and project to `#risk`. G3's holdout run inserts the single `holdout_evaluations` row inside the same transaction as the verdict — **pass or fail** (invariant 6). A second G3 attempt for the same spec_id hits the PRIMARY KEY and resolves to REJECT `holdout_already_consumed`.
 
+### 3.4 `submit_spec_critique` (Critic seat only)
+
+```python
+@tool("submit_spec_critique",
+      "Critic only. Record your G1 mechanism-alignment verdict for one spec. Call it exactly once, for the spec in your brief. Written once — there is no revising it. A spec with no verdict does not advance, so skipping the call is not the same as clearing it.",
+      {"type": "object",
+       "properties": {
+         "spec_id":    {"type": "string"},
+         "verdict":    {"type": "string", "enum": ["clear","objections"]},
+         "objections": {"type": "array", "items": {"type": "string", "maxLength": 200},
+                        "maxItems": 3,
+                        "description": "Required non-empty iff verdict='objections'."}},
+       "required": ["spec_id","verdict"],
+       "additionalProperties": False},
+      strict=True)
+```
+
+Handler validates (`state.models.SpecCritique`), refuses an unregistered `spec_id`, and refuses a second verdict for the same spec — **write-once, never UPSERT**: this row is a gate input, and a revisable one can be argued into revision. Wrong seat, malformed payload, unknown spec, or existing verdict → tool error, nothing written and no projection event appended.
+
+`charter_version` and `model_id` are **required** parameters of the handler, not defaulted to `'unknown'` as the trade-pipeline handlers do (contracts.md §2). `strategy_critiques` forbids `'unknown'`, so a defaulted call would fail at the INSERT; requiring them fails at the call site instead, where the missing argument actually is.
+
+The read half is `get_spec_brief` (Critic only, no arguments): the oldest registered spec with no `strategy_critiques` row — one per turn — JSON columns decoded, plus the seat's own journal. The journal degrades like `get_stage_brief`'s sections (contracts §4): unbuildable means empty plus a name in `unavailable`. **The spec queue does not degrade.** An unreadable queue returns an error rather than `[]`, because an empty list is indistinguishable from "nothing pending" and would end the turn with an unreviewed spec behind a clean-looking trace.
+
+**No default row, ever.** The trade pipeline's `critiques` defaults to `clear` on a Critic timeout because a silent Critic must not stall the trading day. At G1 the default inverts: no row means the spec does not advance (`specs/strategy.md` invariant 7). Neither the orchestrator nor any handler may insert a default `strategy_critiques` row.
+
 ## 4. State machine
 
 ```
