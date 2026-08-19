@@ -1,6 +1,6 @@
 # Strategy Development Playbook — `specs/strategy.md`
 
-How agents propose, test, validate, and earn capital for trading strategies. Companion to `specs/design.md` (architecture) and `specs/strategy-contracts.md` (schemas — canonical for this pipeline; trade-pipeline schemas stay in `specs/contracts.md`). The evidence behind every number here: `research/strategy-research-report.md`.
+How agents propose, test, validate, and earn capital for trading strategies. Companion to `specs/design.md` (architecture) and `specs/strategy-contracts.md` (schemas — canonical for this pipeline; trade-pipeline schemas stay in `specs/contracts.md`). The evidence behind every number here: `research/strategy-research-report.md`, with `research/strategy-research-addendum-2026-08.md` covering agent-driven discovery, adaptive-search correction, and the crowding decomposition. Where they overlap, the main report wins.
 
 The design doc's core principle extends to research: **LLMs opine; code executes.** Here: **LLMs hypothesize; code validates.** The strategy gate below is the research-side twin of the risk gate in design.md §5 — pure Python, no LLM imports, CI-enforced.
 
@@ -66,7 +66,7 @@ Ranked by evidence quality × fit to our constraints (US equities, days–weeks 
 ### F1. Short-term mean reversion, liquid universe — **build first**
 - **Mechanism:** liquidity provision — compensation for absorbing short-term selling pressure; strongest in turmoil.
 - **Shape:** long oversold dips (e.g., short-run drawdown or RSI-style trigger) in Russell 1000-ish names **above a long-term trend filter** (200d MA), 1–7 day holds, limit-order entries.
-- **Known edges/traps:** condition on turnover — reversal lives in LOW-turnover names; HIGH-turnover names show short-term momentum (Medhat–Schmeling). Naive versions die on costs in small caps; stay liquid.
+- **Known edges/traps:** condition on turnover — reversal lives in LOW-turnover names; HIGH-turnover names show short-term momentum (Medhat–Schmeling). Naive versions die on costs in small caps; stay liquid. Reversal is a *mechanical* factor and crowds; crowded reversal carries ~1.84× the crash probability of uncrowded (16.9% vs 9.2%) because it bets against prevailing momentum. Crowding informs sizing and stops, never selection — see the addendum §3.
 - **Realistic net:** Sharpe 0.6–1.0. **Cost floor bucket:** large (5 bps/side).
 
 ### F2. Small-cap event drift: earnings (PEAD) — **build second, carefully**
@@ -138,7 +138,7 @@ default on ANY error/missing data: REJECT (reason gate_error)
 
 **Expectation-setting (enforced in reporting):** the PM plans capital using **half** the gate-passing Sharpe. If halved-Sharpe ≥ 0.4 still justifies a sleeve, proceed; otherwise the strategy is a paper tiger even having passed.
 
-**Trial budget discipline:** ~45 independent configs is the most 5 years of daily data can support before max noise-Sharpe ≈ 1.0. Longer data buys more budget; the registry tracks family-wide N and the DSR check prices it in automatically. Agents should treat trials as scarce ammunition: fewer, hypothesis-driven configs beat sweeps — *more search mechanically raises your own bar.*
+**Trial budget discipline:** ~45 independent configs is the most 5 years of daily data can support before max noise-Sharpe ≈ 1.0. Longer data buys more budget; the registry tracks family-wide N and the DSR check prices it in automatically. Agents should treat trials as scarce ammunition: fewer, hypothesis-driven configs beat sweeps — *more search mechanically raises your own bar.* Note the known limit: DSR assumes N draws from a fixed distribution, but an agent conditioning each spec on prior results is running a targeted search that DSR does not model. Online FDR (alpha-wealth per family) is the correctly-shaped replacement and is not yet implemented — addendum §2.
 
 ---
 
