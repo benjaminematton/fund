@@ -120,6 +120,15 @@ here fails silently. Both units that need it read this file
 (`fund-daily.service` writes the traces, `fund-backup.service` archives them),
 so one line covers both. A day that recorded nothing is visible in the log:
 `run_day` prints `recording seat traces under <path>` when the sink is live.
+
+**Adding this line before the code that reads it is deployed arms a change
+that fires later.** It is inert until a pull brings the reading code, and then
+recording starts on the next day with no deploy step that mentions it — the
+env file changed hours or days earlier and nothing surfaces it at pull time.
+That happened on 2026-08-19: the line was staged at 16:45 EDT, 45 minutes
+after a deploy, and the next pull would have started recording by inheritance
+rather than by choice. If you stage an env line ahead of its code, say so to
+whoever deploys next; `/etc/fund/env` is not in git and no diff will show it.
 Traces cannot be reconstructed afterwards, so the cost of forgetting is the
 corpus itself.
 
@@ -379,10 +388,27 @@ write it:
 su - fund -c 'cd /opt/fund && .venv/bin/python3 scripts/sync_deps.py'
 ```
 
-If `state/schema.sql` changed, **stop.** There is no migration framework — only
-a DDL file applied at creation. An existing `fund.sqlite` will not pick up the
-change, and the source of truth silently disagrees with the code. Plan that
-change deliberately; it is not a deploy step.
+If `state/schema.sql` changed, read `state/migrations.py` before pulling.
+
+There is now a migration framework, added 2026-08-19: `state/db.py:connect()`
+applies every pending migration, so an existing `fund.sqlite` does pick up the
+change. Before that, `schema.sql` was applied only at creation and an existing
+DB silently disagreed with the code — which is why this step used to say
+**stop** outright.
+
+It is still the only step in a deploy that **writes to the live database**, so
+it is the one to slow down on:
+
+```bash
+cd /opt/fund && git diff <old-sha>..origin/master -- state/migrations.py
+```
+
+Read what it does before you run it. Additive `ALTER TABLE ADD COLUMN` with a
+default is safe and idempotent; anything that drops, renames, rewrites or
+backfills a column is not a deploy step and needs planning on its own.
+Take a fresh backup immediately before the pull rather than trusting the
+night's timer — the migration runs on the first `connect()` after it, which is
+usually `make preflight`, not a moment you choose.
 
 **4. Finish with `make preflight`, not with a green `git pull`.** A pull that
 succeeded proves files moved. Preflight proves the seats still start under
