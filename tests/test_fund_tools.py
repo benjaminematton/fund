@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from agents.tools.fund_server import (handle_get_stage_brief,
+from agents.tools.fund_server import (SEAT_CAPS, _can,
+                                      handle_get_stage_brief,
                                       handle_submit_decision,
                                       handle_submit_signal,
                                       insert_default_critiques)
@@ -117,12 +118,14 @@ def _brief(fund_db, seat="pm", snapshot=SNAPSHOT, journals_root=None):
 
 
 @pytest.mark.parametrize("seat", ["exec", "critic", ""])
-def test_brief_is_analyst_and_pm_only(fund_db, seat):
+def test_brief_is_refused_to_seats_without_the_capability(fund_db, seat):
     """The exec seat is the only one that can trade; it acts on gate tickets
-    alone and must not gain a read channel into the day's thinking."""
+    alone and must not gain a read channel into the day's thinking. `critic`
+    stays here deliberately — a Critic seat wants get_spec_brief, not this."""
     result = handle_get_stage_brief(fund_db, seat=seat, run_date=RUN,
                                     snapshot=lambda: SNAPSHOT)
-    assert not result["ok"] and "analyst/pm-only" in result["error"]
+    assert not result["ok"]
+    assert result["error"] == f"get_stage_brief is not granted to seat {seat!r}"
     assert "brief" not in result
 
 
@@ -280,18 +283,33 @@ def test_a_refused_call_comes_back_as_is_error_through_the_wrapper(
     model "signal recorded: NVDA" for a call that wrote nothing — the seat
     would believe its whole turn landed and stop retrying.
 
-    Reached by moving the seat table under a live analyst server rather than
+    Reached by revoking the capability under a live analyst server rather than
     by building a mis-seated one: build_fund_server refuses unknown seats, and
-    tools_by_seat (pinned above) is what normally keeps this branch out of
-    reach. This is the shape it takes the moment either of those regresses.
+    SEAT_CAPS (pinned above) is what normally keeps this branch out of reach.
+    This is the shape it takes the moment either of those regresses.
     """
+    import asyncio
+
+    import mcp.types as mcp
+
     from agents.tools import fund_server
 
-    monkeypatch.setattr(fund_server, "SIGNAL_SEATS", ("pm",))
-    result = _call(fund_db, sim_clock, "analyst", "submit_signal", SIGNAL_ARGS)
+    # Build the server while the analyst still HOLDS submit_signal so the tool
+    # is registered, and only then revoke it. Tool registration is derived from
+    # SEAT_CAPS (ADR-0002), so revoking first unregisters the tool and the call
+    # dies at the MCP layer ("Tool 'submit_signal' not found") without ever
+    # reaching the handler guard this test exists to pin.
+    handler = _server(fund_db, sim_clock,
+                      "analyst").request_handlers[mcp.CallToolRequest]
+    monkeypatch.setitem(fund_server.SEAT_CAPS, "analyst",
+                        frozenset({"get_stage_brief", "read_account"}))
+    result = asyncio.run(handler(mcp.CallToolRequest(
+        method="tools/call",
+        params=mcp.CallToolRequestParams(name="submit_signal",
+                                         arguments=SIGNAL_ARGS)))).root
 
     assert result.isError is True
-    assert "analyst-seat-only" in result.content[0].text
+    assert "submit_signal is not granted to seat 'analyst'" in result.content[0].text
     assert result.content[0].text.startswith("error: ")
     assert fund_db.execute("SELECT COUNT(*) c FROM signals").fetchone()["c"] == 0
 
@@ -319,3 +337,54 @@ def test_the_wrapper_stamps_the_run_date_from_the_injected_clock(fund_db,
     assert result.content[0].text == "signal recorded: NVDA"
     assert fund_db.execute("SELECT run_date FROM signals").fetchone()[
         "run_date"] == RUN
+
+
+# --- seat capability table (ADR-0002) ---------------------------------------
+
+def test_news_seat_can_signal_and_brief_but_not_see_the_book():
+    """design.md §2 grants News/Sentiment `news,stock-data` -- no `account`.
+    Its capabilities must match the toolset the seat table grants it."""
+    assert _can("news", "submit_signal") and _can("news", "get_stage_brief")
+    assert not _can("news", "read_account")
+    assert not _can("news", "submit_decision")
+
+
+def test_every_registered_seat_has_at_least_one_capability():
+    """A seat with no caps gets no tools -- the silent failure the
+    unrecognized-seat ValueError exists to prevent."""
+    assert all(caps for caps in SEAT_CAPS.values())
+
+
+def test_tool_caps_are_real_registered_tool_names(fund_db, sim_clock):
+    """The naming rule, asserted rather than intended: every cap not starting
+    with read_ IS a registered tool name. Catches a typo'd cap at test time
+    instead of at seat-build time on a live host."""
+    for seat, caps in SEAT_CAPS.items():
+        expected = {c for c in caps if not c.startswith("read_")}
+        assert _tool_names(fund_db, sim_clock, seat) == expected, seat
+
+
+def test_seat_caps_covers_every_config_file():
+    """A yaml seat missing from SEAT_CAPS raises only when that seat is BUILT
+    -- which may be 09:00 on a live host. Subset, not equality: caps without a
+    config is a dead entry nothing can build, and equality would couple this
+    file's commit boundaries to unrelated branches for no safety gain."""
+    import pathlib as _pl
+
+    import yaml
+    root = _pl.Path(__file__).resolve().parents[1] / "agents" / "config"
+    configs = {yaml.safe_load(p.read_text())["seat"] for p in root.glob("*.yaml")}
+    assert configs <= set(SEAT_CAPS), f"config seats with no caps: {configs - set(SEAT_CAPS)}"
+
+
+def test_news_brief_omits_the_book_while_the_analyst_keeps_it(fund_db, tmp_path):
+    """Behavior, not the lookup table: the capability-gating rewrite is what
+    could get this wrong, and asserting _can() against itself would not."""
+    snap = lambda: SNAPSHOT
+    news = handle_get_stage_brief(fund_db, seat="news", run_date=RUN,
+                                  snapshot=snap, journals_root=tmp_path)["brief"]
+    analyst = handle_get_stage_brief(fund_db, seat="analyst", run_date=RUN,
+                                     snapshot=snap, journals_root=tmp_path)["brief"]
+    assert "cash" not in news and "positions" not in news
+    assert "journal" in news                      # calibration loop still reaches it
+    assert analyst["cash"] == 30000.0 and analyst["positions"] == {"MSFT": 40}
