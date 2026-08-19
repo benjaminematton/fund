@@ -30,7 +30,6 @@ from state.transition import try_transition
 # That seam is what keeps orchestrator/ purity-lintable and sim-day possible.
 
 TICKET_TTL_MIN = 45          # gate default expiry (contracts §2)
-DEFAULT_ANALYST = "analyst"  # seat that owns a defaulted "no report" signal
 
 
 def _new_id() -> str:
@@ -43,6 +42,11 @@ class StageCtx:
     run_date: str
     clock: Clock
     slack: object
+    # Seats owing a signal per active ticker today. REQUIRED and no default:
+    # a default would need manual syncing with production config, and getting
+    # it wrong fails SILENTLY (a seat quietly stops being graded). Execution-
+    # only contexts pass () — run_research raises rather than skipping.
+    research_seats: tuple[str, ...]
     market_inputs: dict = field(default_factory=dict)   # ticker -> gate-inputs dict
     run_turn: dict = field(default_factory=dict)        # stage -> zero-arg callable
     id_factory: Callable[[], str] = _new_id             # uuid4 live; fixed in tests
@@ -136,25 +140,46 @@ def _pre_gate_stage(ctx: StageCtx) -> list[str]:
     return active
 
 
+def _covered(ctx: StageCtx) -> set[tuple[str, str]]:
+    """Every (agent, ticker) pair holding a signal row today. ONE predicate:
+    the skip-on-resume decision and the defaults loop must never disagree
+    about what "covered" means, and a COUNT-based version would miscount if
+    signals ever holds a row for a seat outside research_seats."""
+    return {(r["agent"], r["ticker"]) for r in ctx.conn.execute(
+        "SELECT agent, ticker FROM signals WHERE run_date = ?",
+        (ctx.run_date,))}
+
+
 def run_research(ctx: StageCtx, active: list[str]) -> None:
-    """Analyst turn, then the default for anything it missed: neutral/0/
-    "no report" (contracts §6). Idempotent: a ticker that already has a
-    signal today is left alone."""
+    """Analyst turns, then the default for anything they missed: neutral/0/
+    "no report" (contracts §6).
+
+    The default is per SEAT per ticker. A ticker-level guard would let one
+    seat's row mask another seat's silence, and calibration/rows.py grades per
+    s.agent — so the silent seat would be scored only on days it reported.
+
+    Idempotent per seat: when every (seat, ticker) pair is already covered the
+    turn is SKIPPED, so a crash-resume does not pay for LLM calls it already
+    paid for."""
+    if not ctx.research_seats:
+        raise ValueError(
+            "run_research: research_seats is empty — refusing to run a research"
+            " stage that can never insert its neutral/0 defaults (invariant 4)")
+    wanted = [(seat, ticker)
+              for seat in ctx.research_seats for ticker in active]
     turn = ctx.run_turn.get("research")
-    if turn is not None:
+    if turn is not None and not set(wanted) <= _covered(ctx):
         turn()
     now = iso(ctx.clock.now())
-    for ticker in active:
-        covered = ctx.conn.execute(
-            "SELECT 1 FROM signals WHERE run_date = ? AND ticker = ?",
-            (ctx.run_date, ticker)).fetchone()
-        if covered is not None:
+    covered = _covered(ctx)          # re-read: the turn just inserted rows
+    for seat, ticker in wanted:
+        if (seat, ticker) in covered:
             continue
         ctx.conn.execute(
             "INSERT OR IGNORE INTO signals (run_date, agent, ticker, direction,"
             " confidence, summary, created_at)"
             " VALUES (?, ?, ?, 'neutral', 0, 'no report', ?)",
-            (ctx.run_date, DEFAULT_ANALYST, ticker, now))
+            (ctx.run_date, seat, ticker, now))
     ctx.conn.commit()
 
 

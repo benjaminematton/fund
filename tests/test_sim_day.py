@@ -148,6 +148,7 @@ def sim_day(tmp_path, *, market: dict,
 
     ctx = StageCtx(
         conn=conn, run_date=run_date, clock=clock, slack=slack,
+        research_seats=("analyst",),
         market_inputs=market,
         run_turn={"research": _turn("research", "analyst", analyst_recs),
                   "decision": _turn("decision", "pm", pm_recs, after=break_feed)},

@@ -497,7 +497,8 @@ def test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land(
     # ticker gets neutral/0 "no report" instead of the day stopping.
     from orchestrator.daily import StageCtx, run_research
     run_research(StageCtx(conn=conn, run_date="2026-07-06", clock=clock,
-                          slack=None, run_turn={"research": run}), ["NVDA"])
+                          slack=None, research_seats=("analyst",),
+                          run_turn={"research": run}), ["NVDA"])
     row = conn.execute("SELECT direction, confidence, summary FROM signals"
                        " WHERE run_date = '2026-07-06' AND ticker = 'NVDA'"
                        ).fetchone()
