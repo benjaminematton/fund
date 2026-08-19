@@ -5,7 +5,8 @@ import numpy as np
 
 import fundbt.rules  # noqa: F401  (registers dip_buyer)
 from fundbt.registry import TrialRegistry
-from fundbt.run_backtest import BacktestError, evaluate_holdout, run_backtest
+from fundbt.run_backtest import (BacktestError, evaluate_holdout, run_backtest,
+                                 snapshot_hash)
 from tests.synthetic import GOLDEN_PARAMS, make_market, make_spec
 
 NOW = "2026-07-09T00:00:00Z"
@@ -25,6 +26,26 @@ def test_deterministic_and_cached():
     assert r1["run_key"] == r2["run_key"]
     assert r1["net_sharpe"] == r2["net_sharpe"]
     assert reg.family_n("F1") == 1          # cache hit did NOT increment N
+
+
+def test_snapshot_hash_ignores_platform_float_noise():
+    """numpy's macOS wheel FMA-contracts the multiply-add inside
+    Generator.uniform; the manylinux wheel rounds twice. That 1-ULP split at
+    the first draw grows to ~5e-15 relative across the market, so hashing raw
+    float text identifies the platform rather than the data. Perturb by an
+    order of magnitude more than the observed drift: the hash must not move."""
+    close = make_market()
+    noise = 1.0 + 1e-14 * np.random.default_rng(0).standard_normal(close.shape)
+    assert snapshot_hash(close * noise) == snapshot_hash(close)
+
+
+def test_snapshot_hash_detects_a_real_data_change():
+    """The tolerance above must not be so wide that a changed snapshot slips
+    through — a pinned slice that moved is exactly what this hash is for."""
+    close = make_market()
+    changed = close.copy()
+    changed.iloc[0, 0] *= 1.001
+    assert snapshot_hash(changed) != snapshot_hash(close)
 
 
 def test_param_range_enforced():

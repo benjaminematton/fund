@@ -45,8 +45,13 @@ def register_rule(name: str):
 
 
 def snapshot_hash(close: pd.DataFrame) -> str:
-    """SHA256 of the pinned data slice. Recorded with every trial."""
-    payload = close.round(10).to_csv().encode()
+    """SHA256 of the pinned data slice. Recorded with every trial.
+
+    Six significant digits, not raw float text: numpy's macOS and manylinux
+    wheels disagree by ~1 ULP on FMA-contracted multiply-adds, so hashing the
+    exact decimals would identify the platform rather than the data.
+    """
+    payload = close.to_csv(float_format="%.6g").encode()
     return "dat_" + hashlib.sha256(payload).hexdigest()[:16]
 
 
