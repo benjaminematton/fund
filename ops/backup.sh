@@ -43,3 +43,23 @@ if [ -n "${FUND_JOURNALS:-}" ] && [ -d "$FUND_JOURNALS" ]; then
     mv "$JTMP" "${FUND_BACKUP_DIR}/journals-${STAMP}.tar.gz"
     echo "backup: wrote ${FUND_BACKUP_DIR}/journals-${STAMP}.tar.gz"
 fi
+
+# Seat traces. Enumerated like the journals above, never a directory sweep:
+# what gets backed up is a decision, not whatever happens to sit under the
+# state dir.
+#
+# STILL NO PRUNE, and it was measured rather than assumed: a real trace is
+# ~6.5 KB, so 10-25 turns a day is 65-160 KB/day -- 16-40 MB a year, the same
+# order as the DB snapshots the argument above was written for. A retention
+# policy would introduce the only destructive operation in this deployment to
+# save tens of megabytes.
+#
+# Traces are the corpus the day-review loop reads. Unbacked, they die with the
+# droplet, which would make recording them nearly pointless -- a trace cannot
+# be reconstructed after the fact.
+if [ -n "${FUND_TRACES:-}" ] && [ -d "$FUND_TRACES" ]; then
+    TTMP="${FUND_BACKUP_DIR}/traces-${STAMP}.tar.gz.tmp"
+    tar -czf "$TTMP" -C "$(dirname "$FUND_TRACES")" "$(basename "$FUND_TRACES")"
+    mv "$TTMP" "${FUND_BACKUP_DIR}/traces-${STAMP}.tar.gz"
+    echo "backup: wrote ${FUND_BACKUP_DIR}/traces-${STAMP}.tar.gz"
+fi
