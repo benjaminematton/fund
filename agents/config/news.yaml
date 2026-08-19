@@ -1,0 +1,18 @@
+seat: news
+model: claude-haiku-4-5-20251001
+fallback_model: claude-sonnet-5
+max_budget_usd: 0.50
+# Same P1 cost bound as the analyst seat. The measured analyst day (2026-08-17,
+# 2 tickers) was 7 turns / $0.0504, and this seat's charter budgets the same
+# shape of work — one brief call plus roughly two calls per ticker — so 16
+# carries the same headroom at the 3-ticker watchlist.
+# INHERITED, NOT MEASURED: right-size from THIS seat's first live
+# ResultMessage.num_turns rather than leaving the analyst's number here
+# permanently. A news-heavy ticker may need more calls than a price-only one,
+# and a ceiling that clips a turn yields no measurement rather than a smaller
+# one (2026-08-17 postmortem, §7).
+max_turns: 16
+alpaca_toolsets: "news,stock-data"           # READ-ONLY (invariant 2), no account
+tools: ["mcp__fund__*", "mcp__alpaca__*"]
+disallowed_tools: ["mcp__alpaca__place_*"]   # belt over the toolset braces
+setting_sources: []
