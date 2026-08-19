@@ -217,8 +217,50 @@ def record_cost(conn: sqlite3.Connection, run_date: str, agent: str,
     conn.commit()
 
 
+def _served_matches(key: str, configured: str) -> bool:
+    """True when `key` and `configured` name the same model.
+
+    model_usage's keys come from the CLI unchanged, so they may be the alias
+    the yaml pins ('claude-sonnet-5') or a resolved dated id
+    ('claude-sonnet-5-<date>'). Which one is not determinable from the SDK
+    source, and no recorded trace carries the field, so the comparison has to
+    be right under either. Prefix in EITHER direction covers both, and plain
+    equality covers the already-dated configs (analyst/exec pin
+    'claude-haiku-4-5-20251001').
+
+    Deliberately not `==`: under resolved keys that would fire on every clean
+    turn, and an event that fires daily is one you stop reading.
+
+    Deliberately not exact either — two genuinely different models in a prefix
+    relationship (a hypothetical 'claude-opus-5' and 'claude-opus-5-mini')
+    would match and stay silent. No such pair exists in these configs; a
+    suffix allowlist would cost more than the risk, so this is written down
+    rather than defended against."""
+    return key == configured or key.startswith(configured) \
+        or configured.startswith(key)
+
+
+def _unmatched_models(model_usage, configured: str) -> list[str]:
+    """The served model ids that are NOT the configured model.
+
+    THE QUANTIFIER IS THE POINT. model_usage is a dict because one turn can
+    run more than one model — that mid-turn fallback is what this exists to
+    catch. `any(_served_matches(...))` would match on the haiku key of a
+    haiku-then-sonnet turn and stay silent on exactly the case that motivated
+    reading model_usage at all. Flag when ANY key fails, not when none match.
+
+    An empty `configured` returns nothing: a caller that cannot state the
+    seat's model must not manufacture a divergence against the empty string,
+    which every key would 'mismatch'."""
+    if not model_usage or not configured:
+        return []
+    return sorted(k for k in model_usage
+                  if not _served_matches(k, configured))
+
+
 def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
-                       result, now_iso: str) -> bool:
+                       result, now_iso: str,
+                       configured_model: str = "") -> bool:
     """The cost seam: pull the estimate off ONE seat turn's ResultMessage and
     record it. scripts/run_day.py calls this after EVERY seat turn — this is
     the only production caller of record_cost, so it is deliberately a plain
@@ -244,7 +286,29 @@ def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
     record_cost_guarded() — cost accounting must never take down trading
     (invariant 4), but it must not lie about itself either.
 
+    It is also the model-divergence seam, for the same reason: this is the one
+    place that sees a finished ResultMessage for every seat turn. The rows the
+    turn wrote name the seat's CONFIGURED model, because the MCP handler that
+    wrote them never saw this message — it does not exist until the turn ends.
+    `model_usage`'s keys name what actually ran, so a key that is not the
+    configured model means those rows are attributed to a model that did not
+    serve them. That is recorded as its own `model_fallback_used` event and
+    NOT as an `alert`: scripts/audit_day.py fails the day on any alert, and a
+    fallback is not a failed day — the fund traded correctly and only
+    model_id is stale. The daily scorecard ranks it at severity 3.
+
+    Rows are never retro-edited. The point is that model_id is trustworthy
+    precisely when this event is absent, with the exception enumerated rather
+    than hidden.
+
     Returns True if a cost row was written; False otherwise."""
+    unmatched = _unmatched_models(getattr(result, "model_usage", None),
+                                  configured_model)
+    if unmatched:
+        append_event(conn, "model_fallback_used",
+                     {"seat": seat, "configured": configured_model,
+                      "served": unmatched}, now_iso)
+
     usd = getattr(result, "total_cost_usd", None)
     session_id = str(getattr(result, "session_id", None) or "unknown")
     if isinstance(usd, bool) or not isinstance(usd, (int, float)) \

@@ -4,6 +4,7 @@ tokens) is injected — never in prompts."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -31,6 +32,34 @@ ALPACA_MCP_SPEC = "alpaca-mcp-server@2.2.1"
 
 def load_seat_config(path: str | Path) -> dict:
     return yaml.safe_load(Path(path).read_text())
+
+
+def _parse_charter_version(text: str) -> str:
+    """'# Portfolio Manager — v6' -> 'v6'. 'unknown' when the header does not
+    carry one.
+
+    The header is the source of truth because `charters/_template.md` already
+    requires bumping it on any change; a second field in the yaml would be one
+    more thing to forget. An unparseable header returns 'unknown' rather than
+    raising: a charter's formatting must never take a trading day down
+    (invariant 4), and 'unknown' is a value the scoreboard already knows to
+    exclude."""
+    first = text.split("\n", 1)[0]
+    match = re.search(r"\bv(\d+)\b", first)
+    return f"v{match.group(1)}" if match else "unknown"
+
+
+def charter_version_for(cfg: dict) -> str:
+    return _parse_charter_version(charter_text_for(cfg))
+
+
+def charter_text_for(cfg: dict) -> str:
+    """The charter this seat runs under, read the same way build_seat_options
+    reads it. Exposed so a trace can record the charter AS IT WAS at run time
+    (evals/trace.py's reason: a sha alone makes every historical trace
+    ungradeable the moment a charter is edited) without a second copy of where
+    charters live."""
+    return (CHARTERS_DIR / f"{cfg['seat']}.md").read_text()
 
 
 def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
@@ -65,7 +94,9 @@ def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
                                "ALPACA_TOOLSETS": cfg["alpaca_toolsets"]}},
             "fund": build_fund_server(conn_factory, clock, cfg["seat"],
                                       snapshot=snapshot,
-                                      journals_root=journals_root),
+                                      journals_root=journals_root,
+                                      charter_version=charter_version_for(cfg),
+                                      model_id=cfg.get("model", "unknown")),
         },
         allowed_tools=["mcp__alpaca__*", "mcp__fund__*"],
         # A second guard over the toolset restriction (invariant 2): every

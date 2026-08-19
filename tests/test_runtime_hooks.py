@@ -291,6 +291,124 @@ def test_record_turn_result_rejects_non_numeric_estimate(fund_db):
         assert len(_costs(fund_db)) == conn_rows_before
 
 
+# --- model divergence --------------------------------------------------------
+#
+# decisions.model_id and signals.model_id hold the seat's CONFIGURED model,
+# because the MCP handler that writes the row never sees the ResultMessage —
+# it does not exist until the turn ends. That value is quietly wrong exactly
+# when a fallback served the turn, and the divergence path is live on the
+# primary table: analyst.yaml pins haiku with a sonnet fallback, and the
+# analyst is what writes signals. These tests pin the alert that makes
+# model_id trustworthy precisely when it is silent.
+
+
+def _divergences(conn):
+    return [json.loads(r["payload"]) for r in conn.execute(
+        "SELECT payload FROM events WHERE kind = 'model_fallback_used'"
+        " ORDER BY id")]
+
+
+def test_a_matching_model_raises_no_divergence(fund_db):
+    """The canary. If this ever fails the alert has become always-on, which is
+    worse than absent: a daily alert is one people learn to skip, and it is
+    gone on the day it means something."""
+    record_turn_result(fund_db, "2026-07-06", "pm",
+                       _Result(total_cost_usd=0.01, session_id="s",
+                               model_usage={"claude-sonnet-5": {"in": 10}}),
+                       NOW, configured_model="claude-sonnet-5")
+    assert _divergences(fund_db) == []
+
+
+def test_a_resolved_id_still_matches_the_configured_alias(fund_db):
+    """model_usage's keys come from the CLI unchanged, so they may be the alias
+    the yaml pins or a resolved dated id. That is a match, not a fallback —
+    and which form the CLI emits is not determinable from source, so the
+    comparison must be right under either."""
+    record_turn_result(
+        fund_db, "2026-07-06", "pm",
+        _Result(total_cost_usd=0.01, session_id="s",
+                model_usage={"claude-sonnet-5-20250929": {"in": 10}}),
+        NOW, configured_model="claude-sonnet-5")
+    assert _divergences(fund_db) == []
+
+
+def test_a_genuine_fallback_is_recorded(fund_db):
+    """analyst pins haiku with a sonnet fallback — the live divergence path.
+    The payload names what served, so the reader is not left diffing lists."""
+    record_turn_result(fund_db, "2026-07-06", "analyst",
+                       _Result(total_cost_usd=0.01, session_id="s",
+                               model_usage={"claude-sonnet-5": {"in": 10}}),
+                       NOW, configured_model="claude-haiku-4-5-20251001")
+    assert _divergences(fund_db) == [
+        {"seat": "analyst", "configured": "claude-haiku-4-5-20251001",
+         "served": ["claude-sonnet-5"]}]
+
+
+def test_a_mixed_turn_flags_only_the_unmatched_key(fund_db):
+    """The test that separates the two quantifiers — every other case here is
+    single-key or None and passes under both. A turn that ran haiku for most of
+    it and fell back to sonnet for part must be recorded, naming only sonnet:
+    `any(matches)` would see the haiku key and stay silent on exactly the case
+    that motivated reading model_usage rather than a single field."""
+    record_turn_result(
+        fund_db, "2026-07-06", "analyst",
+        _Result(total_cost_usd=0.01, session_id="s",
+                model_usage={"claude-haiku-4-5-20251001": {"in": 90},
+                             "claude-sonnet-5": {"in": 10}}),
+        NOW, configured_model="claude-haiku-4-5-20251001")
+    rows = _divergences(fund_db)
+    assert len(rows) == 1
+    assert rows[0]["served"] == ["claude-sonnet-5"]      # not both keys
+
+
+def test_absent_model_usage_records_no_divergence(fund_db):
+    """None is not a mismatch. The SDK marks the field Optional, and the turn
+    that carries no usage is already covered by the cost alert — inventing a
+    second event for it would double-count one failure."""
+    record_turn_result(fund_db, "2026-07-06", "analyst",
+                       _Result(total_cost_usd=0.01, session_id="s",
+                               model_usage=None),
+                       NOW, configured_model="claude-haiku-4-5-20251001")
+    assert _divergences(fund_db) == []
+
+
+def test_an_unstated_configured_model_records_no_divergence(fund_db):
+    """Every production caller passes the seat's configured model. A caller
+    that cannot — a test stub, an older path — must not manufacture a
+    divergence against the empty string, which every key would 'mismatch'."""
+    record_turn_result(fund_db, "2026-07-06", "analyst",
+                       _Result(total_cost_usd=0.01, session_id="s",
+                               model_usage={"claude-sonnet-5": {"in": 10}}),
+                       NOW)
+    assert _divergences(fund_db) == []
+
+
+def test_a_divergence_is_not_an_alert(fund_db):
+    """Its own kind, deliberately. scripts/audit_day.py fails the day on any
+    alert event, and a fallback that served a turn is not a failed day — the
+    fund traded correctly, only model_id is stale. The daily scorecard ranks
+    it at severity 3; making it an alert would make every fallback an
+    incident."""
+    record_turn_result(fund_db, "2026-07-06", "analyst",
+                       _Result(total_cost_usd=0.01, session_id="s",
+                               model_usage={"claude-sonnet-5": {"in": 10}}),
+                       NOW, configured_model="claude-haiku-4-5-20251001")
+    assert _alerts(fund_db) == []
+    assert len(_divergences(fund_db)) == 1
+
+
+def test_a_divergence_is_recorded_even_when_the_cost_estimate_is_missing(fund_db):
+    """The two checks are independent. A turn can lose its cost estimate AND
+    have fallen back; the early return on the cost path must not swallow the
+    divergence, or the alert is missing exactly on the messiest turns."""
+    record_turn_result(fund_db, "2026-07-06", "analyst",
+                       _Result(total_cost_usd=None, session_id="s",
+                               model_usage={"claude-sonnet-5": {"in": 10}}),
+                       NOW, configured_model="claude-haiku-4-5-20251001")
+    assert len(_alerts(fund_db)) == 1              # cost_unavailable
+    assert len(_divergences(fund_db)) == 1
+
+
 def test_hooks_reuse_one_connection_per_factory_binding(fund_db, sim_clock):
     """C1: the hook factories must not open a fresh conn per call. Bind them
     to a counting factory and fire twice: exactly one connect."""

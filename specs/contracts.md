@@ -17,11 +17,13 @@ Apply transitions only via `state.transition(table, id, from_status, to_status)`
 CREATE TABLE signals (
   id            INTEGER PRIMARY KEY,
   run_date      TEXT NOT NULL,                -- YYYY-MM-DD (ET)
-  agent         TEXT NOT NULL,                -- seat name, e.g. 'fundamentals'
+  agent         TEXT NOT NULL,                -- seat name, e.g. 'news'
   ticker        TEXT NOT NULL,
   direction     TEXT NOT NULL CHECK (direction IN ('bullish','bearish','neutral')),
   confidence    INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
   summary       TEXT NOT NULL,                -- <= 500 chars
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- attribution, see below
+  model_id      TEXT NOT NULL DEFAULT 'unknown',     -- attribution, see below
   slack_ts      TEXT,                         -- projection pointer, may be NULL
   created_at    TEXT NOT NULL,
   UNIQUE (run_date, agent, ticker)            -- re-submission overwrites via UPSERT
@@ -35,6 +37,8 @@ CREATE TABLE critiques (                       -- Critic's advisory review of th
   objections    TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings, <=3, each <=200 chars
                                               -- (empty iff verdict='clear')
   note          TEXT,                         -- e.g. 'critic_timeout' when defaulted
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- attribution, see below
+  model_id      TEXT NOT NULL DEFAULT 'unknown',     -- attribution, see below
   slack_ts      TEXT,
   created_at    TEXT NOT NULL,
   UNIQUE (run_date, ticker)
@@ -54,6 +58,8 @@ CREATE TABLE decisions (
   stop_price    REAL CHECK (stop_price IS NULL OR stop_price > 0),
                                               -- set iff invalidation is a hard price level
                                               -- (buy only); NULL = Ops watches the text condition
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- attribution, see below
+  model_id      TEXT NOT NULL DEFAULT 'unknown',     -- attribution, see below
   status        TEXT NOT NULL DEFAULT 'submitted',
   debate_ts     TEXT,                         -- Slack thread of the debate, if any
   created_at    TEXT NOT NULL,
@@ -128,6 +134,44 @@ CREATE TABLE costs (
   recorded_at   TEXT NOT NULL
 );
 ```
+
+### Attribution — `charter_version` and `model_id`
+
+Every table recording an agent's judgment carries both. One vocabulary, three
+values, **never NULL**:
+
+| value | meaning |
+|---|---|
+| a real version, e.g. `v6` | a seat produced this row under that charter |
+| `none` | the orchestrator produced it because a seat was silent |
+| `unknown` | written before attribution existed; genuinely lost |
+
+`NOT NULL` is deliberate. A NULL drops silently out of a `GROUP BY` and out of
+every `=`, which would make excluding un-attributed rows from a charter
+comparison an accident of SQL semantics rather than a clause someone wrote.
+
+**Rows with `none` or `unknown` are excluded from every charter comparison.** A
+defaulted row measures the seat's *reliability* — a timeout, a silent turn —
+not the charter's *judgment*, and folding it in would penalise a good charter
+for an infrastructure failure. Reliability has its own home in the daily
+scorecard.
+
+`charter_version` comes from the charter header (`# Portfolio Manager — v6`),
+which `charters/_template.md` already requires bumping on any change. An
+unparseable header yields `unknown` rather than raising: a charter's formatting
+must not take a trading day down.
+
+`model_id` is the seat's **configured** model. The MCP handlers see only `seat`
+and `args` — never the `ResultMessage`, which does not exist until the turn
+ends — so a fallback that actually served the turn cannot be bound at write
+time. It is surfaced instead by a `model_fallback_used` alert raised after the
+turn, comparing `ResultMessage.model_usage`'s keys against the configured
+model. The column is therefore trustworthy exactly when no such alert fired.
+
+The defaults exist so the columns can be added to an existing database
+(`state/migrations.py`; SQLite permits `ADD COLUMN ... NOT NULL` only with
+one). They are not a licence to omit the value: every writer binds explicitly.
+
 
 ## 3. Pydantic models (pydantic v2 — mirror the DDL exactly)
 
@@ -293,7 +337,7 @@ Seats have names, so a channel reads as people talking and a reader can tell who
 | name | Nora (Analyst) | Vic (PM) | Dash (Execution) | Ida (Critic) | Kai (Quant) |
 | icon | 🔎 | 🎯 | ⚡ | 🧪 | 📐 |
 
-Only `signal` and `decision` set `username`/`icon_emoji` — the two kinds with a model behind them. **Machinery posts as the fund itself**: `gate_approved`, `gate_rejected`, `fill`, `digest`, `pnl`, `alert` and `projection_error` leave both `None`, so Slack shows the app's own identity. Invariant 3 keeps the gate free of LLM code; this keeps it free of an LLM's face, preserving the distinction a reader most needs — which posts came from a model, and which came from code that cannot be argued with. An unmapped slug falls back to its raw name with no icon rather than raising or borrowing another seat's face.
+Only `signal` and `decision` set `username`/`icon_emoji` — the two kinds with a model behind them. **Machinery posts as the fund itself**: `gate_approved`, `gate_rejected`, `fill`, `digest`, `pnl`, `alert`, `model_fallback_used`, `scorecard` and `projection_error` leave both `None`, so Slack shows the app's own identity. Invariant 3 keeps the gate free of LLM code; this keeps it free of an LLM's face, preserving the distinction a reader most needs — which posts came from a model, and which came from code that cannot be argued with. An unmapped slug falls back to its raw name with no icon rather than raising or borrowing another seat's face.
 
 `username`/`icon_emoji` need the bot token's `chat:write.customize` scope, and `slackkit/real.py` omits each when falsy. **Any decorator wrapping `SlackPort.post` must widen with it** (`scripts/run_day.py:RemappedSlack`) — dropping the arguments loses seat identity silently on the staging path only, which is the one case a rehearsal exists to catch.
 
@@ -306,6 +350,8 @@ A token that may not set a sender identity answers `missing_scope` or `not_allow
 | `digest` | `run_close` (`orchestrator/daily.py`) | `run_date`, `decisions[{ticker, action, qty, status}]`, `fills[{symbol, side, filled_qty, filled_avg_price, partial}]`, `cost_usd` |
 | `pnl` | `scripts/close_pnl.py` | everything `orchestrator.pnl.eod_pnl` returns: `run_date`, `equity`, `pnl_usd`, `pnl_pct`, `spy_pct`, `alpha` |
 | `decision` | `handle_submit_decision` (`agents/tools/fund_server.py`) | `seat` — the slug that submitted it, alongside `ticker`, `action`, `qty`, `thesis`. Attribution reads this field; it is never assumed. Absent on rows written before the field existed, which fall back to `pm` (the only seat then permitted to submit). |
+| `model_fallback_used` | `record_turn_result` (`agents/runtime.py`) | `seat`, `configured` (the yaml model), `served` (the `model_usage` keys that are not it). No `text`. |
+| `scorecard` | `score_day.append_scorecard_event` (`scripts/score_day.py`) | `run_date`, `rows[{severity, kind, detail}]` already ranked. No `text` — the renderer composes it, and never re-ranks. |
 
 The fields are **additive** — rows written before Block Kit carry `text` alone, and both renderers fall back to text-only when the fields are absent. There is no migration, and a digest must never dead-letter: it is cited as acceptance evidence (`HANDOFF-LIVE` §5).
 
@@ -318,6 +364,8 @@ Block bodies use only `section`, `section` + `fields`, and `context`, and every 
 - Decision: `*<Seat>* · *<TICKER>* — <side> <qty> shares` (a `hold` renders as `hold`, with no share count) + `> <thesis>` in `#trading-floor`. `<Seat>` comes from the payload's `seat`, defaulting to `Vic (PM)`.
 - Fill: `*Dash (Execution)* · 🧾 <bought|sold> *<filled_qty> <TICKER>* at *$<avg_price>* — $<notional>` + `` Ticket `<id[:8]>` `` in `#trade-log`, threaded to the decision message. Labelled with the seat, but posted with no persona: a fill is the broker reporting, not the trader speaking.
 - Alert: `⚠️ *Alert* · <text>` in `#risk` — labelled because `#risk` carries both alerts and gate posts, and they demand different reactions.
+- Scorecard: `*<run_date> scorecard* · <n> finding(s), worst first` + up to `render.SCORECARD_LINES` lines of `` `<severity>` *<kind>* — <detail> ``, then `_…and <n> more_`, in `#pnl`. A clean day renders `_nothing flagged_` and **still posts** — silence would be ambiguous between a quiet day and a job that never ran. The severity order arrives already decided by `scripts/score_day.py`; the renderer never re-ranks and never drops a row without counting it. `scripts/run_day.py:post_scorecard` appends and drains it **before** `report_audit`, so the audit verifies an outbox that already includes it: appending after the audit would leave it undrained and redden the *next* day through the global undrained check.
+- Model fallback: `*Model fallback* · <Seat> ran *<served>*, configured *<configured>*` + a blockquote saying today's rows from that seat carry the configured model, in `#risk`. **Its own kind, never an `alert`**: `scripts/audit_day.py` fails the day on any alert event, and a fallback is not a failed day — the fund traded correctly and only `model_id` is stale. `signals.model_id` and `decisions.model_id` hold the seat's *configured* model because the MCP handler that writes them never sees the `ResultMessage`; this event is what makes those columns trustworthy precisely when it is absent. Rows are never retro-edited. The daily scorecard ranks it at severity 3.
 - Digest: `text` is `<run_date> close` + the `decisions:` and `fills:` lines + `est. inference cost $<n>`, composed in `run_close`. Blocks: a `*<run_date> close*` header, a Decisions / Fills / Est. cost field grid, the two lists as blockquotes, and a context line restating that inference cost is a client-side estimate. A day with neither renders `no decisions` / `no fills` — a full-HOLD day still posts.
 - P&L: `text` is `<run_date> close · ` + `orchestrator.pnl.format_line`. Blocks: the same header, then a P&L / vs SPY / Alpha / Equity grid. **Every figure carries an explicit sign**, dollar sign inside it (`+$500.00`, never `$+500.00`) — a losing day and a winning one must not differ by a character someone can miss while skimming.
 - EOD digest fields: P&L $ and % vs SPY, positions table, decisions + outcomes, est. inference cost.

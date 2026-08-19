@@ -226,6 +226,49 @@ def _render_alert(payload: dict) -> Post:
     return Post("#risk", text, [_section(text)])
 
 
+# A day with thirty findings must not post a wall nobody reads. The rest are
+# counted, never dropped silently — the DB has them all, and `make score-day`
+# prints the lot.
+SCORECARD_LINES = 5
+
+
+def _render_scorecard(payload: dict) -> Post:
+    """The day's findings, worst first, as scripts/score_day.py ranked them.
+
+    Posts on EVERY day, clean ones included: silence would be ambiguous
+    between a quiet day and a job that never ran. Nothing here re-ranks or
+    re-judges — the order arrives already decided."""
+    rows, run_date = payload["rows"], payload["run_date"]
+    shown = rows[:SCORECARD_LINES]
+    lines = [f"`{r['severity']}` *{r['kind']}* — {r['detail']}" for r in shown]
+    if len(rows) > len(shown):
+        lines.append(f"_…and {len(rows) - len(shown)} more_")
+    body = "\n".join(lines) or "_nothing flagged_"
+    head = f"*{run_date} scorecard* · {len(rows)} finding(s), worst first"
+    return Post("#pnl", f"{head}\n{body}",
+                [_section(head), _section(body),
+                 _context("Ranked by fixed severity, never a tuned score")])
+
+
+def _render_model_fallback_used(payload: dict) -> Post:
+    """A fallback served part or all of a seat turn, so today's signals and
+    decisions from that seat name a model that did not produce them.
+
+    Posted as machinery, not as the seat: the seat did not say this, code
+    noticed it. Deliberately NOT an `alert` — scripts/audit_day.py fails the
+    day on any alert, and a fallback is not a failed day."""
+    seat = _seat(payload["seat"])
+    served = ", ".join(payload["served"])
+    text = (f"*Model fallback* · {seat} ran *{served}*, configured "
+            f"*{payload['configured']}*\n"
+            "> Today's rows from this seat carry the configured model, not"
+            " the one that served them.")
+    return Post("#risk", text, [
+        _section(f"🔀 *{seat}* ran a model it was not configured to run"),
+        _fields(("Served", served), ("Configured", payload["configured"])),
+        _context("Rows from this seat name the configured model")])
+
+
 def _render_projection_error(payload: dict) -> Post:
     return Post("#risk",
                 f"⚠️ projection error: event {payload['event_id']} "
@@ -241,6 +284,8 @@ RENDERERS: dict[str, Callable[[dict], Post]] = {
     "digest": _render_digest,
     "pnl": _render_pnl,
     "alert": _render_alert,
+    "model_fallback_used": _render_model_fallback_used,
+    "scorecard": _render_scorecard,
     "projection_error": _render_projection_error,
 }
 

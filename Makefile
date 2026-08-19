@@ -101,6 +101,13 @@ live-paper: live-day
 close-pnl: deps
 	$(PYTHON) scripts/close_pnl.py
 
+# The day's findings, worst first — what to read before anything else. run_day
+# already appends this to #pnl; this target is for reading it again by hand, or
+# for any past day. Stdlib only and never non-zero: audit_day owns the exit
+# code, and a scorecard that could fail a day would invert what it is for.
+score-day: deps
+	$(PYTHON) scripts/score_day.py "$$FUND_DB" "$$(TZ=America/New_York date +%F)"
+
 # Nightly reflection: decisions at their horizon -> resolutions (design §8).
 # Rides the same 16:35 fire as close-pnl for the same SIP_DELAY reason, and is
 # safe to re-run — a decision that already resolved is not selected again.
