@@ -37,7 +37,7 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 - [ ] Journals: after sim day each participating seat's journal has an entry via `state/journal.py`; reflection job at `SimClock`+5 trading days writes `resolutions` with correct realized return & alpha from fixture prices.
 - [ ] Cost rows recorded per seat per session.
 
-## Phase 3 — The firm (debates, risk persona, news/macro, ops, CEO gate)
+## Phase 3 — The firm (debates, risk persona, macro, ops, CEO gate)
 
 - [ ] Debate: orchestrator assigns turns bull→bear→bull→bear (+1 risk question each side); transcript in one FakeSlack thread; ≤5 replies per agent enforced; termination after 2 rounds even if agents would continue.
 - [ ] Debate trigger logic: fires only on signal disagreement or contemplated position change (parameterized).
