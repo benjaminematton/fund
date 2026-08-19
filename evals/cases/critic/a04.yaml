@@ -1,0 +1,53 @@
+id: a04
+seat: critic
+split: dev
+notes: >
+  ALIGNED BUT UGLY — the manufactured-objection trap. Seven declared
+  parameters, clumsy names, a hypothesis written in plain unimpressive prose,
+  and a modest predicted Sharpe. None of that is a G1 defect: every parameter
+  has a pre-declared range (§4.1's job, not the Critic's), and the rule's
+  every clause still traces to the stated liquidity-provision mechanism. A
+  Critic that objects here is objecting to style, and the charter says
+  manufactured objections destroy its usefulness. CLEAR.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F1
+  seat: quant
+  hypothesis: >-
+    We get paid to buy from people who have to sell. When a liquid name drops
+    hard in a few days without news, some of that is forced selling, and
+    somebody has to take the other side. We can hold a week; a redeeming fund
+    cannot. That is the whole edge.
+  mechanism_class: liquidity_provision
+  universe:
+    index: Russell 1000
+    pit_constituents: true
+    filters: [turnover_decile <= 4, price > 10, no_earnings_within_3d]
+  liquidity_bucket: mega_large
+  signal_rule:
+    entry: >-
+      ret_lb below -sig sigma AND turnover_decile <= tdec AND close > ma_long
+      AND atr_pct <= atr_cap
+    sizing: equal weight, max n_max names, skip if open_positions >= pos_cap
+    orders: limit at prior close minus off_bps
+  param_ranges:
+    ret_lb: [3, 10, 1]
+    sig: [1.0, 2.5, 0.25]
+    tdec: [2, 5, 1]
+    ma_long: [100, 250, 50]
+    atr_cap: [0.03, 0.09, 0.01]
+    n_max: [10, 40, 5]
+    off_bps: [0, 20, 5]
+  search_budget: 30
+  holding_period_d: 5
+  rebalance: daily
+  expected_turnover: 40.0
+  exit_rule: close at 5 trading days, or on a +1.0 sigma reversion, or on a stop at -2 atr
+  invalidation: >-
+    Rolling 12-month low-turnover reversal spread turns negative for two
+    consecutive quarters.
+  capacity_usd: 3000000.0
+  predicted: {net_sharpe: 0.55, max_dd: 0.16, hit_rate: 0.54}
+  llm_in_loop: 0
+expect:
+  verdict: clear

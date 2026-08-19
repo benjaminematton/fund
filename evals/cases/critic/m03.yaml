@@ -1,0 +1,43 @@
+id: m03
+seat: critic
+split: dev
+notes: >
+  F3, LABEL-ONLY LINKAGE. The hypothesis is slow diffusion of NEWS into
+  small-cap prices — an information mechanism. The rule scores headlines, so
+  the sentiment variable is present and the spec reads as an F3 strategy. But
+  entry is triggered by a 5-day price momentum crossover and the sentiment
+  score is only a non-binding tiebreak among names that already triggered.
+  Nothing about the position depends on the news. This is the subtlest family
+  in the set: the mechanism's variable appears in the code without driving
+  anything, which is precisely what a structural check cannot see.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F3
+  seat: quant
+  hypothesis: >-
+    News diffuses slowly into small-cap prices because coverage is thin and
+    few readers act on it the same day. We are paid for reading the feed
+    faster than the marginal holder does; the constraint on arbitrage is
+    attention, not capital.
+  mechanism_class: behavioral
+  universe: {index: Russell 2000, pit_constituents: true, filters: [has_news_coverage]}
+  liquidity_bucket: small
+  signal_rule:
+    entry: close crosses above ma5 having been below for 3 sessions
+    ranking: among triggers, prefer higher headline sentiment score (tiebreak only)
+    sizing: equal weight, max 20 names
+  param_ranges: {ma: [3, 10, 1], below_d: [2, 5, 1], max_names: [10, 30, 5]}
+  search_budget: 20
+  holding_period_d: 4
+  rebalance: daily
+  expected_turnover: 55.0
+  exit_rule: close at 4 trading days or on a close back below ma5
+  invalidation: >-
+    Trailing 12-month spread between the top and bottom sentiment tercile of
+    triggered names is indistinguishable from zero.
+  capacity_usd: 2000000.0
+  predicted: {net_sharpe: 0.6, max_dd: 0.2, hit_rate: 0.52}
+  llm_in_loop: 1
+expect:
+  verdict: objections
+  objection_mentions: [tiebreak, momentum]

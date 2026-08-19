@@ -1,0 +1,50 @@
+id: h03
+seat: critic
+split: holdout
+notes: >
+  NARROWER IS NOT DIFFERENT — the false-positive boundary. The rule adds two
+  filters the hypothesis never mentions: a minimum-price screen and an
+  earnings blackout at entry. Both shrink the traded universe; neither
+  changes what the strategy is paid for, and both are ordinary implementation
+  hygiene for a monthly-rebalanced momentum sleeve. A Critic that treats "the
+  rule does something the hypothesis does not say" as misalignment will fail
+  this case, and a G1 gate built on that Critic would reject every real spec
+  ever written. CLEAR.
+
+  BOTH FILTERS MUST BE LIVE ONES. An earlier draft used "no borrow
+  availability" here, which is inert on a long-only sleeve — you need borrow
+  to short, not to buy. That handed a competent Critic a legitimate objection
+  ("this filter does nothing") on a case demanding CLEAR, which would have
+  scored real insight as a failure. If this case is ever edited, check that
+  every added clause actually does something.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F4
+  seat: quant
+  hypothesis: >-
+    Momentum pays for bearing crash risk, and managing that risk is what
+    turns the raw premium into a holdable return stream. Vol-scaling the
+    exposure roughly doubles realized Sharpe because it cuts size precisely
+    into the rebound crashes that eat the premium.
+  mechanism_class: risk_premium
+  universe: {index: Russell 2000, pit_constituents: true, filters: [price > 5]}
+  liquidity_bucket: small
+  signal_rule:
+    selection: top decile 12-1 momentum, long only
+    sizing: weight proportional to target_vol / trailing_60d_realized_vol
+    filter: skip entries while index is below its 200d ma
+    hygiene: drop names under 8 dollars and names reporting earnings within 2 sessions
+  param_ranges: {lookback_m: [9, 15, 1], skip_m: [1, 2, 1], target_vol: [0.05, 0.2, 0.05]}
+  search_budget: 16
+  holding_period_d: 21
+  rebalance: monthly
+  expected_turnover: 6.0
+  exit_rule: drop out of the top three deciles at monthly rebalance
+  invalidation: >-
+    Realized Sharpe of the scaled sleeve is no better than the unscaled
+    sleeve over a trailing 24 months.
+  capacity_usd: 6000000.0
+  predicted: {net_sharpe: 0.6, max_dd: 0.22, hit_rate: 0.51}
+  llm_in_loop: 0
+expect:
+  verdict: clear

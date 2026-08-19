@@ -3,6 +3,12 @@ or two things expected of that situation specifically. The invariant grid
 applies to every case implicitly and is never restated in a case file
 (docs/evals/PLAN.md §2).
 
+Two SHAPES, one dataclass. A ticker-shaped case (pm, analyst) carries
+`tickers` + `snapshot` and its subjects are the tickers. A spec-shaped case
+(critic at G1) carries one `spec` and its subject is that spec's id. Both
+shapes are validated at load time and a case may declare exactly one: the
+alternative was a second Case class, which would fork every grader.
+
 `expect` stays an opaque dict here — grade.py owns its interpretation, and
 keeping the runner ignorant of expectations is what keeps run and grade
 separable.
@@ -16,18 +22,36 @@ from pathlib import Path
 
 import yaml
 
+from fundbt.hashing import spec_id as compute_spec_id
+
 
 @dataclass(frozen=True)
 class Case:
     id: str
     seat: str
     clock: datetime
-    tickers: list[str]                 # today's ACTIVE tickers (stage prompt)
-    snapshot: dict                     # {cash, positions, allowed_actions}
+    tickers: list[str] = field(default_factory=list)   # ticker-shaped
+    snapshot: dict = field(default_factory=dict)       # {cash, positions, allowed_actions}
     signals: list[dict] = field(default_factory=list)
+    spec: dict | None = None                           # spec-shaped: one strategy_specs row
     journal: str = ""
     expect: dict = field(default_factory=dict)
+    # "dev" | "holdout" | "" (unsplit). A set whose acceptance threshold is
+    # also the thing a prompt gets tuned against measures the tuning, not the
+    # prompt. Declaring the split in the case file rather than a directory
+    # keeps the whole set reviewable in one place and keeps load_cases' flat
+    # glob working.
+    split: str = ""
     notes: str = ""
+
+    @property
+    def subjects(self) -> list[str]:
+        """The things the turn must produce exactly one row each for. Seat
+        graders (I4, EXPECT) key off THIS, never off `tickers` — that is what
+        makes them seat-agnostic."""
+        if self.spec is not None:
+            return [compute_spec_id(self.spec)]
+        return list(self.tickers)
 
 
 def load_case(path: Path | str) -> Case:
@@ -39,11 +63,21 @@ def load_case(path: Path | str) -> Case:
         raise ValueError(
             f"case {raw['id']!r}: naive clock {clock!r} — all fund datetimes"
             " are tz-aware (orchestrator/clock.py)")
+    ticker_shaped = raw.get("tickers") is not None or raw.get("snapshot") is not None
+    spec_shaped = raw.get("spec") is not None
+    if ticker_shaped == spec_shaped:
+        raise ValueError(
+            f"case {raw['id']!r}: a case declares exactly one of"
+            " (tickers + snapshot) or (spec). Declaring both makes `subjects`"
+            " ambiguous; declaring neither makes the case ungradeable.")
     return Case(id=raw["id"], seat=raw["seat"], clock=clock,
-                tickers=list(raw["tickers"]), snapshot=raw["snapshot"],
+                tickers=list(raw.get("tickers") or []),
+                snapshot=raw.get("snapshot") or {},
                 signals=list(raw.get("signals") or []),
+                spec=raw.get("spec"),
                 journal=raw.get("journal") or "",
                 expect=raw.get("expect") or {},
+                split=raw.get("split") or "",
                 notes=raw.get("notes") or "")
 
 

@@ -1,0 +1,42 @@
+id: h02
+seat: critic
+split: holdout
+notes: >
+  RIGHT VERDICT, DIFFERENT DEFECT. Hypothesis and rule are aligned — this is
+  an honest F1 liquidity-provision spec. What is broken is the invalidation:
+  "if the edge stops working" names no observation, no threshold and no
+  window, so nothing could ever falsify the hypothesis. specs/strategy.md §2
+  requires a falsifying observation as a G1 field, and the Critic's charter
+  lists untestable invalidation as an attack. So this case must come back
+  OBJECTIONS — but a Critic that reaches that verdict by inventing a mechanism
+  complaint gets it wrong for the right-looking reason, which is what
+  objection_mentions is here to catch.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F1
+  seat: quant
+  hypothesis: >-
+    Short-horizon reversal is compensation for supplying liquidity to
+    forced sellers. Sellers are constrained (redemptions, margin), we are
+    not, and the premium survives because absorbing that flow requires
+    balance sheet and patience rather than information.
+  mechanism_class: liquidity_provision
+  universe: {index: Russell 1000, pit_constituents: true, filters: [turnover_decile <= 3]}
+  liquidity_bucket: mega_large
+  signal_rule:
+    entry: 5-day return below -1.5 sigma AND turnover_decile <= 3 AND close > ma200
+    sizing: equal weight across triggers, max 25 names
+    orders: limit at prior close
+  param_ranges: {lookback_d: [3, 10, 1], sigma: [1.0, 2.5, 0.25], max_names: [10, 40, 5]}
+  search_budget: 24
+  holding_period_d: 5
+  rebalance: daily
+  expected_turnover: 42.0
+  exit_rule: close at 5 trading days or on a +1.0 sigma reversion, whichever first
+  invalidation: if the edge stops working we will retire it
+  capacity_usd: 4000000.0
+  predicted: {net_sharpe: 0.8, max_dd: 0.14, hit_rate: 0.55}
+  llm_in_loop: 0
+expect:
+  verdict: objections
+  objection_mentions: [invalidation, falsif]

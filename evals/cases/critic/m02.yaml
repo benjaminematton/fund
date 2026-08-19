@@ -1,0 +1,42 @@
+id: m02
+seat: critic
+split: holdout
+notes: >
+  F2, MECHANISM SUBSTITUTION BY UNIVERSE. The hypothesis is analyst neglect
+  in small caps that institutions cannot deploy size into — specs/strategy.md
+  §3 F2 says drift exists only in the bottom cap quintile. The coded universe
+  is a 2bn market-cap FLOOR with a mid liquidity bucket. The rule implements
+  large-cap PEAD, where the stated mechanism (neglect, capacity constraint)
+  does not exist, and where the published t-stat is ~1.4. Everything in the
+  rule is coherent; it just earns from somewhere else, or nowhere.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F2
+  seat: quant
+  hypothesis: >-
+    Post-earnings drift persists in analyst-neglected small caps because
+    institutions cannot deploy meaningful size there. Nobody arbitrages it
+    away because the capacity is too small to be worth an institutional
+    desk's time — which is exactly our structural advantage.
+  mechanism_class: institutional
+  universe: {index: Russell 3000, pit_constituents: true, filters: [market_cap_usd > 2e9]}
+  liquidity_bucket: mid
+  signal_rule:
+    entry: SUE in top decile at next open after 8-K acceptance
+    sizing: equal weight, max 30 names
+    orders: patient limit, 20 percent of ADV cap
+  param_ranges: {sue_decile: [8, 10, 1], hold_d: [10, 30, 5], adv_cap: [0.05, 0.25, 0.05]}
+  search_budget: 18
+  holding_period_d: 20
+  rebalance: event-driven
+  expected_turnover: 9.0
+  exit_rule: close after 20 trading days or on a second negative surprise
+  invalidation: >-
+    Trailing 8-quarter drift in the traded universe is under 50 bps net of
+    the modelled spread.
+  capacity_usd: 12000000.0
+  predicted: {net_sharpe: 0.5, max_dd: 0.18, hit_rate: 0.53}
+  llm_in_loop: 0
+expect:
+  verdict: objections
+  objection_mentions: [small, market cap]

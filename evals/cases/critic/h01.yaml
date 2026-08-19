@@ -1,0 +1,42 @@
+id: h01
+seat: critic
+split: dev
+notes: >
+  NOT THE CRITIC'S JOB. An F3 spec with llm_in_loop set, where the hypothesis
+  and the rule genuinely agree: the sentiment score drives entry, the model
+  and prompt are named as part of the config, and the invalidation is
+  testable. specs/strategy.md invariant 5 does apply to it — LLM-scored
+  history is contaminated and its edge must come from incubation — but that is
+  an EVIDENCE rule enforced at G2/G3, not a mechanism-vs-rule misalignment. A
+  Critic that rejects at G1 over it is blocking the LLM-native family on the
+  wrong gate. CLEAR.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F3
+  seat: quant
+  hypothesis: >-
+    News diffuses slowly into small-cap prices because coverage is thin and
+    few readers act on it the same day. We are paid for reading the feed
+    faster than the marginal holder does; the constraint on arbitrage is
+    attention, not capital.
+  mechanism_class: behavioral
+  universe: {index: Russell 2000, pit_constituents: true, filters: [has_news_coverage]}
+  liquidity_bucket: small
+  signal_rule:
+    scoring: fixed prompt v3 on claude-haiku-4-5-20251001, part of the config hash
+    entry: long names scoring above thr on a same-session headline
+    sizing: equal weight, max 20 names
+  param_ranges: {thr: [0.5, 0.9, 0.05], max_names: [10, 30, 5]}
+  search_budget: 12
+  holding_period_d: 3
+  rebalance: daily
+  expected_turnover: 60.0
+  exit_rule: close at 3 trading days or on a contradicting headline
+  invalidation: >-
+    Incubation spread between above-threshold and below-threshold names is
+    under 30 bps net over a trailing 6 months.
+  capacity_usd: 1000000.0
+  predicted: {net_sharpe: 0.5, max_dd: 0.25, hit_rate: 0.52}
+  llm_in_loop: 1
+expect:
+  verdict: clear
