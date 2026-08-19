@@ -58,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling audit_day
 import yaml                                                        # noqa: E402
 
 import audit_day                                                   # noqa: E402
+import score_day                                                   # noqa: E402
 from agents.exec_turn import check_tool_calls, run_seat_turn       # noqa: E402
 from gate.tickets import open_tickets                              # noqa: E402
 from agents.runtime import record_turn_result                      # noqa: E402
@@ -379,6 +380,30 @@ def alert_unmapped_sectors(conn, clock, positions, sectors) -> None:
            tickers=gaps)
 
 
+# --- scorecard --------------------------------------------------------------
+
+def post_scorecard(conn, slack, db_path: str, run_date: str, clock) -> None:
+    """Append the day's scorecard and drain it, BEFORE report_audit runs.
+
+    The ordering is load-bearing in both directions. run_stage drains after
+    every stage, but this runs after the last one, so an append with no drain
+    beside it would sit unposted — and the audit's undrained-outbox check is
+    global, so it would redden the NEXT day rather than this one. Draining
+    before the audit also means the audit verifies an outbox that includes the
+    scorecard, instead of one it is about to dirty.
+
+    Never fails the day. The scorecard is a reading aid; audit_day owns the
+    exit code, and a report that could take down a trading day would invert
+    what this is for (invariant 4)."""
+    try:
+        score_day.append_scorecard_event(conn, db_path, run_date,
+                                         iso(clock.now()))
+        drain(conn, slack, iso(clock.now()))
+    except Exception as exc:
+        log(f"scorecard_failed {run_date} — {type(exc).__name__}: {exc};"
+            " the day is unaffected")
+
+
 # --- audit ------------------------------------------------------------------
 
 def report_audit(conn, slack, db_path: str, run_date: str, clock) -> int:
@@ -575,6 +600,7 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
         trace_sink=trace_sink, turn_seq=turn_seq)
 
     run_day(ctx, execution_turn=execution_turn, broker=source, sleep=time.sleep)
+    post_scorecard(conn, slack, db_path, run_date, clock)
     return report_audit(conn, slack, db_path, run_date, clock)
 
 

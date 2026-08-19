@@ -111,6 +111,36 @@ def test_alert_is_labelled_so_it_is_not_mistaken_for_a_gate_post():
 FALLBACK = {"seat": "analyst", "configured": "claude-haiku-4-5-20251001",
             "served": ["claude-sonnet-5"]}
 
+SCORECARD = {"run_date": "2026-07-06", "rows": [
+    {"severity": 0, "kind": "critic_timeout",
+     "detail": "critic: timed out on 1 tickers (NVDA)"},
+    {"severity": 1, "kind": "gate_rejected",
+     "detail": "NVDA buy blocked: no_headroom"}]}
+
+
+def test_a_scorecard_leads_with_its_worst_finding():
+    """The scorecard exists to say what to read FIRST, so the severity order
+    scripts/score_day.py computed has to survive the projection."""
+    channel, text = render("scorecard", SCORECARD)[:2]
+    assert channel == "#pnl"
+    assert text.index("critic_timeout") < text.index("gate_rejected")
+
+
+def test_a_clean_scorecard_still_says_something():
+    """It posts every day, clean ones included — silence is ambiguous between
+    a quiet day and a job that never ran."""
+    text = render("scorecard", {"run_date": "2026-07-06", "rows": []})[1]
+    assert "2026-07-06" in text and text.strip()
+
+
+def test_a_long_scorecard_is_clipped_with_a_count_not_truncated_silently():
+    """A day with thirty findings must not post a wall no one reads, and must
+    not quietly imply there were only five."""
+    rows = [{"severity": 3, "kind": "cost_outlier", "detail": f"seat{n}: $9"}
+            for n in range(30)]
+    text = render("scorecard", {"run_date": "2026-07-06", "rows": rows})[1]
+    assert "25 more" in text
+
 
 def test_a_model_fallback_names_both_models_and_what_it_costs_the_reader():
     """agents/runtime.py appends this when model_usage names a model the seat
@@ -142,7 +172,7 @@ BLOCK_KINDS = [("signal", SIGNAL), ("decision", DECISION),
                ("gate_approved", GATE_OK), ("gate_rejected", GATE_NO),
                ("fill", FILL), ("alert", {"text": "boom"}),
                ("digest", DIGEST), ("pnl", PNL),
-               ("model_fallback_used", FALLBACK)]
+               ("model_fallback_used", FALLBACK), ("scorecard", SCORECARD)]
 
 
 @pytest.mark.parametrize("kind,payload", BLOCK_KINDS)

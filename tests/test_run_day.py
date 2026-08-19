@@ -638,10 +638,14 @@ def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
     } == {s: "done" for s in ("pre_gate", "research", "decision", "gate",
                               "execution", "reconciliation", "close")}
 
-    # ...and the day still spoke: a digest in #pnl, no alerts, nothing left
-    # undrained (which is what audit_day's own clean verdict above rests on)
-    assert len(slack.posts["#pnl"]) == 1
-    assert "2026-07-06 close" in slack.posts["#pnl"][0]["text"]
+    # ...and the day still spoke: a digest AND a scorecard in #pnl, no alerts,
+    # nothing left undrained (which is what audit_day's own clean verdict above
+    # rests on — the scorecard is appended BEFORE the audit and drained with
+    # it, so an unposted one would have reddened this very assertion).
+    texts = [p["text"] for p in slack.posts["#pnl"]]
+    assert len(texts) == 2
+    assert any("2026-07-06 close" in t for t in texts)
+    assert any("2026-07-06 scorecard" in t for t in texts)
     assert _alert_payloads(conn) == []
     assert conn.execute("SELECT COUNT(*) c FROM events"
                         " WHERE posted_at IS NULL").fetchone()["c"] == 0
