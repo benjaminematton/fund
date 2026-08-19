@@ -23,8 +23,11 @@ def _seed(conn, *, stop_price=None, expires=EXPIRY, max_qty=67, tid=TID):
 
 
 def order(**over):
+    # gtc, not day: a stop-carrying order must outlive the session that placed
+    # it (2026-08-19). The stopless path stays time-in-force-agnostic, and both
+    # branches are asserted explicitly in the time_in_force section below.
     base = {"client_order_id": TID, "symbol": "NVDA", "side": "buy",
-            "qty": 67, "type": "market", "time_in_force": "day"}
+            "qty": 67, "type": "market", "time_in_force": "gtc"}
     base.update(over)
     return base
 
@@ -251,3 +254,75 @@ def test_bool_is_rejected_as_a_type_not_by_numeric_coincidence(fund_db):
     ok, _ = validate_order(
         fund_db, order(order_class="oto", stop_loss_stop_price="1.0"), NOW)
     assert ok, "the real stop of 1.0 must still pass"
+
+
+# ---- time_in_force: the 2026-08-19 missing-stop class ----
+
+def test_deny_day_time_in_force_when_the_ticket_has_a_stop(fund_db):
+    """The 2026-08-19 incident, in one assertion. The 08-17 NVDA entry placed
+    as an OTO whose stop leg inherited the parent's time_in_force: DAY; the
+    leg expired at 16:00 ET the same day and the position sat unprotected for
+    two sessions while the DB asserted a live stop at 215. A stop must outlive
+    the session that created it."""
+    _seed(fund_db, stop_price=168.0)
+    ok, reason = validate_order(fund_db, order(
+        order_class="oto", stop_loss_stop_price="168.0",
+        time_in_force="day"), NOW)
+    assert not ok, "a DAY stop leg was accepted"
+    assert "gtc" in reason
+
+
+def test_deny_missing_time_in_force_when_the_ticket_has_a_stop(fund_db):
+    """The real tool OMITS time_in_force unless the seat passes it, and its
+    default is 'day' (schema-pinned in tests/test_live_smoke.py). Absent must
+    therefore deny, not fall through."""
+    _seed(fund_db, stop_price=168.0)
+    tool_input = order(order_class="oto", stop_loss_stop_price="168.0")
+    del tool_input["time_in_force"]
+    ok, reason = validate_order(fund_db, tool_input, NOW)
+    assert not ok, "a missing time_in_force was accepted"
+    assert "gtc" in reason
+
+
+def test_deny_unreadable_time_in_force_when_the_ticket_has_a_stop(fund_db):
+    """Deny-by-default on anything that is not a string: a time_in_force the
+    gate cannot read is a stop lifetime the gate cannot verify (invariant 4)."""
+    _seed(fund_db, stop_price=168.0)
+    for value in (None, 0, 1, True, ["gtc"], {"tif": "gtc"}):
+        ok, reason = validate_order(fund_db, order(
+            order_class="oto", stop_loss_stop_price="168.0",
+            time_in_force=value), NOW)
+        assert not ok, f"{value!r} was accepted as a time_in_force"
+        assert "gtc" in reason
+
+
+def test_time_in_force_is_read_case_insensitively(fund_db):
+    """Alpaca's enum is lowercase but a seat may well send 'GTC'. Denying that
+    would be a false deny on an order that is exactly right."""
+    _seed(fund_db, stop_price=168.0)
+    for value in ("GTC", "Gtc", " gtc "):
+        ok, reason = validate_order(fund_db, order(
+            order_class="oto", stop_loss_stop_price="168.0",
+            time_in_force=value), NOW)
+        assert ok, f"{value!r} was denied: {reason}"
+
+
+def test_a_stopless_ticket_stays_time_in_force_agnostic(fund_db):
+    """The plain path is deliberately untouched: a stopless order has no leg
+    to outlive the session, so requiring gtc there would be a false deny on a
+    legitimate DAY order."""
+    _seed(fund_db)  # stop_price NULL
+    ok, reason = validate_order(fund_db, order(time_in_force="day"), NOW)
+    assert ok, reason
+
+
+def test_order_class_is_denied_before_time_in_force(fund_db):
+    """A bracket order with a DAY tif violates both rules. order_class is the
+    more specific defect and must be the reason reported, so
+    test_deny_bracket_order_class_when_stop keeps testing what it names."""
+    _seed(fund_db, stop_price=168.0)
+    ok, reason = validate_order(fund_db, order(
+        order_class="bracket", stop_loss_stop_price="168.0",
+        time_in_force="day"), NOW)
+    assert not ok
+    assert "oto" in reason
