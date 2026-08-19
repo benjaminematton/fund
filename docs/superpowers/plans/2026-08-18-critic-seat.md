@@ -271,6 +271,24 @@ def test_every_objections_case_names_the_defect_it_expects_to_be_caught():
                 f"{c.id} objection_mentions must be lowercase (matched case-insensitively)"
 
 
+def test_no_long_only_spec_carries_a_borrow_filter():
+    """A borrow-availability screen is inert on a long-only sleeve — you need
+    borrow to short, not to buy. An inert clause in a CLEAR case hands a
+    competent Critic a legitimate objection ("this filter does nothing") on a
+    case that scores objecting as failure, which is the worst possible
+    grading error: it marks real insight wrong.
+
+    Narrow by design. The general property — every clause in a CLEAR case's
+    rule must actually do something — is not mechanically checkable, and the
+    real guard is reading the cases. This pins the one instance that already
+    got past a self-review."""
+    for c in load_cases(CASES):
+        rule = str(c.spec["signal_rule"]).lower()
+        if "long only" in rule or "long-only" in rule:
+            assert "borrow" not in rule, \
+                f"{c.id}: borrow filter on a long-only rule is inert"
+
+
 def test_clear_cases_never_declare_objection_mentions():
     for c in load_cases(CASES):
         if c.expect["verdict"] == "clear":
@@ -942,12 +960,20 @@ id: h03
 seat: critic
 notes: >
   NARROWER IS NOT DIFFERENT — the false-positive boundary. The rule adds two
-  filters the hypothesis never mentions: a minimum-price screen and a borrow
-  availability check. Both shrink the traded universe; neither changes what
-  the strategy is paid for, and both are ordinary implementation hygiene. A
-  Critic that treats "the rule does something the hypothesis does not say" as
-  misalignment will fail this case, and a G1 gate built on that Critic would
-  reject every real spec ever written. CLEAR.
+  filters the hypothesis never mentions: a minimum-price screen and an
+  earnings blackout at entry. Both shrink the traded universe; neither
+  changes what the strategy is paid for, and both are ordinary implementation
+  hygiene for a monthly-rebalanced momentum sleeve. A Critic that treats "the
+  rule does something the hypothesis does not say" as misalignment will fail
+  this case, and a G1 gate built on that Critic would reject every real spec
+  ever written. CLEAR.
+
+  BOTH FILTERS MUST BE LIVE ONES. An earlier draft used "no borrow
+  availability" here, which is inert on a long-only sleeve — you need borrow
+  to short, not to buy. That handed a competent Critic a legitimate objection
+  ("this filter does nothing") on a case demanding CLEAR, which would have
+  scored real insight as a failure. If this case is ever edited, check that
+  every added clause actually does something.
 clock: "2026-07-06T15:00:00+00:00"
 spec:
   family: F4
@@ -964,7 +990,7 @@ spec:
     selection: top decile 12-1 momentum, long only
     sizing: weight proportional to target_vol / trailing_60d_realized_vol
     filter: skip entries while index is below its 200d ma
-    hygiene: drop names under 8 dollars and names with no borrow availability
+    hygiene: drop names under 8 dollars and names reporting earnings within 2 sessions
   param_ranges: {lookback_m: [9, 15, 1], skip_m: [1, 2, 1], target_vol: [0.05, 0.2, 0.05]}
   search_budget: 16
   holding_period_d: 21
@@ -1014,7 +1040,7 @@ notes: >
 - [ ] **Step 8: Run the case tests**
 
 Run: `.venv/bin/python3 -m pytest tests/test_evals_critic_cases.py -v`
-Expected: 14 passed.
+Expected: 15 passed.
 
 - [ ] **Step 9: Run the full suite — the `Case` change touches the PM rig**
 
