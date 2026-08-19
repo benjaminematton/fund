@@ -278,6 +278,19 @@ def test_a_stopped_ticket_places_with_a_flat_stop_leg(tmp_path):
     from agents.exec_turn import run_exec_turn
     from agents.trader import build_trader_options, load_seat_config
     from agents.wallclock import WallClock
+    from market.source_alpaca import AlpacaSource
+
+    # MARKET MUST BE OPEN, and this SKIPS rather than passes when it is not.
+    # With the market shut the parent market order cannot fill, so its OTO
+    # child stays `held` forever and the leg-visibility assertion below is
+    # unreachable — the run would prove only the half that needs no fill.
+    # That is exactly the 2026-08-18 defect: the timer rehearsal ran against a
+    # closed market, exited early, and passed WHILE CONCEALING the thing it
+    # existed to check. A skip is loud; a green tick that proves nothing is not.
+    if not AlpacaSource().market_clock()["is_open"]:
+        pytest.skip("market is closed — the parent cannot fill, so the stop "
+                    "leg stays 'held' and leg visibility cannot be checked. "
+                    "Re-run during regular hours; a pass here would be a lie.")
     from gate.tickets import create_ticket
     from orchestrator.clock import iso
     from state.db import connect
@@ -338,6 +351,57 @@ def test_a_stopped_ticket_places_with_a_flat_stop_leg(tmp_path):
         time.sleep(2)
     assert stop_price in leg_stops, (
         f"ticket stop {stop_price} not on the order's legs: {leg_stops}")
+
+    # ...with a lifetime that OUTLIVES the session. This is the 2026-08-19
+    # class: on 08-17 the parent and its leg both went in tif DAY, the leg
+    # expired at 20:00:06Z the same day, and NVDA 80 sat unprotected for two
+    # sessions while the DB asserted a live stop at 215. gate/tickets.py now
+    # denies a stop-carrying order that is not gtc — this is the other half of
+    # that rule, and the only place it can be checked: that Alpaca ACCEPTS gtc
+    # on an OTO market parent and hands the lifetime down to the leg. If the
+    # leg comes back 'day', the stop dies at the bell and the gate rule bought
+    # nothing.
+    assert str(order.get("time_in_force")).lower() == "gtc", (
+        f"parent time_in_force is {order.get('time_in_force')!r}, not gtc")
+    legs = order.get("legs") or []
+    assert legs, f"no stop leg on the placed order: {order}"
+    for leg in legs:
+        assert str(leg.get("time_in_force")).lower() == "gtc", (
+            f"stop leg time_in_force is {leg.get('time_in_force')!r}, not gtc"
+            " — it will expire at the close and leave the position naked")
+
+    # ...and once the parent FILLS, that leg is visible to the protection
+    # assertion. Measured 2026-08-19: a `held` OTO child is NOT returned by
+    # QueryOrderStatus.OPEN, so this must be checked after the fill activates
+    # it — which is also the only moment that matters, because
+    # orchestrator/protection.py runs after reconciliation, when a position
+    # exists precisely because its parent filled. If the activated leg were
+    # invisible here, protection.py would report every correctly-stopped
+    # position as naked, every day, and the alert channel would be dead in a
+    # week. tests/fake_alpaca.py cannot settle it — the fake picks the leg's
+    # status itself, a fixture agreeing with our code while both may disagree
+    # with Alpaca, which is the 2026-08-17 defect exactly.
+    source = AlpacaSource()
+    for _ in range(20):
+        parent = _alpaca_get(
+            f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
+        if parent["status"] == "filled":
+            break
+        time.sleep(3)
+    assert parent["status"] == "filled", (
+        f"parent never filled ({parent['status']}) — leg visibility is "
+        "unproven, not proven")
+    live = []
+    for _ in range(10):                     # the leg activates a beat later
+        live = [o for o in source.open_orders() if o["symbol"] == "AAPL"
+                and o["side"] == "sell" and o["type"].startswith("stop")]
+        if live:
+            break
+        time.sleep(2)
+    assert live, (
+        "the activated stop leg is invisible to open_orders() — "
+        "protection.py would call this position naked every day. Saw: "
+        f"{[o for o in source.open_orders() if o['symbol'] == 'AAPL']}")
 
     # ...and the recorder mirrored it, so the DB tells the truth about it
     row = conn.execute("SELECT * FROM orders WHERE client_order_id = ?",
