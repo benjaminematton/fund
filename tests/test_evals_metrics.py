@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from evals.metrics import names_price_level, stop_discipline
+import json
+
+from evals.metrics import (names_price_level, stop_discipline,
+                           stop_discipline_for)
 
 
 def _buy(invalidation, stop_price=None):
@@ -40,3 +43,24 @@ def test_stop_discipline_rates_only_count_buys():
     assert m.buys == 2
     assert m.priced == 1
     assert m.stopped == 1
+
+
+def test_stop_discipline_for_scores_a_recorded_run_off_disk(tmp_path):
+    """`make eval-report` re-scores recorded JSON with no Trace rehydration —
+    the loader must walk <run>/<sha>/<case>/<trial>.json the way traces are
+    actually laid out, not a flat directory."""
+    for case, row in (("a01", _buy("closes below $205", 205.0)),
+                      ("a02", _buy("capex guidance is cut"))):
+        d = tmp_path / "4f42600" / case
+        d.mkdir(parents=True)
+        (d / "1.json").write_text(json.dumps(
+            {"case": case, "rows_written": {"decisions": [row]}}))
+    m = stop_discipline_for(tmp_path)
+    assert (m.buys, m.priced, m.stopped) == (2, 1, 1)
+    assert m.rate(m.priced) == "1/2"
+
+
+def test_stop_discipline_for_an_empty_run_is_zero_not_a_crash(tmp_path):
+    """A labelled run whose traces were cleaned up (make preflight does this)
+    must report 0/0, never take the report down."""
+    assert stop_discipline_for(tmp_path).buys == 0

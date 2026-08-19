@@ -8,13 +8,27 @@ seat: pm
 # max_budget_usd 0.75) — a backstop that only fires at 10 turns cannot detect
 # a turn-count regression from 5 to 9.
 #
-# PROVISIONAL, and knowingly loose. Measured 2026-08-17: 5 turns, $0.1161 —
-# but that measurement was taken while charters/pm.md still instructs the seat
-# to post a Slack verdict it has no tool for (MAST FM-1.1, an impossible task
-# spec). The baseline is being recorded WITH that defect on purpose, so the
-# charter fix has a measured before/after. Tighten both numbers once the
-# post-fix baseline exists; do not tighten them to make a red case pass.
+# MEASURED 2026-08-18 against charters/pm.md v6 — the post-fix baseline the
+# previous note was waiting on. 54 trials, three suite runs (postfix,
+# postfix2, postfix3), one charter_sha:
+#   turns  mean 3.98, max 7   (histogram 3:20 4:23 5:5 6:4 7:2)
+#   cost   mean $0.0453, p95 $0.1144, max $0.1268
+#
+# max_turns STAYS 8 = measured max + 1. Tightening to 7 would sit exactly on
+# an observed value (7 turns happened twice in 54), so the tail would redden
+# `make preflight` on a charter that never regressed.
+#
+# max_cost_usd 0.25 -> 0.18: 1.4x the measured max. Also above the dearest
+# trial ever recorded ($0.1370, primary2), which matters because I5 re-scores
+# EVERY run on disk — a ceiling under a historical max reddens the archive
+# retroactively. Check that before tightening further.
+#
+# Measured on the Mac; graded on the droplet by `make preflight`. Turns and
+# cost are server-side and ALPACA_MCP_SPEC is pinned, so they should transfer
+# — but if preflight ever fails on I5 alone, suspect a host difference first.
+#
+# Do not tighten either number to make a red case pass.
 max_turns: 8
-max_cost_usd: 0.25
+max_cost_usd: 0.18
 
 invariants: [I1, I2, I3, I4, I5]

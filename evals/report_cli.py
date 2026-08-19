@@ -10,6 +10,7 @@ from pathlib import Path
 
 from evals.cases import load_cases
 from evals.grade import full_registry, grade_traces
+from evals.metrics import stop_discipline_for
 from evals.report import build_report, diff, render
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,15 +52,24 @@ def main(run: str | None, baseline: str | None) -> int:
         for name in runs:
             print(f"=== {name} ===")
             print(render(_report(name, cases)))
+            print(f"stop discipline: {stop_discipline_for(TRACES / name)}")
             print()
         return 0
 
     current = _report(run, cases)
     print(f"=== {run} ===")
     print(render(current))
+    print(f"stop discipline: {stop_discipline_for(TRACES / run)}")
     if baseline:
         print(f"\n=== {run} vs {baseline} ===")
         print(diff(current, _report(baseline, cases)))
+        # Tier M last, and always — never gated on the pass table moving.
+        # Measured 2026-08-17: a charter edit dropped this rate 6/6 -> 2/6
+        # while every case still passed 3/3, so a diff that prints only when
+        # pass^3 moves is a diff that cannot see the regression it exists for.
+        print("\nstop discipline (Tier M — a DROP is the signal):")
+        for name in (baseline, run):
+            print(f"  {name:<10} {stop_discipline_for(TRACES / name)}")
     return 0
 
 

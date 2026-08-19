@@ -1,21 +1,28 @@
 """Tier M metrics — measured every run, never blocking.
 
-Why this is a metric and not an invariant: charters/pm.md:26 explicitly
-PERMITS a non-price invalidation ("leave it unset for non-price conditions").
-So a single vague invalidation breaks no rule. What matters is the RATE, and a
-drop in it.
+Why this is a metric and not an invariant: charters/pm.md §"Output contract"
+(v6 line 25) explicitly PERMITS a non-price invalidation ("leave it unset for
+non-price conditions"). So a single vague invalidation breaks no rule. What
+matters is the RATE, and a drop in it.
 
-Measured 2026-08-17: deleting the pm.md:31 sizing line moved the price-level
-rate from 6/6 to 2/6 while every case still passed 3/3. The PM kept applying
-the stop rule correctly the whole time — it was the invalidation that went
-vague, and the missing stops were the downstream symptom. An invalidation a
-broker cannot enforce is a position with no real exit.
+Measured 2026-08-17: deleting the §"Judgment" sizing line ("size so a stop at
+the invalidation level risks <=1% of equity", v6 line 30) moved the
+price-level rate from 6/6 to 2/6 while every case still passed 3/3. The PM
+kept applying the stop rule correctly the whole time — it was the invalidation
+that went vague, and the missing stops were the downstream symptom. An
+invalidation a broker cannot enforce is a position with no real exit.
+
+Both citations carry the section heading as well as the line number: a charter
+edit renumbers lines silently (v5 -> v6 moved both by one), and a stale line
+reference is how this rationale quietly stops describing the charter it cites.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 # A price LEVEL, deliberately narrow: a currency-marked number. Bare integers
 # are rejected because invalidations routinely carry dates ("breaks the Aug 11
@@ -56,3 +63,15 @@ def stop_discipline(traces) -> StopDiscipline:
             priced += names_price_level(row.get("invalidation"))
             stopped += row.get("stop_price") is not None
     return StopDiscipline(buys=buys, priced=priced, stopped=stopped)
+
+
+def stop_discipline_for(traces_root: Path | str) -> StopDiscipline:
+    """Score one recorded run directory, off disk.
+
+    `make eval` prints this metric for the run it just executed, which is the
+    one moment nobody needs it: the comparison that matters is against a
+    baseline recorded days earlier. Without this loader the only before/after
+    was a hand-written script, so the 6/6 -> 2/6 collapse above was measurable
+    exactly once, by whoever thought to look."""
+    return stop_discipline([json.loads(p.read_text())
+                            for p in sorted(Path(traces_root).rglob("*.json"))])
