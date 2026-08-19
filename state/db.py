@@ -20,4 +20,10 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     if "tickets" not in have:
         conn.executescript(_SCHEMA.read_text())
         conn.commit()
+    # Apply schema, THEN migrate. The block above only fires on an empty file,
+    # so a column added to schema.sql never reaches a database that already
+    # exists — this is what carries it there. Imported here rather than at
+    # module scope to keep the import graph acyclic.
+    from state.migrations import apply as _apply_migrations
+    _apply_migrations(conn)
     return conn

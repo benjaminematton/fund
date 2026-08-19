@@ -176,9 +176,15 @@ def run_research(ctx: StageCtx, active: list[str]) -> None:
         if (seat, ticker) in covered:
             continue
         ctx.conn.execute(
+            # 'none', not the column default 'unknown': the orchestrator
+            # wrote this row because the seat was silent, so no charter and no
+            # model produced it. 'unknown' means "predates attribution" and
+            # collapsing the two would hide which rows measure seat
+            # RELIABILITY rather than charter JUDGMENT — the distinction that
+            # keeps defaulted rows out of charter comparisons.
             "INSERT OR IGNORE INTO signals (run_date, agent, ticker, direction,"
-            " confidence, summary, created_at)"
-            " VALUES (?, ?, ?, 'neutral', 0, 'no report', ?)",
+            " confidence, summary, created_at, charter_version, model_id)"
+            " VALUES (?, ?, ?, 'neutral', 0, 'no report', ?, 'none', 'none')",
             (ctx.run_date, seat, ticker, now))
     ctx.conn.commit()
 
@@ -208,9 +214,14 @@ def run_decision(ctx: StageCtx, active: list[str]) -> None:
         append_event(ctx.conn, "alert",
                      {"text": f"pm_timeout {ticker} — defaulted to hold"}, now)
         ctx.conn.execute(
+            # 'none' for the same reason as the defaulted signal above: a
+            # pm_timeout hold is the orchestrator recording silence, not a
+            # charter's judgment. This writer is owned by no other branch, so
+            # nothing else would catch it being missed.
             "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
-            " invalidation, status, created_at)"
-            " VALUES (?, ?, 'hold', 0, ?, 'n/a', 'submitted', ?)",
+            " invalidation, status, created_at, charter_version, model_id)"
+            " VALUES (?, ?, 'hold', 0, ?, 'n/a', 'submitted', ?, 'none',"
+            " 'none')",
             (ctx.run_date, ticker, "no decision by the deadline (pm_timeout)",
              now))
         ctx.conn.commit()

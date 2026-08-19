@@ -6,6 +6,19 @@ CREATE TABLE signals (
   direction     TEXT NOT NULL CHECK (direction IN ('bullish','bearish','neutral')),
   confidence    INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
   summary       TEXT NOT NULL,                -- <= 500 chars
+  charter_version TEXT NOT NULL DEFAULT 'unknown',
+                                              -- attribution. Three values, never
+                                              -- NULL: a real version (a seat wrote
+                                              -- it under that charter), 'none' (the
+                                              -- orchestrator wrote it because the
+                                              -- seat was silent), 'unknown' (predates
+                                              -- attribution). A NULL would drop out
+                                              -- of GROUP BY silently, making the
+                                              -- exclusion an accident.
+  model_id      TEXT NOT NULL DEFAULT 'unknown',
+                                              -- the seat's CONFIGURED model at write
+                                              -- time. A fallback that served the turn
+                                              -- instead raises model_fallback_used.
   slack_ts      TEXT,                         -- projection pointer, may be NULL
   created_at    TEXT NOT NULL,
   UNIQUE (run_date, agent, ticker)            -- re-submission overwrites via UPSERT
@@ -19,6 +32,8 @@ CREATE TABLE critiques (                       -- Critic's advisory review of th
   objections    TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings, <=3, each <=200 chars
                                               -- (empty iff verdict='clear')
   note          TEXT,                         -- e.g. 'critic_timeout' when defaulted
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- see signals
+  model_id      TEXT NOT NULL DEFAULT 'unknown',     -- see signals
   slack_ts      TEXT,
   created_at    TEXT NOT NULL,
   UNIQUE (run_date, ticker)
@@ -40,6 +55,8 @@ CREATE TABLE decisions (
   stop_price    REAL CHECK (stop_price IS NULL OR stop_price > 0),
                                               -- set iff invalidation is a hard price level
                                               -- (buy only); NULL = Ops watches the text condition
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- see signals
+  model_id      TEXT NOT NULL DEFAULT 'unknown',      -- see signals
   status        TEXT NOT NULL DEFAULT 'submitted',
   debate_ts     TEXT,                         -- Slack thread of the debate, if any
   created_at    TEXT NOT NULL,

@@ -17,11 +17,13 @@ Apply transitions only via `state.transition(table, id, from_status, to_status)`
 CREATE TABLE signals (
   id            INTEGER PRIMARY KEY,
   run_date      TEXT NOT NULL,                -- YYYY-MM-DD (ET)
-  agent         TEXT NOT NULL,                -- seat name, e.g. 'fundamentals'
+  agent         TEXT NOT NULL,                -- seat name, e.g. 'news'
   ticker        TEXT NOT NULL,
   direction     TEXT NOT NULL CHECK (direction IN ('bullish','bearish','neutral')),
   confidence    INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
   summary       TEXT NOT NULL,                -- <= 500 chars
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- attribution, see below
+  model_id      TEXT NOT NULL DEFAULT 'unknown',     -- attribution, see below
   slack_ts      TEXT,                         -- projection pointer, may be NULL
   created_at    TEXT NOT NULL,
   UNIQUE (run_date, agent, ticker)            -- re-submission overwrites via UPSERT
@@ -35,6 +37,8 @@ CREATE TABLE critiques (                       -- Critic's advisory review of th
   objections    TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings, <=3, each <=200 chars
                                               -- (empty iff verdict='clear')
   note          TEXT,                         -- e.g. 'critic_timeout' when defaulted
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- attribution, see below
+  model_id      TEXT NOT NULL DEFAULT 'unknown',     -- attribution, see below
   slack_ts      TEXT,
   created_at    TEXT NOT NULL,
   UNIQUE (run_date, ticker)
@@ -54,6 +58,8 @@ CREATE TABLE decisions (
   stop_price    REAL CHECK (stop_price IS NULL OR stop_price > 0),
                                               -- set iff invalidation is a hard price level
                                               -- (buy only); NULL = Ops watches the text condition
+  charter_version TEXT NOT NULL DEFAULT 'unknown',   -- attribution, see below
+  model_id      TEXT NOT NULL DEFAULT 'unknown',     -- attribution, see below
   status        TEXT NOT NULL DEFAULT 'submitted',
   debate_ts     TEXT,                         -- Slack thread of the debate, if any
   created_at    TEXT NOT NULL,
@@ -128,6 +134,44 @@ CREATE TABLE costs (
   recorded_at   TEXT NOT NULL
 );
 ```
+
+### Attribution — `charter_version` and `model_id`
+
+Every table recording an agent's judgment carries both. One vocabulary, three
+values, **never NULL**:
+
+| value | meaning |
+|---|---|
+| a real version, e.g. `v6` | a seat produced this row under that charter |
+| `none` | the orchestrator produced it because a seat was silent |
+| `unknown` | written before attribution existed; genuinely lost |
+
+`NOT NULL` is deliberate. A NULL drops silently out of a `GROUP BY` and out of
+every `=`, which would make excluding un-attributed rows from a charter
+comparison an accident of SQL semantics rather than a clause someone wrote.
+
+**Rows with `none` or `unknown` are excluded from every charter comparison.** A
+defaulted row measures the seat's *reliability* — a timeout, a silent turn —
+not the charter's *judgment*, and folding it in would penalise a good charter
+for an infrastructure failure. Reliability has its own home in the daily
+scorecard.
+
+`charter_version` comes from the charter header (`# Portfolio Manager — v6`),
+which `charters/_template.md` already requires bumping on any change. An
+unparseable header yields `unknown` rather than raising: a charter's formatting
+must not take a trading day down.
+
+`model_id` is the seat's **configured** model. The MCP handlers see only `seat`
+and `args` — never the `ResultMessage`, which does not exist until the turn
+ends — so a fallback that actually served the turn cannot be bound at write
+time. It is surfaced instead by a `model_fallback_used` alert raised after the
+turn, comparing `ResultMessage.model_usage`'s keys against the configured
+model. The column is therefore trustworthy exactly when no such alert fired.
+
+The defaults exist so the columns can be added to an existing database
+(`state/migrations.py`; SQLite permits `ADD COLUMN ... NOT NULL` only with
+one). They are not a licence to omit the value: every writer binds explicitly.
+
 
 ## 3. Pydantic models (pydantic v2 — mirror the DDL exactly)
 
