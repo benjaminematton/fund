@@ -191,16 +191,17 @@ def test_a_total_slack_outage_never_audits_clean(tmp_path):
     assert projection_errors == 0                # nothing was discarded...
     undrained = sim.conn.execute(
         "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"]
-    assert undrained == 5                        # ...it is all still queued
+    assert undrained == 6                        # ...it is all still queued
+                                                 # (6 not 5: the news seat's signal)
 
-    assert audit_day.audit(path, sim.run_date) == ["undrained outbox events: 5"]
+    assert audit_day.audit(path, sim.run_date) == ["undrained outbox events: 6"]
 
     # and the queue really does clear the moment Slack works
     from slackkit.fake import FakeSlack
     from slackkit.outbox import drain
     slack = FakeSlack()
-    assert drain(sim.conn, slack, "2026-07-06T20:00:00+00:00") == 5
-    assert sum(len(v) for v in slack.posts.values()) == 5
+    assert drain(sim.conn, slack, "2026-07-06T20:00:00+00:00") == 6
+    assert sum(len(v) for v in slack.posts.values()) == 6
 
 
 def test_alert_event_reported(day):
