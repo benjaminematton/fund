@@ -22,9 +22,42 @@ from state.critiques import insert_default_critiques  # noqa: F401 (re-export)
 from state.journal import recent_entries
 from state.models import Decision, Signal
 
-SIGNAL_SEATS = ("analyst",)
-DECISION_SEATS = ("pm",)
-BRIEF_SEATS = ("analyst", "pm")
+# One table, not four parallel lists (ADR-0002): registering a seat is a single
+# edit, and a half-registered seat — one that may signal but gets no brief — is
+# unrepresentable. Stays in PYTHON, never yaml: these caps are what stop a seat
+# writing state it shouldn't, and a config typo must not be able to widen a
+# write surface.
+#
+# NAMING RULE: a cap granting a TOOL is named exactly after that tool; a cap
+# granting a BRIEF SECTION is read_*. So the kind of grant is readable from the
+# name, and every non-read_ cap must be a real registered tool name — which
+# test_tool_caps_are_real_registered_tool_names asserts against built servers.
+#   get_stage_brief      - may call get_stage_brief at all
+#   submit_signal        - may call submit_signal
+#   submit_decision      - may call submit_decision
+#   list_open_tickets    - may call list_open_tickets
+#   read_account         - brief carries cash/positions (needs `account` toolset)
+#   read_signals         - brief carries today's signal rows
+#   read_allowed_actions - brief carries the gate's share budget. SEPARATE from
+#     read_signals on purpose: two sections from two different sources, and
+#     design.md §2's Bull/Bear seats plausibly want signals without the budget.
+SEAT_CAPS: dict[str, frozenset[str]] = {
+    "analyst": frozenset({"get_stage_brief", "submit_signal", "read_account"}),
+    "news":    frozenset({"get_stage_brief", "submit_signal"}),
+    "pm":      frozenset({"get_stage_brief", "submit_decision", "read_account",
+                          "read_signals", "read_allowed_actions"}),
+    "exec":    frozenset({"list_open_tickets"}),
+}
+
+
+def _can(seat: str, cap: str) -> bool:
+    """Silent False for an unknown seat is deliberate and matches the previous
+    behavior exactly: handlers returned {"ok": False, ...} for a wrong seat and
+    never raised. The hard stop for an unknown seat lives in build_fund_server,
+    which is the only place it ever lived."""
+    return cap in SEAT_CAPS.get(seat, frozenset())
+
+
 JOURNAL_ENTRIES = 3          # how many past days of its own log a seat is shown
 
 
@@ -39,9 +72,9 @@ def handle_submit_signal(conn: sqlite3.Connection, *, seat: str, args: dict,
                          run_date: str, now_iso: str) -> dict:
     """Validate + UPSERT one analyst's signal, append a projection event.
     Wrong seat or invalid payload: no row, no event written (default HOLD)."""
-    if seat not in SIGNAL_SEATS:
+    if not _can(seat, "submit_signal"):
         return {"ok": False,
-                "error": f"submit_signal is analyst-seat-only (seat={seat!r})"}
+                "error": f"submit_signal is not granted to seat {seat!r}"}
     try:
         sig = Signal(run_date=run_date, agent=seat, ticker=args["ticker"],
                      direction=args["direction"], confidence=args["confidence"],
@@ -73,9 +106,9 @@ def handle_submit_decision(conn: sqlite3.Connection, *, seat: str, args: dict,
     would rewrite the audit trail the gate approved against. Wrong seat,
     invalid payload, missing critique, or non-'submitted' status: no row, no
     event written."""
-    if seat not in DECISION_SEATS:
+    if not _can(seat, "submit_decision"):
         return {"ok": False,
-                "error": f"submit_decision is pm-seat-only (seat={seat!r})"}
+                "error": f"submit_decision is not granted to seat {seat!r}"}
     try:
         dec = Decision(run_date=run_date, ticker=args["ticker"],
                        action=args["action"], qty=args["qty"],
@@ -165,22 +198,28 @@ def handle_get_stage_brief(conn: sqlite3.Connection, *, seat: str,
     allowed-actions snapshot. Nothing here is parsed out of agent text and
     nothing is written — this is the read half of the seam whose write half
     is submit_signal/submit_decision."""
-    if seat not in BRIEF_SEATS:
+    if not _can(seat, "get_stage_brief"):
         return {"ok": False,
-                "error": f"get_stage_brief is analyst/pm-only (seat={seat!r})"}
+                "error": f"get_stage_brief is not granted to seat {seat!r}"}
     missing: list[str] = []
-    snap = _section(missing, "account snapshot", lambda: _snapshot(snapshot), {})
+    # Only fetched when a section that needs it is granted: signal rows come
+    # from SQLite, not from the account snapshot.
+    needs_snap = _can(seat, "read_account") or _can(seat, "read_allowed_actions")
+    snap = (_section(missing, "account snapshot", lambda: _snapshot(snapshot), {})
+            if needs_snap else {})
     brief = {
         "run_date": run_date,
         "seat": seat,
-        "cash": snap.get("cash"),
-        "positions": snap.get("positions") or {},
         "journal": _section(missing, "journal",
                             lambda: _journal(journals_root, seat), ""),
     }
-    if seat in DECISION_SEATS:
+    if _can(seat, "read_account"):
+        brief["cash"] = snap.get("cash")
+        brief["positions"] = snap.get("positions") or {}
+    if _can(seat, "read_signals"):
         brief["signals"] = _section(missing, "signals",
                                     lambda: _signal_rows(conn, run_date), [])
+    if _can(seat, "read_allowed_actions"):
         brief["allowed_actions"] = _section(
             missing, "allowed actions", lambda: dict(snap["allowed_actions"]), {})
     brief["unavailable"] = missing
@@ -281,15 +320,18 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
     # The exec seat deliberately has NO brief: it acts only on open tickets
     # the gate already approved, and widening its read surface widens the
     # only seat that can trade (invariant 2).
-    tools_by_seat = {
-        "analyst": [get_stage_brief, submit_signal],
-        "pm": [get_stage_brief, submit_decision],
-        "exec": [list_open_tickets],
-    }
-    if seat not in tools_by_seat:
+    # Fixed order so a seat's tool list is deterministic across runs — a set
+    # would reorder it. Derived from SEAT_CAPS, so a seat cannot be granted a
+    # tool without also carrying the capability its handler checks.
+    cap_tools = (("get_stage_brief", get_stage_brief),
+                 ("submit_signal", submit_signal),
+                 ("submit_decision", submit_decision),
+                 ("list_open_tickets", list_open_tickets))
+    if seat not in SEAT_CAPS:
         raise ValueError(
             f"build_fund_server: unrecognized seat {seat!r} — expected one of"
-            f" {sorted(tools_by_seat)} (an unknown seat would silently get no"
+            f" {sorted(SEAT_CAPS)} (an unknown seat would silently get no"
             " tools, e.g. the analyst never recording a signal all day)")
-    return create_sdk_mcp_server(name="fund", version="1.0.0",
-                                 tools=tools_by_seat[seat])
+    return create_sdk_mcp_server(
+        name="fund", version="1.0.0",
+        tools=[t for cap, t in cap_tools if _can(seat, cap)])
