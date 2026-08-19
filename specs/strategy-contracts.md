@@ -22,7 +22,9 @@ strategy_id    = spec_id                                                    # a 
 
 ## 2. DDL
 
-> **Unification status:** the shipped `fundbt/registry.py` maintains its own minimal DDL for `trial_registry` + `holdout_evaluations` (standalone, `:memory:` default, no FKs) so the starter kit runs without the fund DB. The schema below is canonical; migrating the registry to write to the fund DB (FKs intact, single source of truth) is the Phase-5 acceptance item "Trial registry unified." `strategy_specs`, `strategies`, `sleeves`, and `shadow_fills` have **no implementing code yet** — they are Phase-5 integration work.
+> **Unification status:** the shipped `fundbt/registry.py` maintains its own minimal DDL for `trial_registry` + `holdout_evaluations` (standalone, `:memory:` default, no FKs) so the starter kit runs without the fund DB. The schema below is canonical; migrating the registry to write to the fund DB (FKs intact, single source of truth) is the Phase-5 acceptance item "Trial registry unified." `strategies`, `sleeves`, and `shadow_fills` have **no implementing code yet** — they are Phase-5 integration work. `strategy_specs` and `strategy_critiques` are live in `state/schema.sql`; their write paths are `state/specs.py` and `submit_spec_critique` (§3.4) respectively. Nothing yet READS `strategy_critiques` — G1 enforcement is a separate change.
+>
+> **Known divergence, to be closed when `strategies` lands.** §4 makes `strategies.state == 'SPEC'` the canonical condition for a spec awaiting review, but that table does not exist yet. `state/specs.py:specs_awaiting_critique` therefore selects on the absence of a `strategy_critiques` row instead. The two are equivalent while nothing but `submit_strategy_spec` writes `strategy_specs` and nothing but `submit_spec_critique` writes `strategy_critiques`; the Phase-5 change that creates `strategies` should replace the selector rather than add a second one.
 
 ```sql
 -- Immutable pre-registration (Gate G1). No UPDATE ever; supersede via lineage.
@@ -48,6 +50,30 @@ CREATE TABLE strategy_specs (
   llm_in_loop      INTEGER NOT NULL DEFAULT 0, -- invariant 5 applies if 1
   lineage_parent   TEXT REFERENCES strategy_specs(spec_id),
   created_at       TEXT NOT NULL               -- injected Clock, ISO-8601 UTC
+);
+
+-- The Critic's G1 mechanism-alignment verdict. One row per spec, ever.
+-- Written ONLY by submit_spec_critique (agents/tools/fund_server.py). The
+-- orchestrator must never insert a default row here: at G1 a missing verdict
+-- means the spec does not advance, the exact inverse of the trade pipeline's
+-- advisory `critiques` table (contracts.md §2).
+--
+-- charter_version/model_id follow contracts.md §2's attribution contract. The
+-- CHECKs NARROW §2's three values to the one this table can hold; they are not
+-- a fourth rule. §2 allows 'none' for orchestrator-written rows and 'unknown'
+-- as a fallback, and neither can legally occur here: nothing but
+-- submit_spec_critique writes this table, and defaulting a G1 verdict is
+-- forbidden outright.
+CREATE TABLE strategy_critiques (
+  spec_id         TEXT PRIMARY KEY REFERENCES strategy_specs(spec_id),
+  verdict         TEXT NOT NULL CHECK (verdict IN ('clear','objections')),
+  objections      TEXT NOT NULL DEFAULT '[]',  -- JSON array, ≤3, each ≤200 chars
+                                               -- (empty iff verdict='clear')
+  seat            TEXT NOT NULL,
+  charter_version TEXT NOT NULL CHECK (charter_version NOT IN ('none','unknown')),
+  model_id        TEXT NOT NULL CHECK (model_id NOT IN ('none','unknown')),
+  slack_ts        TEXT,
+  created_at      TEXT NOT NULL
 );
 
 -- Lifecycle state (the only mutable strategy row).
