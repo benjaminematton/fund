@@ -14,6 +14,12 @@ seat: pm
 #   turns  mean 3.98, max 7   (histogram 3:20 4:23 5:5 6:4 7:2)
 #   cost   mean $0.0453, p95 $0.1144, max $0.1268
 #
+# BASELINE FOR FUTURE DIFFS: `postfix3`.
+#   make eval-report RUN=<new> BASELINE=postfix3
+# `control` predates the v6 charter fix, so diffing against it measures that
+# fix forever instead of detecting a new regression — the one thing the diff
+# exists to do. Keep control for history; compare against postfix3.
+#
 # max_turns STAYS 8 = measured max + 1. Tightening to 7 would sit exactly on
 # an observed value (7 turns happened twice in 54), so the tail would redden
 # `make preflight` on a charter that never regressed.
