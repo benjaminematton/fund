@@ -99,6 +99,27 @@ position's quantity.
 A sell *limit* is not protection — a take-profit does not cap a loss. A stop
 covering fewer shares than are held is not protection for the remainder.
 
+**Promised** means: the ticket behind the most recent filled buy order for that
+symbol carried a `stop_price`.
+
+```sql
+SELECT t.stop_price
+  FROM orders o JOIN tickets t ON t.id = o.client_order_id
+ WHERE o.symbol = ? AND o.side = 'buy' AND o.status = 'filled'
+ ORDER BY COALESCE(o.closed_at, o.submitted_at) DESC LIMIT 1
+```
+
+*Most recent* rather than *any*, so a symbol sold and re-bought without a stop
+is read on its current terms instead of inheriting an old promise.
+
+An **alert** fires when a position is not covered **and** either a stop was
+promised, or the fund has no record of opening the position at all (no matching
+filled buy order — a manual or pre-existing holding, which cannot be classified
+and therefore fails closed).
+
+A position that is uncovered and was never promised a stop is **silent here**.
+See "What this deliberately leaves for the next branch".
+
 **It fails closed, everywhere.** Each of the following appends an alert; none of
 them may pass quietly:
 
@@ -108,6 +129,8 @@ them may pass quietly:
 - a position quantity that will not parse
 - a position that is short, or whose side cannot be read
 - an order whose quantity or type will not parse
+- a position with no matching filled buy order — provenance unknown, so the
+  promise cannot be read and the position cannot be classified
 
 Every one of these is a test, not a comment. A check that can pass while lying
 is the exact failure of all three incidents.
@@ -135,15 +158,35 @@ blocked. Blocking is more faithful to invariant 4, but one stale stop would halt
 the whole fund, and halting does not protect the position that is already naked
 — it adds a second incident. Ruled by Benjamin, 2026-08-19.
 
-**A position whose originating ticket legitimately had no `stop_price` still
-alerts, every day.** The alternative — suppressing the alert when
-`tickets.stop_price` is NULL — puts the database in charge of interpreting the
-broker's state, which is the precise pattern behind all three incidents. One
-rule, hardcoded, reading only broker positions against broker orders, changeable
-only by human commit like the gate thresholds.
+**The alert is promise-aware: it fires on divergence, not on exposure.**
 
-Concretely: this alerts on the currently-held NVDA 80 on every run until that
-position is resolved. That is the intent, not a side effect.
+An earlier draft of this design alerted on every uncovered position, on the
+grounds that letting the database interpret the broker's state is the pattern
+behind all three incidents. That reasoning was too broad, and the codebase says
+so plainly:
+
+- `charters/pm.md:25` makes a stopless buy **sanctioned and normal** — pass
+  `stop_price` only "if the invalidation is a hard price level on a buy... leave
+  it unset for non-price conditions (Ops watches those)."
+- `scripts/audit_day.py:148-152` counts *any* alert as an audit problem, which
+  exits the run non-zero and fires `OnFailure`.
+
+Together those mean a perfectly normal day, behaving exactly as the charter
+intends, would alert and red the audit every day forever. That is alert fatigue
+by construction, and it would destroy the signal value of `#risk` — the thing
+this work exists to protect.
+
+The correct distinction is not "does the DB get a vote" but *which* fact each
+source owns. The broker owns what protection **exists**; the fund's own record
+owns what protection was **promised**. Comparing those two is exactly the
+comparison nobody performed on 2026-08-17. The failure then was letting the
+database assert that a stop existed; nothing here does that.
+
+So: **promised and missing is a fault. Never promised is exposure, not a
+fault.** Unknown provenance fails closed and alerts.
+
+Concretely: the currently-held NVDA 80 was ticketed with a stop at 215, so it
+alerts on every run until resolved. That is the intent, not a side effect.
 
 **A missing broker reads as unverifiable and alerts.** It occurs only in tests
 today, but a `None` broker in production is a wiring bug that must scream rather
@@ -180,6 +223,31 @@ verification has a genuinely unprotected position to show the assertion firing
 against. A green suite is not evidence here: the suite was green through all
 three incidents.
 
+## What this deliberately leaves for the next branch
+
+A position nobody ever promised to protect is genuinely unprotected, and after
+this branch nothing surfaces it. That gap is not introduced here — it has
+existed since the fund started — but it should not stand.
+
+The long-term shape is **severity separation**, and an alert is the wrong
+instrument for the second tier:
+
+- **Divergence** (promised, missing) is an *event*: something is wrong and
+  someone must act today. It alerts and reds the audit. That is this branch.
+- **Standing exposure** (never promised, uncovered) is *state*: nothing is
+  wrong, it is intended, but it must never become invisible. State belongs in
+  the projection, not the exception channel — so it becomes a protection line in
+  the EOD digest, which already posts daily. "NVDA 80 — no stop (none
+  promised)." Visible every day, costs nothing when it is fine, and cannot cause
+  fatigue because it is not an interrupt. This also matches invariant 6: SQLite
+  is truth, Slack is a projection.
+
+The digest line is a **follow-up branch**, not scope here. It is a rendering
+change (`render.py`, `run_close`, the digest payload, ~30 lines across three
+files plus tests), and folding it into the risk-control fix would double the
+review surface of the branch that most needs careful review. Agreed with
+Benjamin, 2026-08-19.
+
 ## Out of scope
 
 - **Auto-repair.** A missing stop alerts a human. Placing a replacement is order
@@ -196,7 +264,7 @@ three incidents.
 
 ## Size
 
-Production diff estimate ~75 lines: `gate/tickets.py` 12, `orchestrator/broker.py`
-2, `market/source_alpaca.py` 15, `orchestrator/protection.py` 45,
-`orchestrator/daily.py` 3. If it grows past ~100, stop and re-read "Out of
+Production diff estimate ~90 lines: `gate/tickets.py` 12, `orchestrator/broker.py`
+2, `market/source_alpaca.py` 15, `orchestrator/protection.py` 60,
+`orchestrator/daily.py` 3. If it grows past ~110, stop and re-read "Out of
 scope".
