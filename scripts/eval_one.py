@@ -56,7 +56,7 @@ def main() -> int:
         return 2
 
     from evals.cases import load_cases
-    from evals.grade import full_registry, grade_trace
+    from evals.grade import grade_trace, seat_registry
     from evals.runner import run_trial
 
     case_id = sys.argv[1] if len(sys.argv) > 1 else "a01"
@@ -76,7 +76,13 @@ def main() -> int:
     print(f"rows         {trace.rows_written}")
     print(f"alerts       {[a['payload'] for a in trace.alerts]}")
 
-    result = grade_trace(trace, case, full_registry())
+    # The SEAT's registry, not every invariant — same set
+    # scripts/eval_suite.py grades with. full_registry() here
+    # applied I1 to the Critic, which has no allowed_actions to
+    # size against, so a single-case probe reported an
+    # INCONCLUSIVE the suite would never show: the two paths
+    # disagreed about the same trace.
+    result = grade_trace(trace, case, seat_registry(case.seat))
     print("\nverdicts:")
     for v in result.verdicts:
         print(f"  {v.invariant:<7} {v.outcome:<13} {v.tag or '':<28}"
