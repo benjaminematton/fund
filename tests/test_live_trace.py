@@ -63,6 +63,32 @@ def test_the_case_name_marks_the_corpus_as_live():
     assert t.case.startswith("live-")
 
 
+def test_charter_sha_is_derived_from_the_carried_text():
+    """Computed here, not passed in, and by the same rule evals/config.py uses.
+    Two fields that must agree cannot disagree if only one is an input — and a
+    trace carries the charter TEXT precisely so it stays gradeable after the
+    charter on disk is edited."""
+    import hashlib
+
+    charter = "# Portfolio Manager — v6\n"
+    t = build_trace(
+        seat="pm", run_date="2026-08-18", turn_seq=0, git_sha="abc1234",
+        charter_text=charter, model="m", snapshot={}, brief_tickers=[],
+        tool_names=[], result=_Result())
+
+    assert t.charter_text == charter
+    assert t.charter_sha == hashlib.sha256(charter.encode()).hexdigest()
+
+
+def test_a_charter_edit_changes_the_sha():
+    shas = {build_trace(
+        seat="pm", run_date="2026-08-18", turn_seq=0, git_sha="abc1234",
+        charter_text=text, model="m", snapshot={}, brief_tickers=[],
+        tool_names=[], result=_Result()).charter_sha
+        for text in ("# PM — v6\n", "# PM — v7\n")}
+    assert len(shas) == 2
+
+
 def test_build_trace_keeps_a_missing_cost_none_not_zero():
     """A fabricated 0.0 makes real spend look free — the lie agents/runtime.py
     refuses to tell, and what invariant I5 pairs with the cost_unavailable

@@ -33,6 +33,15 @@ def load_seat_config(path: str | Path) -> dict:
     return yaml.safe_load(Path(path).read_text())
 
 
+def charter_text_for(cfg: dict) -> str:
+    """The charter this seat runs under, read the same way build_seat_options
+    reads it. Exposed so a trace can record the charter AS IT WAS at run time
+    (evals/trace.py's reason: a sha alone makes every historical trace
+    ungradeable the moment a charter is edited) without a second copy of where
+    charters live."""
+    return (CHARTERS_DIR / f"{cfg['seat']}.md").read_text()
+
+
 def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
                        snapshot=None, journals_root=None) -> ClaudeAgentOptions:
     """Build one seat's ClaudeAgentOptions from its yaml config.

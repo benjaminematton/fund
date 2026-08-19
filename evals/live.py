@@ -22,9 +22,33 @@ writing evaluators before error analysis.
 
 from __future__ import annotations
 
+import hashlib
+import subprocess
+from pathlib import Path
 from typing import Callable
 
 from evals.trace import Trace
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def git_sha() -> str:
+    """This checkout's short sha, or 'unknown' if git cannot answer.
+
+    Deliberately NOT evals/runner.py's version, which passes check=True and
+    raises. The failure postures differ: an eval baseline whose sha is unknown
+    is a baseline that cannot be compared, so raising is right there. A live
+    trading day that refuses to record a turn because git is unavailable has
+    made the wrong trade — a trace filed under 'unknown' is worth far more
+    than no trace, and the day must not notice either way.
+    """
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             cwd=_ROOT, capture_output=True, text=True)
+        return out.stdout.strip() or "unknown" if out.returncode == 0 \
+            else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def build_trace(*, seat: str, run_date: str, turn_seq: int, git_sha: str,
@@ -52,7 +76,10 @@ def build_trace(*, seat: str, run_date: str, turn_seq: int, git_sha: str,
         trial=turn_seq,
         seat=seat,
         git_sha=git_sha,
-        charter_sha="",
+        # Derived, never passed in: computed the same way evals/config.py
+        # computes it, from the text carried in this same trace. Two fields
+        # that must agree cannot disagree if only one of them is an input.
+        charter_sha=hashlib.sha256(charter_text.encode()).hexdigest(),
         charter_text=charter_text,
         model=model,
         snapshot=snapshot,

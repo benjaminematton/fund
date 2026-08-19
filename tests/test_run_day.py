@@ -715,3 +715,94 @@ def test_a_consumed_ticket_does_not_accuse_the_seat_that_executed_it(
     monkeypatch.setattr(run_day_script, "_seat_session", _placed)
     _turn(conn, clock, seat="exec")()
     assert _alert_texts(conn) == []
+
+
+# --- trace emission ---------------------------------------------------------
+
+class _Res:
+    num_turns = 2
+    total_cost_usd = 0.01
+    duration_ms = 55
+    is_error = False
+
+
+_PM_CFG = {"seat": "pm", "model": "claude-sonnet-5"}
+
+
+def test_emit_trace_guarded_sends_one_trace_per_turn():
+    """The sink is injected, so the wiring is asserted with no filesystem and
+    no SDK: production passes evals.live.file_sink, tests pass list.append."""
+    import itertools
+
+    run_day = _load()
+    got = []
+    seq = itertools.count()
+    brief = {"cash": 100.0, "positions": {},
+             "allowed_actions": {"NVDA": {"buy": 3, "sell": 0}}}
+
+    run_day.emit_trace_guarded("pm", _PM_CFG, "2026-08-18", seq,
+                               lambda: brief, ["mcp__fund__submit_decision"],
+                               _Res(), got.append)
+
+    assert len(got) == 1
+    assert got[0].case == "live-2026-08-18"
+    assert got[0].seat == "pm"
+    assert got[0].trial == 0
+    assert got[0].tool_names == ["mcp__fund__submit_decision"]
+
+
+def test_brief_tickers_come_from_the_allowed_actions_key_set():
+    """allowed_actions' keys ARE the active set (a ticker with both shapes 0 is
+    absent entirely), so they are what the seat was actually shown — not the
+    positions it happens to hold."""
+    import itertools
+
+    run_day = _load()
+    got = []
+    brief = {"cash": 1.0, "positions": {"AMD": 4},
+             "allowed_actions": {"NVDA": {"buy": 3, "sell": 0}}}
+
+    run_day.emit_trace_guarded("pm", _PM_CFG, "2026-08-18", itertools.count(),
+                               lambda: brief, [], _Res(), got.append)
+
+    assert got[0].brief_tickers == ["NVDA"]
+
+
+def test_the_turn_sequence_does_not_repeat_across_seats():
+    """The sequence is the trace filename — two seats sharing a number would
+    silently overwrite each other's turn."""
+    import itertools
+
+    run_day = _load()
+    got = []
+    seq = itertools.count()
+    for seat in ("analyst", "pm", "exec"):
+        run_day.emit_trace_guarded(seat, {"seat": seat, "model": "m"},
+                                   "2026-08-18", seq, None, [], _Res(),
+                                   got.append)
+
+    assert [t.trial for t in got] == [0, 1, 2]
+
+
+def test_a_failing_sink_never_costs_the_day():
+    """A trace is evidence, not control flow, and this runs after the seat may
+    already have placed a real order. Same posture as record_cost_guarded."""
+    import itertools
+
+    run_day = _load()
+
+    def _boom(_trace):
+        raise OSError("disk full")
+
+    run_day.emit_trace_guarded("pm", _PM_CFG, "2026-08-18", itertools.count(),
+                               None, [], _Res(), _boom)   # must not raise
+
+
+def test_no_sink_configured_is_a_silent_no_op():
+    """FUND_TRACES unset runs the day exactly as before — recording is not a
+    precondition for trading."""
+    import itertools
+
+    run_day = _load()
+    run_day.emit_trace_guarded("pm", _PM_CFG, "2026-08-18", itertools.count(),
+                               None, [], _Res(), None)

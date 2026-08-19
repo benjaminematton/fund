@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import itertools
 import os
 import sys
 import time
@@ -60,7 +61,9 @@ import audit_day                                                   # noqa: E402
 from agents.exec_turn import check_tool_calls, run_seat_turn       # noqa: E402
 from gate.tickets import open_tickets                              # noqa: E402
 from agents.runtime import record_turn_result                      # noqa: E402
-from agents.seats import build_seat_options, load_seat_config      # noqa: E402
+from agents.seats import (build_seat_options, charter_text_for,   # noqa: E402
+                          load_seat_config)
+from evals.live import build_trace, file_sink, git_sha            # noqa: E402
 from agents.wallclock import WallClock                             # noqa: E402
 from market.features import (build_market_inputs, unmapped_holdings,  # noqa: E402
                              unpriceable_book_tickers)
@@ -217,8 +220,39 @@ async def _seat_session(cfg: dict, db_path: str, clock, prompt: str,
         return await run_seat_turn(client, prompt, REQUIRED_SERVERS)
 
 
+def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
+                       snapshot, names, result, trace_sink) -> None:
+    """Record one seat turn as a Trace. Never costs the day.
+
+    Same posture as record_cost_guarded: a trace is EVIDENCE, not control flow,
+    and this runs after the seat may already have placed a real order. A failed
+    write logs and returns — appending an alert here would be another write on
+    a path that just failed.
+
+    Placed beside the cost recorder deliberately: both are per-turn side
+    effects that read the same ResultMessage, and splitting them across two
+    seams would mean two places to remember a new seat in."""
+    if trace_sink is None:
+        return
+    try:
+        brief = snapshot() if callable(snapshot) else (snapshot or {})
+        trace_sink(build_trace(
+            seat=seat, run_date=run_date, turn_seq=next(turn_seq),
+            git_sha=git_sha(), charter_text=charter_text_for(cfg),
+            model=cfg.get("model", ""), snapshot=brief,
+            # allowed_actions' key set IS run_pre_gate's active set (its own
+            # docstring: a ticker where both shapes are 0 is absent entirely),
+            # so these are the tickers the seat was actually shown.
+            brief_tickers=sorted(brief.get("allowed_actions") or {}),
+            tool_names=names or [], result=result))
+    except Exception as exc:
+        log(f"trace_write_failed {seat} — {type(exc).__name__}: {exc};"
+            " trading continues")
+
+
 def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
-              prompt: str, snapshot=None, journals_root=None):
+              prompt: str, snapshot=None, journals_root=None,
+              trace_sink=None, turn_seq=None):
     """The injected run_turn callable orchestrator/daily.py drives.
 
     `snapshot`/`journals_root` are this day's get_stage_brief providers, passed
@@ -243,6 +277,8 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
             return
         log_turn_result(seat, result, names)
         record_cost_guarded(conn, clock, run_date, seat, result)
+        emit_trace_guarded(seat, cfg, run_date, turn_seq, snapshot, names,
+                           result, trace_sink)
         if seat == "exec":
             try:
                 # counted AFTER the turn: a ticket the seat consumed is no
@@ -473,6 +509,17 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
              "allowed_actions": actions}
     log(f"{run_date}: watchlist {watchlist} -> active {active}"
         f" -> allowed {actions}")
+    # One counter for the whole day: the turn sequence is the trace filename,
+    # so two seats sharing a number would silently overwrite each other.
+    # FUND_TRACES unset means no recording — deliberately not in REQUIRED_ENV,
+    # so an older .env runs the day exactly as before rather than failing to
+    # start over an evidence feature.
+    turn_seq = itertools.count()
+    traces_root = environ.get("FUND_TRACES")
+    trace_sink = file_sink(traces_root) if traces_root else None
+    if traces_root:
+        log(f"{run_date}: recording seat traces under {traces_root}")
+
     if active:
         tickers = ", ".join(active)
         research_prompt = (
@@ -482,7 +529,8 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
         research_turns = [
             make_turn(seat, load_seat_config(SEAT_CONFIG / f"{seat}.yaml"),
                       db_path, clock, conn, run_date, research_prompt,
-                      snapshot=lambda: brief, journals_root=journals_root)
+                      snapshot=lambda: brief, journals_root=journals_root,
+                      trace_sink=trace_sink, turn_seq=turn_seq)
             for seat in SEATS["research"]]
 
         def run_research_turns() -> None:
@@ -504,7 +552,8 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
                 f"Decision turn. Today's active tickers: {tickers}. Start by"
                 " calling get_stage_brief, then follow your charter and end by"
                 " calling submit_decision exactly once per ticker.",
-                snapshot=lambda: brief, journals_root=journals_root),
+                snapshot=lambda: brief, journals_root=journals_root,
+                trace_sink=trace_sink, turn_seq=turn_seq),
         }
     else:
         # Nothing is possible today: no LLM spend at all, but every stage still
@@ -514,7 +563,8 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
     execution_turn = make_turn(
         SEATS["execution"][0], load_seat_config(SEAT_CONFIG / "exec.yaml"),
         db_path, clock, conn, run_date,
-        "Execution stage: execute all open tickets per your charter.")
+        "Execution stage: execute all open tickets per your charter.",
+        trace_sink=trace_sink, turn_seq=turn_seq)
 
     run_day(ctx, execution_turn=execution_turn, broker=source, sleep=time.sleep)
     return report_audit(conn, slack, db_path, run_date, clock)
