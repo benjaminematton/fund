@@ -449,6 +449,7 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
     journals_root.mkdir(parents=True, exist_ok=True)
 
     ctx = StageCtx(conn=conn, run_date=run_date, clock=clock, slack=slack,
+                   research_seats=(SEATS["research"],),
                    market_inputs=market_inputs,
                    id_factory=lambda: str(uuid.uuid4()),
                    journals_root=journals_root)

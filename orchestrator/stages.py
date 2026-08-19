@@ -16,5 +16,8 @@ def run_execution_stage(conn: sqlite3.Connection, *, run_date: str,
                         clock: Clock, run_trader_turn: Callable[[], None],
                         slack) -> str:
     return run_execution(
-        StageCtx(conn=conn, run_date=run_date, clock=clock, slack=slack),
+        # Execution-only: this context never reaches run_research, which
+        # raises on an empty tuple rather than silently skipping defaults.
+        StageCtx(conn=conn, run_date=run_date, clock=clock, slack=slack,
+                 research_seats=()),
         run_trader_turn)

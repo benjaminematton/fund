@@ -16,10 +16,12 @@ RUN = "2026-07-06"
 TID = "a3f90000-0000-0000-0000-000000000000"
 
 
-def _ctx(fund_db, sim_clock, market, turns=None, journals_root=None):
+def _ctx(fund_db, sim_clock, market, turns=None, journals_root=None,
+         research_seats=("analyst",)):
     """market: {ticker: gate-input dict (pre-validated by risk later)}."""
     return StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock,
                     slack=FakeSlack(), market_inputs=market,
+                    research_seats=research_seats,
                     run_turn=turns or {}, id_factory=lambda: TID,
                     journals_root=journals_root)
 
@@ -127,6 +129,59 @@ def test_research_rerun_writes_no_duplicate(fund_db, sim_clock):
     run_research(ctx, active=["NVDA"])
     run_research(ctx, active=["NVDA"])
     assert fund_db.execute("SELECT COUNT(*) c FROM signals").fetchone()["c"] == 1
+
+
+def test_research_defaults_are_per_seat_not_per_ticker(fund_db, sim_clock):
+    """Seat A reports, seat B is silent -> B still gets its own neutral row.
+    The old guard asked only whether the TICKER was covered, so B's silence
+    was invisible and calibration/rows.py (which groups by s.agent) would
+    grade B only on the days it chose to speak."""
+    def turn():
+        fund_db.execute(
+            "INSERT INTO signals (run_date,agent,ticker,direction,confidence,"
+            "summary,created_at) VALUES (?,'analyst','NVDA','bullish',72,'capex',?)",
+            (RUN, iso(sim_clock.now())))
+        fund_db.commit()
+
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()},
+               turns={"research": turn}, research_seats=("analyst", "news"))
+    run_research(ctx, active=["NVDA"])
+
+    rows = {r["agent"]: r for r in
+            fund_db.execute("SELECT * FROM signals ORDER BY agent").fetchall()}
+    assert set(rows) == {"analyst", "news"}
+    assert (rows["analyst"]["direction"], rows["analyst"]["confidence"]) == ("bullish", 72)
+    assert (rows["news"]["direction"], rows["news"]["confidence"],
+            rows["news"]["summary"]) == ("neutral", 0, "no report")
+
+
+def test_research_with_no_seats_configured_raises(fund_db, sim_clock):
+    """An empty seat tuple must never silently skip the defaults — that would
+    turn invariant 4's neutral/0 guarantee into a no-op."""
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()}, research_seats=())
+    with pytest.raises(ValueError, match="research_seats is empty"):
+        run_research(ctx, active=["NVDA"])
+
+
+def test_research_skips_the_turn_when_every_seat_is_covered(fund_db, sim_clock):
+    """Crash-resume: run_stage re-runs a 'running' stage body. Without the
+    skip, every seat's LLM turn is paid for a second time — a money leak with
+    no visible symptom."""
+    calls = []
+
+    def turn():
+        calls.append(1)
+        fund_db.execute(
+            "INSERT INTO signals (run_date,agent,ticker,direction,confidence,"
+            "summary,created_at) VALUES (?,'analyst','NVDA','bullish',72,'x',?)",
+            (RUN, iso(sim_clock.now())))
+        fund_db.commit()
+
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()},
+               turns={"research": turn}, research_seats=("analyst",))
+    run_research(ctx, active=["NVDA"])
+    run_research(ctx, active=["NVDA"])      # the resume path
+    assert calls == [1]
 
 
 # --- decision ---------------------------------------------------------------
@@ -520,6 +575,7 @@ def test_full_hold_day_completes_every_stage(fund_db, sim_clock, tmp_path):
     posts, and nothing is placed (invariant 4)."""
     slack = FakeSlack()
     ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock, slack=slack,
+                   research_seats=("analyst",),
                    market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                    id_factory=lambda: TID, journals_root=tmp_path / "journals")
     run_day(ctx, execution_turn=None, broker=None, sleep=lambda s: None)
@@ -540,7 +596,8 @@ def test_full_hold_day_is_rerunnable(fund_db, sim_clock, tmp_path):
     """A re-fire of the whole day is a no-op: done stages never re-run."""
     def day():
         ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock,
-                       slack=FakeSlack(), market_inputs={"NVDA": _nvda_inputs()},
+                       slack=FakeSlack(), research_seats=("analyst",),
+                       market_inputs={"NVDA": _nvda_inputs()},
                        run_turn={}, id_factory=lambda: TID,
                        journals_root=tmp_path / "journals")
         run_day(ctx, execution_turn=None, broker=None, sleep=lambda s: None)
@@ -558,6 +615,7 @@ def test_full_hold_day_is_rerunnable(fund_db, sim_clock, tmp_path):
 def test_execution_turn_skipped_when_no_open_tickets(fund_db, sim_clock, tmp_path):
     calls = []
     ctx = StageCtx(conn=fund_db, run_date=RUN, clock=sim_clock, slack=FakeSlack(),
+                   research_seats=("analyst",),
                    market_inputs={"NVDA": _nvda_inputs()}, run_turn={},
                    id_factory=lambda: TID, journals_root=tmp_path / "journals")
     run_day(ctx, execution_turn=lambda: calls.append(1), broker=None,
