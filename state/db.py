@@ -39,17 +39,17 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     if not _TABLES <= have:
         conn.executescript(_SCHEMA.read_text())
         conn.commit()
-    # Apply schema, THEN migrate. The block above fires only when `tickets` is
-    # absent — i.e. on a database this code has never created — so a column
-    # added to schema.sql never reaches one that already exists. This is what
-    # carries it there. Imported here rather than at module scope to keep the
-    # import graph acyclic.
+    # Apply schema, THEN migrate. The block above adds missing TABLES only —
+    # CREATE TABLE IF NOT EXISTS is a no-op against a table that already
+    # exists, so a COLUMN added to schema.sql never reaches an existing
+    # database and this is what carries it there. Imported here rather than at
+    # module scope to keep the import graph acyclic.
     #
-    # State the guard's ACTUAL condition, not an approximation of it: this
-    # comment said "only fires on an empty file", which was close enough to be
-    # unremarkable and wrong enough to mislead. The two diverge the moment the
-    # sentinel changes, and a reader checking whether a new table reaches a
-    # live DB gets the wrong answer from the comment while the code is right.
+    # State the guard's ACTUAL condition, never a paraphrase of it. This
+    # comment once said "fires only on an empty file" — close enough to be
+    # unremarkable, wrong enough to mislead, and load-bearing the moment the
+    # guard above it changed. A paraphrased condition is a second
+    # implementation with no test.
     from state.migrations import apply as _apply_migrations
     _apply_migrations(conn)
     return conn
