@@ -16,8 +16,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# The keys an eval turn needs, and the whole of what .env.eval may carry.
+# Deliberately NOT a subset of what a trading day needs: scripts/run_day.py:74
+# also requires FUND_DB and SLACK_BOT_TOKEN, so a checkout credentialled for
+# `make eval` still cannot run `make live-day` — it refuses on its own
+# REQUIRED_ENV check. Pinned by tests/test_eval_env_cannot_trade.py.
+EVAL_KEYS = ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
+             "ALPACA_PAPER_TRADE")
+
+# .env.eval wins over .env when present. That is what lets eval credentials
+# live on a host the fund must never TRADE from — the Mac after the 2026-08-18
+# droplet cutover, where `.env` was renamed to `.env.MIGRATED-TO-VM` as one of
+# two barriers against the fund resurrecting there (PROGRESS.md "The Mac after
+# cutover"). Restoring a full `.env` to run evals would dissolve that barrier;
+# a file that cannot trade keeps it, by construction rather than by memory.
 # .env lives in the primary checkout; a worktree has none of its own.
-ENV = ROOT / ".env"
+EVAL_ENV = ROOT / ".env.eval"
+ENV = EVAL_ENV if EVAL_ENV.exists() else ROOT / ".env"
 if not ENV.exists():
     ENV = Path("/Users/benjaminmatton/Developer/fund/.env")
 
