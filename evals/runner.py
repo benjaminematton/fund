@@ -134,7 +134,8 @@ def run_trial(seat: str, case: Case, trial: int, *,
     # would produce no alert and I5 would fail the SEAT for the RIG's omission.
     if err is None:
         record_turn_result(state.conn, state.run_date, seat, result,
-                           iso(case.clock))
+                           iso(case.clock),
+                           configured_model=cfg.get("model", ""))
 
     events = _events(state.conn, state.events_watermark)
     snapshot = state.snapshot()

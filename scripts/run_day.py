@@ -276,7 +276,8 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
                    " stage default applies (default is HOLD)")
             return
         log_turn_result(seat, result, names)
-        record_cost_guarded(conn, clock, run_date, seat, result)
+        record_cost_guarded(conn, clock, run_date, seat, result,
+                            cfg.get("model", ""))
         emit_trace_guarded(seat, cfg, run_date, turn_seq, snapshot, names,
                            result, trace_sink)
         if seat == "exec":
@@ -304,7 +305,8 @@ def log_turn_result(seat: str, result, tool_names=None) -> None:
         f" tools={list(tool_names) if tool_names is not None else 'n/a'}")
 
 
-def record_cost_guarded(conn, clock, run_date: str, seat: str, result) -> None:
+def record_cost_guarded(conn, clock, run_date: str, seat: str, result,
+                        configured_model: str = "") -> None:
     """Cost accounting must never take the trading day down (review Fix 6).
 
     record_turn_result never raises on a MISSING estimate — that path is an
@@ -312,9 +314,15 @@ def record_cost_guarded(conn, clock, run_date: str, seat: str, result) -> None:
     already have placed a real order. No alert on failure: appending one is
     another write to the same connection that just failed. The log line plus
     the audit's own 'no cost rows recorded' check are the surfacing path, and
-    both are louder than a dead trading day."""
+    both are louder than a dead trading day.
+
+    `configured_model` is the seat's yaml model, which record_turn_result
+    compares against what actually served the turn. It is this caller's job to
+    supply it: the runtime must not read config files per turn, and a caller
+    that omits it gets no divergence check rather than a false one."""
     try:
-        record_turn_result(conn, run_date, seat, result, iso(clock.now()))
+        record_turn_result(conn, run_date, seat, result, iso(clock.now()),
+                           configured_model=configured_model)
     except Exception as exc:
         log(f"ALERT cost_record_failed {seat} — {type(exc).__name__}: {exc};"
             " trading continues; the audit will flag the missing cost row")

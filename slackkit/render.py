@@ -226,6 +226,25 @@ def _render_alert(payload: dict) -> Post:
     return Post("#risk", text, [_section(text)])
 
 
+def _render_model_fallback_used(payload: dict) -> Post:
+    """A fallback served part or all of a seat turn, so today's signals and
+    decisions from that seat name a model that did not produce them.
+
+    Posted as machinery, not as the seat: the seat did not say this, code
+    noticed it. Deliberately NOT an `alert` — scripts/audit_day.py fails the
+    day on any alert, and a fallback is not a failed day."""
+    seat = _seat(payload["seat"])
+    served = ", ".join(payload["served"])
+    text = (f"*Model fallback* · {seat} ran *{served}*, configured "
+            f"*{payload['configured']}*\n"
+            "> Today's rows from this seat carry the configured model, not"
+            " the one that served them.")
+    return Post("#risk", text, [
+        _section(f"🔀 *{seat}* ran a model it was not configured to run"),
+        _fields(("Served", served), ("Configured", payload["configured"])),
+        _context("Rows from this seat name the configured model")])
+
+
 def _render_projection_error(payload: dict) -> Post:
     return Post("#risk",
                 f"⚠️ projection error: event {payload['event_id']} "
@@ -241,6 +260,7 @@ RENDERERS: dict[str, Callable[[dict], Post]] = {
     "digest": _render_digest,
     "pnl": _render_pnl,
     "alert": _render_alert,
+    "model_fallback_used": _render_model_fallback_used,
     "projection_error": _render_projection_error,
 }
 
