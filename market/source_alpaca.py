@@ -22,6 +22,21 @@ def _paper_guard() -> bool:
         raise RuntimeError("ALPACA_PAPER_TRADE must be 'true' (invariant 1)")
     return True
 
+# alpaca-py returns (str, Enum) members, and str(OrderSide.SELL) is
+# 'OrderSide.SELL', NOT 'sell' — so a plain str() here would make every stop
+# order and every long position unmatchable, and orchestrator/protection.py
+# would alert on a fully protected book every single day. Tests that build
+# fakes out of plain strings cannot catch that, which is why
+# tests/test_source_alpaca_helpers.py builds them from the real enums.
+def _enum_str(v) -> str:
+    return str(getattr(v, "value", v))
+
+
+# One page, requested explicitly. Alpaca's list endpoint paginates, and a
+# silently truncated page reads as "nothing is protecting this".
+_ORDER_PAGE_LIMIT = 500
+
+
 def _safe_float(v) -> float:
     """float(v), or NaN if v is None/unparseable (gate rejects NaN -> HOLD)."""
     try:
@@ -86,6 +101,41 @@ class AlpacaSource:
         o = self._trading.get_order_by_client_id(coid)
         oid = o["id"] if isinstance(o, dict) else o.id
         self._trading.cancel_order_by_id(oid)
+
+    def open_positions(self) -> list[dict]:
+        """Every position the account actually holds. Numbers stay STRINGS,
+        exactly as they arrive — orchestrator/protection.py coerces them and
+        denies on anything it cannot read, which it cannot do if this method
+        has already guessed. Deliberately does NOT swallow (see BrokerPort)."""
+        return [{"symbol": p.symbol, "qty": _enum_str(p.qty),
+                 "side": _enum_str(p.side)}
+                for p in self._trading.get_all_positions()]
+
+    def open_orders(self) -> list[dict]:
+        """Every order still working at the broker, legs FLATTENED.
+
+        nested=False (the default) is the point: an OTO's stop leg comes back
+        as its own top-level row, and that leg IS the protective order the
+        check looks for. Grouped under its parent it would be invisible —
+        which is how the 2026-08-17 stop stayed dead for two sessions.
+
+        RAISES if the response fills the page. A truncated list would drop
+        protective orders off the end and report covered positions as naked;
+        the caller turns this raise into an 'unverified' alert, which is the
+        honest answer. No silent caps."""
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+        orders = list(self._trading.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, nested=False,
+            limit=_ORDER_PAGE_LIMIT)))
+        if len(orders) >= _ORDER_PAGE_LIMIT:
+            raise RuntimeError(
+                f"open-orders response hit the {_ORDER_PAGE_LIMIT}-row page"
+                " limit — cover cannot be computed from a truncated list")
+        return [{"symbol": o.symbol, "side": _enum_str(o.side),
+                 "qty": _enum_str(o.qty), "type": _enum_str(o.order_type),
+                 "status": _enum_str(o.status)}
+                for o in orders]
 
     def market_clock(self) -> dict:
         """Broker's market clock: {is_open, next_open, next_close}. The live
