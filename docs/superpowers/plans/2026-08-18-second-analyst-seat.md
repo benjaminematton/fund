@@ -821,9 +821,11 @@ git commit -m "feat: the research stage runs two analysts, not one"
 
 ---
 
-### Task 5: Rename `analyst` → `technical` (optional, cosmetic)
+### Task 5: Rename `analyst` → `technical` — DEFERRED, do not execute
 
-⚠️ **GATE — confirm he wants this at all before starting.** Zero behavior change beyond the toolset narrowing below. It touches 12 test files and orphans the `signals` history under `agent = 'analyst'` (one clean live day, 2026-08-17). For: a firm whose analyst seats are named `analyst` and `news` will confuse every future charter, eval, and scoreboard reader, and the history cost only grows. Against: churn with no functional payoff; Tasks 1–4 are complete without it.
+🛑 **DEFERRED 2026-08-18 on measurement — do not execute this task.** Scoped as "cosmetic, ~12 test files"; the actual count is **154 references across 36 files**. Three findings moved it out of scope: six PM eval cases carry `agent: analyst`, so the rename touches the eval baseline branch #2 just re-established; the eval rig keys the seat name in four separate maps (`WRITE_TABLES`, `PROMPT_TEMPLATES`, `PRECONDITIONS`, the invariant schema map) plus a silent default at `evals/fixtures.py`'s `seat=sig.get("agent", "analyst")` that a rename leaves stale rather than broken; and a concurrent branch is mid-refactor making `evals/` seat-agnostic, which collapses those four maps into one entry per seat. Revisit after that lands, when the rename is a fraction of this size. ADR-0001 records the decision and its consequence. The steps below are kept as the scoping record — the file/line details are stale by construction.
+
+⚠️ **Original gate (superseded by the deferral above).** Zero behavior change beyond the toolset narrowing below. It touches 12 test files and orphans the `signals` history under `agent = 'analyst'` (one clean live day, 2026-08-17). For: a firm whose analyst seats are named `analyst` and `news` will confuse every future charter, eval, and scoreboard reader, and the history cost only grows. Against: churn with no functional payoff; Tasks 1–4 are complete without it.
 
 `charters/analyst.md` is already technical in substance — its Mission reads "price action, news flow, and account context". The toolset should also drop `news` to match `design.md`'s Technical Analyst row (`stock-data,account`); that **is** a real behavior change — the seat stops seeing headlines, which is now the news seat's job.
 

@@ -15,6 +15,14 @@ PROMPT_TEMPLATES = {
     "analyst": ("Research turn. Today's active tickers: {tickers}. Start by"
                 " calling get_stage_brief, then follow your charter and end by"
                 " calling submit_signal exactly once per ticker."),
+    # Byte-identical to the analyst's: scripts/run_day.py builds ONE
+    # research_prompt and hands the same string to every seat in
+    # SEATS["research"]. If that ever diverges per seat, these must diverge with
+    # it — an eval that pins a prompt production no longer sends measures
+    # nothing.
+    "news": ("Research turn. Today's active tickers: {tickers}. Start by"
+             " calling get_stage_brief, then follow your charter and end by"
+             " calling submit_signal exactly once per ticker."),
     "pm": ("Decision turn. Today's active tickers: {tickers}. Start by"
            " calling get_stage_brief, then follow your charter and end by"
            " calling submit_decision exactly once per ticker."),

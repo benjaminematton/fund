@@ -55,8 +55,18 @@ no-debate shape.
 - `specs/design.md` line 63's Fundamentals Analyst row is **deferred**, not deleted. Reopening
   it requires two things, not one: an external financial-statement source, and a non-daily
   research stage. Phase 3+.
-- Both new seats take new ids (`technical`, `news`), so the existing `signals` history under
-  `agent = 'analyst'` is orphaned. That is one clean live day (2026-08-17) and is accepted.
+- **The technical seat keeps the id `analyst`; only `news` is new.** An earlier draft of this
+  ADR said both seats would take new ids (`technical`, `news`). That rename was scoped, then
+  deferred on measurement: `analyst` appears 154 times across 36 files, including six PM eval
+  cases that carry `agent: analyst` and four seat-keyed maps in the eval rig
+  (`WRITE_TABLES`, `PROMPT_TEMPLATES`, `PRECONDITIONS`, and the invariant schema map). A
+  concurrent branch is making `evals/` seat-agnostic, which collapses those four into one
+  entry per seat — so the rename is several times cheaper after that lands, and before it
+  lands it also touches the PM eval baseline for no functional gain.
+- Consequence accepted for now: the seat performing technical analysis is still called
+  `analyst`, which reads oddly beside `news`. The existing `signals` history under
+  `agent = 'analyst'` is preserved rather than orphaned, which is the one upside. Revisit the
+  rename once the eval rig is seat-agnostic; the cost only grows with accumulated history.
 - Both seats cover the full active set rather than splitting it. `specs/calibration.md` §4
   puts a seat below 50 graded calls at provisional; at three tickers with `N_eff ≈ N/5`, full
   overlap reaches an `N_eff` of 50 in roughly 83 trading days, and splitting the watchlist
