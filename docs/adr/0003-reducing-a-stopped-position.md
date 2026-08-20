@@ -153,11 +153,31 @@ simplification and pays for that with risk.
     query and `scripts/audit_day.py` join tickets to decisions the same way.
 
   The last one runs into analyst scoring and from there into PM weights, which is the path
-  CLAUDE.md singles out as corrupting fund-wide when it goes wrong quietly. So **hanging
-  the amend ticket off `decision_id` is probably the wrong shape.** Making it reference the
-  reduce ticket as its parent, or giving tickets a kind that every `decision_id`-keyed join
-  filters on, both avoid the fan-out — but that choice belongs in `specs/contracts.md`
-  with the state machine, and it is not made here.
+  CLAUDE.md singles out as corrupting fund-wide when it goes wrong quietly.
+
+  **Correction to an earlier draft of this ADR.** It called hanging the amend ticket off
+  `decision_id` "probably the wrong shape" and offered two alternatives — parenting the
+  amend ticket to the reduce ticket, or a ticket `kind` that every `decision_id`-keyed join
+  filters on. Reading the full DDL rules out all three as *illegal*, not merely unwise:
+  `tickets.decision_id` is `INTEGER NOT NULL REFERENCES decisions(id)` carrying
+  `UNIQUE (decision_id)` — commented "one ticket per decision, ever" — and `side` is
+  `CHECK (side IN ('buy','sell'))`. Parenting needs a nullable or fabricated `decision_id`;
+  a kind needs the UNIQUE dropped. A ticket simply cannot represent an authorization that
+  no PM decision owns.
+
+  What remains is authorization in a **separate table**, leaving `tickets` untouched. That
+  carries a cost worth naming before anyone calls it free: `orders.client_order_id` is
+  `TEXT PRIMARY KEY REFERENCES tickets(id)`, and `state/db.py` sets
+  `PRAGMA foreign_keys = ON` (pinned by `tests/test_state.py`). A replacement order whose
+  `client_order_id` is an amend-authorization id is therefore *not insertable into
+  `orders`*. Either that FK widens — returning the blast radius to the table `resolve.py`
+  joins — or the protective order is recorded in the new table alongside its authorization,
+  and the fund keeps two order-recording tables. Not recording it at all is not an option:
+  the fund would have no record of the order protecting the position, which is the gap this
+  decision exists to close.
+
+  None of that is settled here. `specs/contracts.md` owns the state machine and the DDL,
+  and this is a 🔏 ruling.
 - **A reduce ticket without its amendment must resolve to HOLD.** The pairing is only
   meaningful if an unpaired reduce ticket is unfillable, so the gate should refuse to mint
   one against a stopped position rather than leave the seat to discover the reservation at
