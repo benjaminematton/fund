@@ -50,9 +50,8 @@ estimate of the seat.
 
 Even so, round 1 **missed `m01` on all three trials** with the answer key in the
 prompt, and false-alarmed on 6 of 9 aligned trials. That is the one number worth
-carrying forward, and it points the wrong way — but see cause 4: it cannot be
-attributed to a known model, so it is a warning sign rather than a measurement
-of anything.
+carrying forward, and it points the wrong way. (It is a Sonnet 5 number — see
+cause 4, which briefly suggested otherwise and is retracted.)
 
 Fixed in `d110b1e` (charter v3: a 5-step method, no archetype list). Three cases
 whose bait charter v2 had excluded by name were re-authored in `90832a5`.
@@ -94,50 +93,50 @@ Found by a peer review session, reproduced here, fixed at `6e8a5a9` with a
 `TRIALS_PER_CASE` trials. Pinned by
 [tests/test_critic_gate.py](../../../tests/test_critic_gate.py).
 
-### 4. The served model cannot be attributed to the configured one
+### 4. RETRACTED — the model was fine; the instrumentation is not
 
-**All 37 trials emitted `model_fallback_used`**, naming
-`claude-haiku-4-5-20251001` as a model that appeared in the turn's
-`model_usage` while `agents/config/critic.yaml` configures
-`model: claude-sonnet-5` and `fallback_model: claude-sonnet-5`. Haiku is not
-even the configured fallback.
+Raised in peer review and briefly recorded here as a fourth cause: all 37
+trials emitted `model_fallback_used` naming `claude-haiku-4-5-20251001`, while
+`agents/config/critic.yaml` sets `claude-sonnet-5` for both `model` and
+`fallback_model`. Read as "every trial ran on Haiku", that would have
+disqualified the runs on its own.
 
-The instrumentation at [agents/runtime.py:290-302](../../../agents/runtime.py#L290-L302)
-worked exactly as designed — *"model_id is trustworthy precisely when this
-event is absent"* — and nobody read the events. Each trace's own `model` field
-reads `claude-sonnet-5` because it records what was configured, not what
-served.
+**It is a false positive. The seat ran on the configured Sonnet 5.** A live
+probe printing the whole `model_usage` dict — the traces store only
+`_unmatched_models`' output, the keys that *failed* to match, so no re-reading
+of them could settle it:
 
-**What this does and does not establish.** `served` carries only the
-*unmatched* keys, so the event cannot distinguish "Haiku served the turn" from
-"Sonnet served the turn and Haiku appeared in `model_usage` alongside it" —
-`_unmatched_models`' own docstring names the mixed haiku-then-sonnet turn as
-the case it exists to catch. Two facts cut against the pure-Haiku reading:
-cost per trial is **$0.0801 mean / $0.187 max**, above the PM seat's measured
-Sonnet **$0.0453 / $0.1268**, which is not what Haiku 4.5 costs — though
-`total_cost_usd` is a client-side estimate and therefore suggestive rather than
-decisive.
+```
+claude-sonnet-5            2 in /   4 out / 5,347 cache-creation   $0.02012
+claude-haiku-4-5-20251001  527 in /  13 out                        $0.00059
+```
 
-It is also not ambient: **72 PM trials** across `control`, `primary2`,
-`postfix2` and `postfix3`, on identical `model:` / `fallback_model:` lines,
-emitted **zero** such events. Something changed between the PM runs
-(2026-08-18) and the Critic runs (2026-08-19/20) — credentials, quota, or SDK
-resolution.
+Sonnet carries the turn — the 5,347 cache-creation tokens are the charter as
+system prompt — and is **97% of the cost**. Haiku handles one small auxiliary
+call the SDK makes on its own.
 
-So the honest statement is not "the seat was Haiku". It is that **the trials
-cannot be attributed to the configured model**, which disqualifies them as a
-measurement of the shipped seat on its own, before any of causes 1–3.
+**The real finding is a production bug, and it is not on this branch.**
+`_unmatched_models` flags when *any* key fails to match, deliberately: its
+docstring calls the quantifier "the point", because `any()` would stay silent
+on a genuine mid-turn haiku-then-sonnet fallback. That was right when written.
+It is now wrong for the world it runs in — the SDK routes an auxiliary Haiku
+call on **every turn of every seat**, so:
 
-Correspondingly, round 1's 6/9-with-the-answer-key is **unattributable**, not
-merely weak. It should not be read as "Sonnet scored 67% with the rubric in
-its prompt", and equally should not be excused as "that was only Haiku" —
-neither claim is supported.
+- `model_fallback_used` fires on every seat turn, every day, on the droplet.
+- [agents/runtime.py:301](../../../agents/runtime.py#L301)'s contract —
+  *"model_id is trustworthy precisely when this event is absent"* — is now
+  vacuous, because the event is never absent.
+- `scripts/score_day.py` ranks it severity 3 on the daily scorecard,
+  permanently.
 
-**This is not confined to this branch.** Every seat runs the same seam, as
-does the droplet's daily run. Raised by the peer review; resolving why Haiku
-appears is not this branch's work and has no owner yet. The one clean test is
-a single live turn printing `result.model_usage` in full — the traces store
-only the unmatched subset.
+Verified fleet-wide, not seat-specific: the same probe on the **PM** seat, whose
+72 archived trials across `control`, `primary2`, `postfix2` and `postfix3`
+emitted **zero** such events, now emits one identically. So this began between
+2026-08-18 and 2026-08-20 and is an SDK/backend change, not a config drift.
+
+Consequence for the record: round 1's 6/9-with-the-answer-key **is** a Sonnet 5
+number, and the cost and turn observations below are Sonnet numbers. Causes 1–3
+are untouched — they are still why there is no measurement.
 
 ## The structural problem — this is the one that matters
 
@@ -218,17 +217,15 @@ over the 23 fresh trials — about 4× the PM's mean, so budget ~$1.45 per
   against shipping. The file has no owner on master.
 - **`evals/seats/critic.yaml` ceilings stay PROVISIONAL** (10 turns / $0.75).
   Observed over the 23 fresh trials: turns mean 3.74, max 6 (3:13 4:5 5:3 6:2);
-  cost mean $0.0801, p95 $0.1247, max $0.1867. Not adopted as I5 ceilings for
-  two reasons, and the second is the stronger: they were measured against a
-  charter step 2 expects to rewrite, and **against a turn whose served model is
-  unknown** (cause 4). "Provisional" here means *possibly the wrong model*, not
-  *small sample* — adopting them could under-provision the seat that actually
-  ships. I5 re-scores every run on disk.
-- **Every `strategy_critiques` row from these runs carries a `model_id` that
-  may not name the model that served the turn.** Rows are never retro-edited by
-  design; this is the enumeration that
-  [agents/runtime.py:301](../../../agents/runtime.py#L301) asks for in place of
-  hiding it.
+  cost mean $0.0801, p95 $0.1247, max $0.1867 — Sonnet 5 numbers (cause 4).
+  Not adopted as I5 ceilings: they were measured against a charter step 2
+  expects to rewrite, and I5 re-scores every run on disk.
+- **`model_fallback_used` is a false positive on every seat turn, fund-wide.**
+  Not this branch's bug and not this branch's fix — the seam is
+  `agents/runtime.py:_unmatched_models`, it affects the droplet's daily
+  scorecard at severity 3, and it has silently voided the guarantee that
+  `model_id` is trustworthy when the event is absent. Reproduced on both the
+  Critic and the PM seat. Needs an owner.
 - **Run labels** are `critic-v2-r1` / `critic-v3-r2`, which do not match the
   plan's `critic-v2-*` pooling glob. Anything pooling by that glob silently
   drops the v3 round.
