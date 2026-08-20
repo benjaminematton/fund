@@ -50,7 +50,9 @@ estimate of the seat.
 
 Even so, round 1 **missed `m01` on all three trials** with the answer key in the
 prompt, and false-alarmed on 6 of 9 aligned trials. That is the one number worth
-carrying forward, and it points the wrong way.
+carrying forward, and it points the wrong way — but see cause 4: it cannot be
+attributed to a known model, so it is a warning sign rather than a measurement
+of anything.
 
 Fixed in `d110b1e` (charter v3: a 5-step method, no archetype list). Three cases
 whose bait charter v2 had excluded by name were re-authored in `90832a5`.
@@ -91,6 +93,51 @@ Found by a peer review session, reproduced here, fixed at `6e8a5a9` with a
 `miscounted` check that requires every case to contribute exactly
 `TRIALS_PER_CASE` trials. Pinned by
 [tests/test_critic_gate.py](../../../tests/test_critic_gate.py).
+
+### 4. The served model cannot be attributed to the configured one
+
+**All 37 trials emitted `model_fallback_used`**, naming
+`claude-haiku-4-5-20251001` as a model that appeared in the turn's
+`model_usage` while `agents/config/critic.yaml` configures
+`model: claude-sonnet-5` and `fallback_model: claude-sonnet-5`. Haiku is not
+even the configured fallback.
+
+The instrumentation at [agents/runtime.py:290-302](../../../agents/runtime.py#L290-L302)
+worked exactly as designed — *"model_id is trustworthy precisely when this
+event is absent"* — and nobody read the events. Each trace's own `model` field
+reads `claude-sonnet-5` because it records what was configured, not what
+served.
+
+**What this does and does not establish.** `served` carries only the
+*unmatched* keys, so the event cannot distinguish "Haiku served the turn" from
+"Sonnet served the turn and Haiku appeared in `model_usage` alongside it" —
+`_unmatched_models`' own docstring names the mixed haiku-then-sonnet turn as
+the case it exists to catch. Two facts cut against the pure-Haiku reading:
+cost per trial is **$0.0801 mean / $0.187 max**, above the PM seat's measured
+Sonnet **$0.0453 / $0.1268**, which is not what Haiku 4.5 costs — though
+`total_cost_usd` is a client-side estimate and therefore suggestive rather than
+decisive.
+
+It is also not ambient: **72 PM trials** across `control`, `primary2`,
+`postfix2` and `postfix3`, on identical `model:` / `fallback_model:` lines,
+emitted **zero** such events. Something changed between the PM runs
+(2026-08-18) and the Critic runs (2026-08-19/20) — credentials, quota, or SDK
+resolution.
+
+So the honest statement is not "the seat was Haiku". It is that **the trials
+cannot be attributed to the configured model**, which disqualifies them as a
+measurement of the shipped seat on its own, before any of causes 1–3.
+
+Correspondingly, round 1's 6/9-with-the-answer-key is **unattributable**, not
+merely weak. It should not be read as "Sonnet scored 67% with the rubric in
+its prompt", and equally should not be excused as "that was only Haiku" —
+neither claim is supported.
+
+**This is not confined to this branch.** Every seat runs the same seam, as
+does the droplet's daily run. Raised by the peer review; resolving why Haiku
+appears is not this branch's work and has no owner yet. The one clean test is
+a single live turn printing `result.model_usage` in full — the traces store
+only the unmatched subset.
 
 ## The structural problem — this is the one that matters
 
@@ -171,9 +218,17 @@ over the 23 fresh trials — about 4× the PM's mean, so budget ~$1.45 per
   against shipping. The file has no owner on master.
 - **`evals/seats/critic.yaml` ceilings stay PROVISIONAL** (10 turns / $0.75).
   Observed over the 23 fresh trials: turns mean 3.74, max 6 (3:13 4:5 5:3 6:2);
-  cost mean $0.0801, p95 $0.1247, max $0.1867. Not adopted as I5 ceilings — they
-  would be measured against a charter that step 2 above is expected to rewrite,
-  and I5 re-scores every run on disk.
+  cost mean $0.0801, p95 $0.1247, max $0.1867. Not adopted as I5 ceilings for
+  two reasons, and the second is the stronger: they were measured against a
+  charter step 2 expects to rewrite, and **against a turn whose served model is
+  unknown** (cause 4). "Provisional" here means *possibly the wrong model*, not
+  *small sample* — adopting them could under-provision the seat that actually
+  ships. I5 re-scores every run on disk.
+- **Every `strategy_critiques` row from these runs carries a `model_id` that
+  may not name the model that served the turn.** Rows are never retro-edited by
+  design; this is the enumeration that
+  [agents/runtime.py:301](../../../agents/runtime.py#L301) asks for in place of
+  hiding it.
 - **Run labels** are `critic-v2-r1` / `critic-v3-r2`, which do not match the
   plan's `critic-v2-*` pooling glob. Anything pooling by that glob silently
   drops the v3 round.

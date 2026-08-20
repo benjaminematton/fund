@@ -20,11 +20,13 @@ seat: critic
 # Observed over the 23 trials that were fresh rather than stale rows:
 #   turns  mean 3.74, max 6   (histogram 3:13 4:5 5:3 6:2)
 #   cost   mean $0.0801, p95 $0.1247, max $0.1867
-# Deliberately NOT adopted as ceilings. They were measured against charter v3,
-# which the result document recommends rewriting, and I5 re-scores every run on
-# disk — a ceiling set to a charter that is about to change reddens the archive
-# the moment it does. Adopt them only after a charter the gate was actually
-# measured under.
+# Deliberately NOT adopted as ceilings, for two reasons. They were measured
+# against charter v3, which the result document recommends rewriting, and I5
+# re-scores every run on disk — a ceiling set to a charter that is about to
+# change reddens the archive the moment it does. Worse: all 37 trials emitted
+# `model_fallback_used`, so the model that served them is not known to be the
+# configured claude-sonnet-5. These numbers may belong to a cheaper model and
+# would then under-provision the seat that actually ships.
 #
 # Do not tighten either number to make a red case pass.
 max_turns: 10

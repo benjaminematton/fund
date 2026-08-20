@@ -53,6 +53,12 @@ The holdout is unspent. Full ledger, the two rig bugs that cost the other 31
 trials, and the reason a re-run does not fix the charter/case coupling:
 [2026-08-18-critic-g1-alignment-result.md](2026-08-18-critic-g1-alignment-result.md).
 
+A fourth cause found after the first draft, and it is fleet-wide rather than
+G1's: **all 37 trials emitted `model_fallback_used`**, so none can be
+attributed to the configured `claude-sonnet-5`. 72 PM trials on identical
+config emitted none, so something changed between 2026-08-18 and 2026-08-19.
+Every seat runs the same seam.
+
 Separately, the 80% target above and the plan's 8-of-9 threshold are not the
 same number — 8/9 is 88.9%, and a seat performing exactly at 80% clears it only
 43.6% of the time on a one-shot holdout. Reconciling those is a prerequisite of
