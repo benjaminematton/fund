@@ -22,7 +22,9 @@ strategy_id    = spec_id                                                    # a 
 
 ## 2. DDL
 
-> **Unification status:** the shipped `fundbt/registry.py` maintains its own minimal DDL for `trial_registry` + `holdout_evaluations` (standalone, `:memory:` default, no FKs) so the starter kit runs without the fund DB. The schema below is canonical; migrating the registry to write to the fund DB (FKs intact, single source of truth) is the Phase-5 acceptance item "Trial registry unified." `strategy_specs`, `strategies`, `sleeves`, and `shadow_fills` have **no implementing code yet** — they are Phase-5 integration work.
+> **Unification status:** the shipped `fundbt/registry.py` maintains its own minimal DDL for `trial_registry` + `holdout_evaluations` (standalone, `:memory:` default, no FKs) so the starter kit runs without the fund DB. The schema below is canonical; migrating the registry to write to the fund DB (FKs intact, single source of truth) is the Phase-5 acceptance item "Trial registry unified." `strategies`, `sleeves`, and `shadow_fills` have **no implementing code yet** — they are Phase-5 integration work. `strategy_specs` and `strategy_critiques` are live in `state/schema.sql`; their write paths are `state/specs.py` and `submit_spec_critique` (§3.4) respectively. Nothing yet READS `strategy_critiques` — G1 enforcement is a separate change.
+>
+> **Known divergence, to be closed when `strategies` lands.** §4 makes `strategies.state == 'SPEC'` the canonical condition for a spec awaiting review, but that table does not exist yet. `state/specs.py:specs_awaiting_critique` therefore selects on the absence of a `strategy_critiques` row instead. The two are equivalent while nothing but `submit_strategy_spec` writes `strategy_specs` and nothing but `submit_spec_critique` writes `strategy_critiques`; the Phase-5 change that creates `strategies` should replace the selector rather than add a second one.
 
 ```sql
 -- Immutable pre-registration (Gate G1). No UPDATE ever; supersede via lineage.
@@ -48,6 +50,30 @@ CREATE TABLE strategy_specs (
   llm_in_loop      INTEGER NOT NULL DEFAULT 0, -- invariant 5 applies if 1
   lineage_parent   TEXT REFERENCES strategy_specs(spec_id),
   created_at       TEXT NOT NULL               -- injected Clock, ISO-8601 UTC
+);
+
+-- The Critic's G1 mechanism-alignment verdict. One row per spec, ever.
+-- Written ONLY by submit_spec_critique (agents/tools/fund_server.py). The
+-- orchestrator must never insert a default row here: at G1 a missing verdict
+-- means the spec does not advance, the exact inverse of the trade pipeline's
+-- advisory `critiques` table (contracts.md §2).
+--
+-- charter_version/model_id follow contracts.md §2's attribution contract. The
+-- CHECKs NARROW §2's three values to the one this table can hold; they are not
+-- a fourth rule. §2 allows 'none' for orchestrator-written rows and 'unknown'
+-- as a fallback, and neither can legally occur here: nothing but
+-- submit_spec_critique writes this table, and defaulting a G1 verdict is
+-- forbidden outright.
+CREATE TABLE strategy_critiques (
+  spec_id         TEXT PRIMARY KEY REFERENCES strategy_specs(spec_id),
+  verdict         TEXT NOT NULL CHECK (verdict IN ('clear','objections')),
+  objections      TEXT NOT NULL DEFAULT '[]',  -- JSON array, ≤3, each ≤200 chars
+                                               -- (empty iff verdict='clear')
+  seat            TEXT NOT NULL,
+  charter_version TEXT NOT NULL CHECK (charter_version NOT IN ('none','unknown')),
+  model_id        TEXT NOT NULL CHECK (model_id NOT IN ('none','unknown')),
+  slack_ts        TEXT,
+  created_at      TEXT NOT NULL
 );
 
 -- Lifecycle state (the only mutable strategy row).
@@ -172,6 +198,31 @@ Wrapper enforcement order (fail → tool error, no trial row except where noted)
 ### 3.3 `stratgate.evaluate(spec_id)` — not an MCP tool; orchestrator-invoked pure function
 
 G2 runs automatically when a seat requests promotion; G3 runs only on G2 pass + PM sponsorship; both write verdict JSON to `strategies.gate_results` and project to `#risk`. G3's holdout run inserts the single `holdout_evaluations` row inside the same transaction as the verdict — **pass or fail** (invariant 6). A second G3 attempt for the same spec_id hits the PRIMARY KEY and resolves to REJECT `holdout_already_consumed`.
+
+### 3.4 `submit_spec_critique` (Critic seat only)
+
+```python
+@tool("submit_spec_critique",
+      "Critic only. Record your G1 mechanism-alignment verdict for one spec. Call it exactly once, for the spec in your brief. Written once — there is no revising it. A spec with no verdict does not advance, so skipping the call is not the same as clearing it.",
+      {"type": "object",
+       "properties": {
+         "spec_id":    {"type": "string"},
+         "verdict":    {"type": "string", "enum": ["clear","objections"]},
+         "objections": {"type": "array", "items": {"type": "string", "maxLength": 200},
+                        "maxItems": 3,
+                        "description": "Required non-empty iff verdict='objections'."}},
+       "required": ["spec_id","verdict"],
+       "additionalProperties": False},
+      strict=True)
+```
+
+Handler validates (`state.models.SpecCritique`), refuses an unregistered `spec_id`, and refuses a second verdict for the same spec — **write-once, never UPSERT**: this row is a gate input, and a revisable one can be argued into revision. Wrong seat, malformed payload, unknown spec, or existing verdict → tool error, nothing written and no projection event appended.
+
+`charter_version` and `model_id` are **required** parameters of the handler, not defaulted to `'unknown'` as the trade-pipeline handlers do (contracts.md §2). `strategy_critiques` forbids `'unknown'`, so a defaulted call would fail at the INSERT; requiring them fails at the call site instead, where the missing argument actually is.
+
+The read half is `get_spec_brief` (Critic only, no arguments): the oldest registered spec with no `strategy_critiques` row — one per turn — JSON columns decoded, plus the seat's own journal. The journal degrades like `get_stage_brief`'s sections (contracts §4): unbuildable means empty plus a name in `unavailable`. **The spec queue does not degrade.** An unreadable queue returns an error rather than `[]`, because an empty list is indistinguishable from "nothing pending" and would end the turn with an unreviewed spec behind a clean-looking trace.
+
+**No default row, ever.** The trade pipeline's `critiques` defaults to `clear` on a Critic timeout because a silent Critic must not stall the trading day. At G1 the default inverts: no row means the spec does not advance (`specs/strategy.md` invariant 7). Neither the orchestrator nor any handler may insert a default `strategy_critiques` row.
 
 ## 4. State machine
 

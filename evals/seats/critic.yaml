@@ -1,0 +1,41 @@
+# Eval-owned config for the Critic seat. Tool glob, deny list, model and
+# charter are NOT here — they are derived from agents/config/critic.yaml and
+# charters/critic.md by evals/config.py, so they cannot drift out of
+# production.
+seat: critic
+
+# I5 ceilings. PROVISIONAL — set to the production backstops so the first
+# suite run cannot redden on a ceiling nobody has measured. That means I5
+# detects nothing yet, which is the honest state before a measurement exists.
+#
+# Task 7 of docs/superpowers/plans/2026-08-18-critic-seat.md REPLACES both
+# numbers with measured ones, following the convention documented at length in
+# evals/seats/pm.yaml: max_turns = measured max + 1, max_cost_usd ~= 1.4x the
+# measured max and never below the dearest trial ever recorded — I5 re-scores
+# EVERY run on disk, so a ceiling under a historical max reddens the archive
+# retroactively.
+#
+# STILL PROVISIONAL after Task 7 (2026-08-20). Task 7 ran and did not produce a
+# measurement — see docs/superpowers/specs/2026-08-18-critic-g1-alignment-result.md.
+# Observed over the 23 trials that were fresh rather than stale rows:
+#   turns  mean 3.74, max 6   (histogram 3:13 4:5 5:3 6:2)
+#   cost   mean $0.0801, p95 $0.1247, max $0.1867
+# These ARE claude-sonnet-5 numbers: all 37 trials emitted `model_fallback_used`
+# naming haiku, which a live probe showed is a false positive fund-wide (sonnet
+# carried 97% of the cost; haiku handles one small auxiliary SDK call). See the
+# result document's cause 4.
+#
+# Deliberately NOT adopted as ceilings anyway: they were measured against
+# charter v3, which the result document recommends rewriting, and I5 re-scores
+# every run on disk — a ceiling set to a charter that is about to change reddens
+# the archive the moment it does.
+#
+# Do not tighten either number to make a red case pass.
+max_turns: 10
+max_cost_usd: 0.75
+
+# I1 grades a proposed size against the gate's allowed_actions. The Critic
+# proposes no sizes and is shown no allowance, so I1 has nothing to grade and
+# would score every trial INCONCLUSIVE — not a pass. Omitted deliberately;
+# evals/grade.py:seat_registry is what makes this line load-bearing.
+invariants: [I2, I3, I4, I5]

@@ -168,11 +168,19 @@ PNL = {"text": "2026-07-06 close · P&L +$412.00 (+0.41%) · SPY +0.18% ·"
        "run_date": "2026-07-06", "equity": 100412.0, "pnl_usd": 412.0,
        "pnl_pct": 0.0041, "spy_pct": 0.0018, "alpha": 0.0023}
 
+SPEC_CRITIQUE = {"seat": "critic", "spec_id": "spec_0f1e2d3c4b5a6978",
+                 "verdict": "objections",
+                 "objections": ["the rule filters the top turnover decile,"
+                                " where reversal inverts into momentum",
+                                "the stated liquidity mechanism cannot pay"
+                                " for a momentum rule"]}
+
 BLOCK_KINDS = [("signal", SIGNAL), ("decision", DECISION),
                ("gate_approved", GATE_OK), ("gate_rejected", GATE_NO),
                ("fill", FILL), ("alert", {"text": "boom"}),
                ("digest", DIGEST), ("pnl", PNL),
-               ("model_fallback_used", FALLBACK), ("scorecard", SCORECARD)]
+               ("model_fallback_used", FALLBACK), ("scorecard", SCORECARD),
+               ("spec_critique", SPEC_CRITIQUE)]
 
 
 @pytest.mark.parametrize("kind,payload", BLOCK_KINDS)
@@ -348,9 +356,31 @@ def test_an_unmapped_seat_gets_its_raw_name_and_no_face():
     assert post.icon_emoji is None
 
 
+def test_a_g1_verdict_posts_under_the_critics_own_name_and_face():
+    """Deliberate, and the opposite of the first answer proposed for it: the
+    argument for no face was that the post is machinery reporting a seat's
+    verdict. That is equally true of `signal` — drain() posts that row too —
+    so it does not separate them. What separates a faced kind from an unfaced
+    one is whether a model wrote the words: `scorecard` and
+    `model_fallback_used` are ranked and detected by deterministic code, while
+    `objections` is the Critic's own prose, the same class of content as a
+    signal's summary. SEATS and ICONS already reserved 'Ida (Critic)' and 🧪
+    before any Critic existed, which is the codebase agreeing."""
+    post = render("spec_critique", SPEC_CRITIQUE)
+    assert post.username == "Ida (Critic)"
+    assert post.icon_emoji == "🧪"
+
+
+def test_a_cleared_spec_renders_without_an_objections_block():
+    post = render("spec_critique", {**SPEC_CRITIQUE, "verdict": "clear",
+                                    "objections": []})
+    assert post.text.strip()
+    assert all("filters the top turnover" not in str(b) for b in post.blocks)
+
+
 ALL_KINDS = BLOCK_KINDS + [("projection_error", {"event_id": 3,
                                                  "kind": "bogus"})]
-SPEAKS = {"signal", "decision"}
+SPEAKS = {"signal", "decision", "spec_critique"}
 
 
 @pytest.mark.parametrize("kind,payload", ALL_KINDS)

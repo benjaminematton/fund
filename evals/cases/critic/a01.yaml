@@ -1,0 +1,40 @@
+id: a01
+seat: critic
+split: dev
+notes: >
+  F1 done right, and the deliberate mirror of m01: same family, same
+  mechanism, correct conditioning. Low-turnover filter (where reversal lives),
+  above the 200d trend filter, liquid bucket, short holds, limit entries.
+  Every clause of the rule traces to a clause of the hypothesis. There is
+  nothing here for the Critic to find, and finding something anyway is the
+  failure this case exists to catch.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F1
+  seat: quant
+  hypothesis: >-
+    Short-horizon reversal is compensation for supplying liquidity to
+    forced sellers. Sellers are constrained (redemptions, margin), we are
+    not, and the premium survives because absorbing that flow requires
+    balance sheet and patience rather than information.
+  mechanism_class: liquidity_provision
+  universe: {index: Russell 1000, pit_constituents: true, filters: [turnover_decile <= 3]}
+  liquidity_bucket: mega_large
+  signal_rule:
+    entry: 5-day return below -1.5 sigma AND turnover_decile <= 3 AND close > ma200
+    sizing: equal weight across triggers, max 25 names
+    orders: limit at prior close
+  param_ranges: {lookback_d: [3, 10, 1], sigma: [1.0, 2.5, 0.25], max_names: [10, 40, 5]}
+  search_budget: 24
+  holding_period_d: 5
+  rebalance: daily
+  expected_turnover: 42.0
+  exit_rule: close at 5 trading days or on a +1.0 sigma reversion, whichever first
+  invalidation: >-
+    Rolling 12-month low-turnover reversal spread turns negative for two
+    consecutive quarters.
+  capacity_usd: 4000000.0
+  predicted: {net_sharpe: 0.8, max_dd: 0.14, hit_rate: 0.55}
+  llm_in_loop: 0
+expect:
+  verdict: clear

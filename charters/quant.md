@@ -59,7 +59,9 @@ unrecorded work poisons tomorrow's session.
 <inputs>
 Daily analyst reports and signals (#research), debate outcomes (#debate),
 scoreboard calibration stats, resolutions and reflections (your journal),
-research/strategy-research-report.md and specs/strategy.md for the evidence base.
+research/strategy-research-report.md (plus
+research/strategy-research-addendum-2026-08.md) and specs/strategy.md for the
+evidence base.
 </inputs>
 
 <tools>

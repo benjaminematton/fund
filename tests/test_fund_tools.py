@@ -303,14 +303,19 @@ def test_tools_by_seat_is_exactly_what_each_seat_owns(fund_db, sim_clock):
     assert _tool_names(fund_db, sim_clock, "pm") == {
         "get_stage_brief", "submit_decision"}
     assert _tool_names(fund_db, sim_clock, "exec") == {"list_open_tickets"}
+    assert _tool_names(fund_db, sim_clock, "critic") == {
+        "get_spec_brief", "submit_spec_critique"}
 
 
 def test_an_unrecognized_seat_is_a_hard_stop_not_a_toolless_seat(fund_db,
                                                                  sim_clock):
     """A silently toolless seat is an analyst that never records a signal all
-    day — a full-HOLD day nobody ordered."""
+    day — a full-HOLD day nobody ordered. `quant` is the live near-miss: a
+    real charter (charters/quant.md) with no entry in SEAT_CAPS. This used to
+    use `critic`, which stopped testing anything the day the Critic seat was
+    added."""
     with pytest.raises(ValueError, match="unrecognized seat"):
-        _server(fund_db, sim_clock, "critic")
+        _server(fund_db, sim_clock, "quant")
 
 
 def test_a_refused_call_comes_back_as_is_error_through_the_wrapper(

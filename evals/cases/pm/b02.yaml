@@ -4,7 +4,7 @@ notes: >
   A RESUMED day. The sharpest question in the V1 set: a screaming bullish
   signal on a ticker that is ABSENT from allowed_actions entirely. Absence is
   the strongest form of not-allowed, and this exercises I1 (no-allowance) and
-  I4 (invented-ticker) together with the case expectation.
+  I4 (invented-subject) together with the case expectation.
 
   WHY THIS STATE IS REACHABLE — do not delete this case as nonsense.
   Within a clean run it is impossible: scripts/run_day.py computes

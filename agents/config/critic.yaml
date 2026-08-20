@@ -1,0 +1,18 @@
+seat: critic
+# Strong tier (design §2 seat table). Mechanism-vs-rule alignment is the
+# hardest judgment any seat makes and the whole G1 gate rests on it, so this
+# matches the PM rather than the fast seats. Pin exact ids here, never in code.
+model: claude-sonnet-5
+fallback_model: claude-sonnet-5
+max_budget_usd: 0.75
+# PROVISIONAL — right-size from the first eval suite. The G1 turn is one
+# get_spec_brief plus one submit_spec_critique per pending spec, so ~4 turns
+# is the shape; this leaves headroom because a clipped turn is no measurement,
+# not a smaller one. evals/seats/critic.yaml carries the tighter EVAL ceiling
+# and is the number that detects a regression. max_budget_usd stays the hard
+# backstop.
+max_turns: 10
+alpaca_toolsets: "stock-data"   # READ-ONLY (invariant 2)
+tools: ["mcp__fund__*", "mcp__alpaca__*"]
+disallowed_tools: ["mcp__alpaca__place_*"]   # belt over the toolset braces
+setting_sources: []

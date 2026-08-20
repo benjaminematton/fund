@@ -238,13 +238,33 @@ def test_stage_prompt_is_verbatim_the_one_production_sends():
     """evals/ cannot import scripts/run_day.py (it opens Slack and Alpaca), so
     the prompt is duplicated — and pinned here by grepping the source. If
     run_day.py's wording changes and this is not updated, the rig is silently
-    evaluating a seat production no longer runs."""
+    evaluating a seat production no longer runs.
+
+    The seat list is DERIVED from run_day.py's own SEATS map rather than
+    hardcoded: a seat the rig evaluates before production drives it (the
+    Critic at G1) has no production wording to drift from, and a seat
+    production drives with no pinned template is a hole this now catches."""
+    import re
+
     def norm(s):        # drop the quotes that join adjacent string literals
         return " ".join(s.replace('"', "").split())
 
-    src = norm((ROOT / "scripts" / "run_day.py").read_text())
-    for seat, template in PROMPT_TEMPLATES.items():
-        assert norm(template) in src, \
+    raw = (ROOT / "scripts" / "run_day.py").read_text()
+    src = norm(raw)
+    # SEATS values are TUPLES of seat names, one stage to many seats
+    # ({"research": ("analyst", "news"), ...}). Parsed as "every quoted word in
+    # the block, minus the keys" so this reads both that shape and the bare
+    # string it used to be — the parse should not be the thing that breaks when
+    # a stage gains a seat, since gaining a seat is exactly what it must catch.
+    block = re.search(r"SEATS = \{(.*?)\}", raw, re.S).group(1)
+    production_seats = (set(re.findall(r'"(\w+)"', block))
+                        - set(re.findall(r'"(\w+)"\s*:', block)))
+    assert production_seats, "could not read SEATS out of run_day.py"
+    assert production_seats <= set(PROMPT_TEMPLATES), \
+        f"run_day.py drives {production_seats - set(PROMPT_TEMPLATES)} with" \
+        " no pinned stage prompt — the rig cannot evaluate them"
+    for seat in production_seats:
+        assert norm(PROMPT_TEMPLATES[seat]) in src, \
             f"{seat} stage prompt drifted from scripts/run_day.py"
     assert "Today's active tickers: NVDA, MSFT." in stage_prompt(
         "pm", ["NVDA", "MSFT"])

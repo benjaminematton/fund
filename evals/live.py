@@ -27,7 +27,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from evals.trace import ROW_COLUMNS, WRITE_TABLES, Trace
+from evals.trace import DAILY_TABLES, ROW_COLUMNS, WRITE_TABLES, Trace
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,9 +55,20 @@ def rows_written(conn, seat: str, run_date: str) -> dict:
     instead of submitting rows, and a KeyError here would cost the trace of the
     one seat that touches the broker (invariant 4: a trace is evidence, never
     control flow).
+
+    A table outside `DAILY_TABLES` is SKIPPED for the same reason, not queried
+    and not raised on. `strategy_critiques` has no `run_date` and no `ticker`,
+    so the scan below would emit invalid SQL against it rather than return
+    nothing — and the Critic is the seat that writes it. Nothing schedules a
+    Critic turn today, so this is a guard against the wiring rather than a live
+    bug: whoever adds that stage must give this function the seat-scoped scan
+    the table actually needs (`WHERE seat = ?`, ordered by `spec_id`), and
+    should not discover the requirement from a traceback on the trading path.
     """
     out = {}
     for table in WRITE_TABLES.get(seat, ()):
+        if table not in DAILY_TABLES:
+            continue
         cols = ROW_COLUMNS[table]
         scoped = "agent" in cols
         rows = conn.execute(

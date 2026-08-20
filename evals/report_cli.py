@@ -27,7 +27,7 @@ def _runs() -> list[str]:
 
 
 def _report(name: str, cases: dict):
-    return build_report(grade_traces(TRACES / name, cases, full_registry()))
+    return build_report(grade_traces(TRACES / name, cases))
 
 
 def main(run: str | None, baseline: str | None) -> int:

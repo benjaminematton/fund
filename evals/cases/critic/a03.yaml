@@ -1,0 +1,40 @@
+id: a03
+seat: critic
+split: holdout
+notes: >
+  F4 done right, and the mirror of m04. Same hypothesis text as m04, but the
+  sizing clause scales by trailing 60-day realized VOLATILITY and there is a
+  market-state filter to sidestep rebound crashes. The vol-management leg the
+  hypothesis says is load-bearing is the leg the rule actually codes. Aligned,
+  and the pairing with m04 is what makes m04 a test of reading rather than of
+  vocabulary.
+clock: "2026-07-06T15:00:00+00:00"
+spec:
+  family: F4
+  seat: quant
+  hypothesis: >-
+    Momentum pays for bearing crash risk, and managing that risk is what
+    turns the raw premium into a holdable return stream. Vol-scaling the
+    exposure roughly doubles realized Sharpe because it cuts size precisely
+    into the rebound crashes that eat the premium.
+  mechanism_class: risk_premium
+  universe: {index: Russell 2000, pit_constituents: true, filters: [price > 5]}
+  liquidity_bucket: small
+  signal_rule:
+    selection: top decile 12-1 momentum, long only
+    sizing: weight proportional to target_vol / trailing_60d_realized_vol
+    filter: skip entries while index is below its 200d ma
+  param_ranges: {lookback_m: [9, 15, 1], skip_m: [1, 2, 1], target_vol: [0.05, 0.2, 0.05]}
+  search_budget: 16
+  holding_period_d: 21
+  rebalance: monthly
+  expected_turnover: 6.0
+  exit_rule: drop out of the top three deciles at monthly rebalance
+  invalidation: >-
+    Realized Sharpe of the scaled sleeve is no better than the unscaled
+    sleeve over a trailing 24 months.
+  capacity_usd: 6000000.0
+  predicted: {net_sharpe: 0.6, max_dd: 0.22, hit_rate: 0.51}
+  llm_in_loop: 0
+expect:
+  verdict: clear

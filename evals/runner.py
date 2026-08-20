@@ -13,6 +13,8 @@ production actually runs, so it never assembles ClaudeAgentOptions itself.
 
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
 import traceback
 from pathlib import Path
@@ -40,6 +42,27 @@ REQUIRED_SERVERS = {"alpaca", "fund"}          # mirrors scripts/run_day.py:76
 # The reason rows are scoped to the seat's own write table is unchanged: a PM
 # case seeds `signals` as input, and an unscoped scan would report fixture
 # input as agent output.
+#
+# ROW_SCOPE and JSON_COLUMNS stay HERE because they are the RIG's answers, not
+# the live path's. The rig gives every trial a fresh database, which is what
+# makes an unscoped select mean "this trial"; a live database accumulates the
+# whole day and live.py scopes by `seat` instead. Same tables, different
+# question.
+#
+# How a table is scoped to THIS trial and ordered. The trade pipeline keys on
+# run_date; strategy_critiques has no run_date column (a spec is reviewed once,
+# not once per day), so its select is unscoped and depends ENTIRELY on the
+# trial directory being wiped in run_trial. That was assumed rather than
+# enforced once, and a full suite silently re-reported the previous suite's
+# verdicts. If you remove the rmtree, this select stops meaning "this trial".
+ROW_SCOPE = {"decisions": ("WHERE run_date = ?", "ticker"),
+             "signals": ("WHERE run_date = ?", "ticker"),
+             "strategy_critiques": ("", "spec_id")}
+# Columns stored as JSON text, decoded HERE and only here. Every grader
+# downstream then receives the value the pydantic model declares — a grader
+# that has to ask "string or list?" is a grader carrying storage detail it has
+# no business knowing, and the answer drifts per grader.
+JSON_COLUMNS = frozenset({"objections"})
 
 
 def git_sha() -> str:
@@ -67,16 +90,18 @@ def _rows(conn, seat: str, run_date: str) -> dict:
     out = {}
     for table in WRITE_TABLES[seat]:
         cols = ROW_COLUMNS[table]
+        where, order = ROW_SCOPE[table]
+        params = (run_date,) if where else ()
         rows = conn.execute(
-            f"SELECT {', '.join(cols)} FROM {table} WHERE run_date = ?"
-            " ORDER BY ticker", (run_date,)).fetchall()
+            f"SELECT {', '.join(cols)} FROM {table} {where}"
+            f" ORDER BY {order}", params).fetchall()
         if rows:
-            out[table] = [dict(zip(cols, tuple(r))) for r in rows]
+            out[table] = [{c: json.loads(v) if c in JSON_COLUMNS else v
+                           for c, v in zip(cols, tuple(r))} for r in rows]
     return out
 
 
 def _events(conn, watermark: int) -> list[dict]:
-    import json
     rows = conn.execute(
         "SELECT id, kind, payload FROM events WHERE id > ? ORDER BY id",
         (watermark,)).fetchall()
@@ -108,10 +133,39 @@ def run_trial(seat: str, case: Case, trial: int, *,
     cfg = load_seat_config(PRODUCTION_CONFIG / f"{seat}.yaml")
     clock = SimClock(case.clock)
 
-    # Fresh DB + journals per TRIAL, never per case.
+    # Fresh DB + journals per TRIAL, never per case — and fresh per RUN, which
+    # `exist_ok=True` alone did not deliver. The default workdir is a fixed
+    # path, so a second suite over the same cases reopened the first suite's
+    # database: an unchanged case still carried its earlier critique row, the
+    # write-once guard refused the new submission, and `_rows` reported the OLD
+    # verdict as this trial's result. A whole run graded the previous run.
+    # Nothing caught it because every test and the dry run pass their own
+    # tmp_path; only the real suite uses this path.
+    #
+    # THIS IS THE BLUNT FIX AND IT IS NOT THE INTENDED ONE. Wiping the
+    # directory makes `_rows`' unscoped SELECT correct by enforcing a
+    # precondition, so the correctness of a reported run still depends on a
+    # side effect three lines above it. The agreed replacement removes the
+    # dependency instead:
+    #
+    #   1. Take a watermark before the turn, the way `state.events_watermark`
+    #      is already taken for events — for `strategy_critiques` that is
+    #      `SELECT MAX(rowid)` (no autoincrement id column; `spec_id` is the
+    #      PK), captured in build_case_state alongside events_watermark.
+    #   2. `_rows` filters `WHERE rowid > ?` for the unscoped tables, which
+    #      makes "this trial's rows" true by construction rather than by
+    #      directory hygiene, and lets ROW_SCOPE stop carrying the caveat.
+    #   3. The rmtree can then go, and reusing a workdir becomes harmless
+    #      rather than silently wrong.
+    #
+    # Recorded here rather than in a scratchpad because a pickup that depends
+    # on a design living only in a session's context loses it when that
+    # session ends.
     base = Path(workdir) if workdir else Path(DEFAULT_TRACES).parent / "_work"
     trial_dir = base / case.id / f"t{trial}"
-    trial_dir.mkdir(parents=True, exist_ok=True)
+    if trial_dir.exists():
+        shutil.rmtree(trial_dir)
+    trial_dir.mkdir(parents=True)
     db_path, journals_root = trial_dir / "fund.sqlite", trial_dir / "journals"
 
     state = build_case_state(case, db_path, journals_root)
@@ -141,11 +195,16 @@ def run_trial(seat: str, case: Case, trial: int, *,
     brief_tickers = sorted(set(case.tickers)
                            | set(snapshot.get("allowed_actions") or {})
                            | {s["ticker"] for s in case.signals})
+    # Ticker-shaped cases keep their historical brief_tickers meaning; a
+    # spec-shaped case has no tickers at all, so subjects is what I4 grades
+    # an invented row against.
+    brief_subjects = brief_tickers or list(case.subjects)
 
     trace = Trace(
         case=case.id, trial=trial, seat=seat, git_sha=git_sha(),
         charter_sha=eval_seat.charter_sha, charter_text=eval_seat.charter_text,
         model=eval_seat.model, snapshot=snapshot, brief_tickers=brief_tickers,
+        brief_subjects=brief_subjects,
         tool_names=list(tool_names),
         rows_written=_rows(state.conn, seat, state.run_date),
         events=events, alerts=[e for e in events if e["kind"] == "alert"],

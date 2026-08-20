@@ -36,6 +36,22 @@ def full_registry() -> dict[str, Invariant]:
     return {**REGISTRY, "EXPECT": case_expectations}
 
 
+def seat_registry(seat_name: str) -> dict[str, Invariant]:
+    """The invariants THIS seat declares in evals/seats/<seat>.yaml, plus the
+    case's own expectation.
+
+    `full_registry()` stays every invariant and stays the default for a caller
+    that knows what it is grading. A seat that declares a subset gets exactly
+    its own set: the Critic writes no sized orders and gets no allowed_actions,
+    so I1 has nothing to grade and would score every Critic trial
+    INCONCLUSIVE — and an INCONCLUSIVE trial is not a pass, which would put
+    the seat's acceptance threshold permanently out of reach for a reason that
+    has nothing to do with its judgment."""
+    seat = load_eval_seat(seat_name)
+    return {name: REGISTRY[name] for name in seat.invariants} | {
+        "EXPECT": case_expectations}
+
+
 @dataclass
 class TrialResult:
     case: str
@@ -75,9 +91,14 @@ def grade_trace(trace: Trace, case: Case,
 
 
 def grade_traces(traces_root: Path | str, cases: dict[str, Case],
-                 invariants: dict[str, Invariant]) -> list[TrialResult]:
+                 invariants: dict[str, Invariant] | None = None
+                 ) -> list[TrialResult]:
     """Grade every trace under <traces_root>/<git_sha>/<case>/<trial>.json.
-    A trace whose case file is gone is skipped loudly rather than guessed at."""
+    A trace whose case file is gone is skipped loudly rather than guessed at.
+
+    `invariants=None` grades each trace against ITS seat's registry — the
+    right default for a traces root holding more than one seat. An explicit
+    dict is honored verbatim, which is what lets a caller grade a subset."""
     results = []
     for path in sorted(Path(traces_root).rglob("*.json")):
         trace = Trace.read(path)
@@ -86,5 +107,7 @@ def grade_traces(traces_root: Path | str, cases: dict[str, Case],
             raise ValueError(
                 f"{path}: no case file for {trace.case!r} — a trace cannot be"
                 " graded against expectations that no longer exist")
-        results.append(grade_trace(trace, case, invariants))
+        results.append(grade_trace(
+            trace, case,
+            invariants if invariants is not None else seat_registry(trace.seat)))
     return sorted(results, key=lambda r: (r.case, r.trial))
