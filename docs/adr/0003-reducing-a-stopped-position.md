@@ -79,9 +79,34 @@ The PM's reduce decision mints **two** tickets: the ordinary sell ticket, and an
 ticket* naming the protective order and the quantity it may be reduced to. The execution
 seat edits the stop under the amend ticket, then places the sell under the sell ticket.
 
-How the amend ticket *attaches* is deliberately left open. Hanging it off the same
-`decision_id` as the sell ticket is the obvious reading and appears to be the wrong one —
-see the first consequence below, which is the sharpest constraint on the design.
+**Resolved 2026-08-20 — the amend ticket is not a ticket.** How it attaches was left open here
+and is now settled in [ADR-0004](0004-the-protection-record.md): it attaches to nothing in
+`tickets`, because a ticket cannot represent an authorization no PM decision owns. The
+mechanics:
+
+- The reduce decision mints the sell ticket **and** a **pending successor protection row**
+  carrying the new qty. That row *is* the amend's authorization — the thing the gate checks and
+  the thing that becomes the record are one object, which is the property that makes tickets
+  legible.
+- The exec's `replace_order_by_id` call is validated against **both** rows. The call carries
+  neither symbol nor side — its parameters are `order_id`, `qty`, `time_in_force`,
+  `limit_price`, `stop_price`, `client_order_id` — so symbol and side come from the predecessor,
+  resolved from the call's `order_id` via `alpaca_order_id`. The new qty and the replacement's
+  `client_order_id` come from the pending row. Verified implementable: the tool's schema exposes
+  `order_id`, the PreToolUse hook receives the whole `tool_input`, and a SQLite lookup from
+  `gate/` violates no purity rule — `scripts/check_purity.py` forbids LLM imports and wall-clock
+  calls, not DB reads.
+- On the broker's confirmation the successor goes `live` and the predecessor `superseded`,
+  mirroring Alpaca's own `replaces`/`replaced_by` chain.
+- **An unconsumed pending row expires**, exactly as an unconsumed ticket does. It carries its own
+  expiry column, written at mint time from the sell ticket's `expires_at`, and lands in `lapsed`.
+  Expiry belongs to the side that issued the authorization, mirroring `expire_open_tickets` —
+  *not* to the reconcile pass, which reconciles against the broker and would have nothing to
+  reconcile a pending row against.
+
+The orphan risk this creates is real and is not new: a gate ticket has the same property, and
+`c0a9ae97` is sitting in exactly that state today. The codebase's answer is expiry, and the
+pending row inherits it.
 
 This requires the PreToolUse gate to authorize a second verb. Today `make_order_gate`
 inspects only tool names beginning with `mcp__alpaca__place_` (`agents/runtime.py`), so an
