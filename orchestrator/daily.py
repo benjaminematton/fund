@@ -20,6 +20,7 @@ from typing import Callable
 from gate.risk import Approved, Rejected, size
 from gate.tickets import create_ticket, expire_open_tickets, open_tickets
 from orchestrator.clock import Clock, et_hhmm, iso
+from orchestrator.protection import assert_positions_protected
 from orchestrator.reconcile import reconcile_orders
 from slackkit.outbox import append_event, drain
 from state.critiques import insert_default_critiques
@@ -473,4 +474,14 @@ def run_day(ctx: StageCtx, *, execution_turn: Callable[[], None] | None = None,
     run_stage(ctx, "reconciliation",
               lambda: reconcile_orders(ctx.conn, clock=ctx.clock, broker=broker,
                                        sleep=sleep or (lambda _s: None)))
+    # NOT a stage: an assertion must re-check on a resumed day, never be
+    # skipped as 'done'. Drained explicitly because a resumed day can find
+    # close already 'done', and run_stage returns before draining — which
+    # would leave a naked-position alert sitting in the outbox until the next
+    # run. `sleep` is threaded through for the one short re-read a
+    # just-created OTO leg needs to become visible.
+    now = iso(ctx.clock.now())
+    if assert_positions_protected(ctx.conn, broker=broker, now_iso=now,
+                                  sleep=sleep):
+        drain(ctx.conn, ctx.slack, now)
     run_stage(ctx, "close", lambda: run_close(ctx))

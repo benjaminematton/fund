@@ -239,6 +239,70 @@ def test_schema_pin_place_stock_order_takes_a_flat_stop_leg():
     for field in ("client_order_id", "symbol", "side", "qty", "order_class"):
         assert field in props, f"place_stock_order lost {field!r}"
 
+    # The 2026-08-19 rule (gate/tickets.py): a stop-carrying order must be
+    # gtc, because a DAY stop leg expires at the close of the session it was
+    # placed in and leaves the position naked overnight. That rule is only
+    # satisfiable if the tool actually EXPOSES time_in_force — the captured
+    # output omits it (tests/fixtures/alpaca/place_stock_order.json), and a
+    # gate rule the seat cannot satisfy is an unplaceable order, not a guard.
+    assert "time_in_force" in props, (
+        "place_stock_order does not expose time_in_force — validate_order's "
+        "gtc rule would deny every stopped order with no way for the seat to "
+        f"comply. Present: {sorted(props)}")
+    tif_types = props["time_in_force"].get("anyOf") or [props["time_in_force"]]
+    assert any(t.get("type") == "string" for t in tif_types), (
+        f"time_in_force is not a string: {props['time_in_force']}")
+
+    # The DEFAULT is the mechanism of the 2026-08-17 incident: the seat did
+    # not pass time_in_force, the tool supplied 'day', and the OTO stop leg
+    # inherited it and expired at the bell. gate/tickets.py cites this default
+    # as its reason for requiring gtc explicitly, so the citation is pinned
+    # here rather than asserted from memory. If Alpaca ever changes it, the
+    # gate's reasoning changes with it.
+    assert props["time_in_force"].get("default") == "day", (
+        "place_stock_order's time_in_force default is no longer 'day' — "
+        "gate/tickets.py's docstring cites it as the reason a stopped order "
+        f"must name gtc explicitly. Got: {props['time_in_force']}")
+
+
+def _flatten_aapl_test_artifacts() -> list[str]:
+    """Unconditional teardown for the stopped-ticket smoke: cancel every open
+    AAPL order, then flatten any AAPL position.
+
+    AAPL-ONLY BY CONSTRUCTION — it filters on symbol before every destructive
+    call, so a protective stop on any other symbol (the hand-placed NVDA stop,
+    say) can never be caught by it.
+
+    Idempotent: safe to call twice, safe when nothing was ever placed.
+
+    Swallows its own errors and RETURNS them rather than raising, because it
+    runs in a `finally` — an exception here would mask the assertion failure
+    that triggered it, which is the opposite of what teardown is for.
+
+    This exists because on 2026-08-19 the cleanup lived at the END of the test,
+    after every assertion. An assertion failed, cleanup never ran, and a live
+    GTC market buy was left on the paper account that would have filled at the
+    next open as a position with no gate ticket. A test that places real orders
+    needs teardown that runs when it FAILS — that is the only time it matters.
+    """
+    problems: list[str] = []
+    try:
+        for o in _alpaca_get("/v2/orders?status=open&nested=false"):
+            if o.get("symbol") != "AAPL":
+                continue
+            try:
+                _alpaca_delete(f"/v2/orders/{o['id']}")
+            except Exception as e:            # already terminal, or a 404
+                problems.append(f"cancel {o['id']}: {type(e).__name__}: {e}")
+    except Exception as e:
+        problems.append(f"list open orders: {type(e).__name__}: {e}")
+    try:
+        if any(p.get("symbol") == "AAPL" for p in _alpaca_get("/v2/positions")):
+            _alpaca_delete("/v2/positions/AAPL")
+    except Exception as e:
+        problems.append(f"flatten AAPL: {type(e).__name__}: {e}")
+    return problems
+
 
 def test_a_stopped_ticket_places_with_a_flat_stop_leg(tmp_path):
     """The path the 2026-08-17 outage lived on, end to end against the real
@@ -264,6 +328,19 @@ def test_a_stopped_ticket_places_with_a_flat_stop_leg(tmp_path):
     from agents.exec_turn import run_exec_turn
     from agents.trader import build_trader_options, load_seat_config
     from agents.wallclock import WallClock
+    from market.source_alpaca import AlpacaSource
+
+    # MARKET MUST BE OPEN, and this SKIPS rather than passes when it is not.
+    # With the market shut the parent market order cannot fill, so its OTO
+    # child stays `held` forever and the leg-visibility assertion below is
+    # unreachable — the run would prove only the half that needs no fill.
+    # That is exactly the 2026-08-18 defect: the timer rehearsal ran against a
+    # closed market, exited early, and passed WHILE CONCEALING the thing it
+    # existed to check. A skip is loud; a green tick that proves nothing is not.
+    if not AlpacaSource().market_clock()["is_open"]:
+        pytest.skip("market is closed — the parent cannot fill, so the stop "
+                    "leg stays 'held' and leg visibility cannot be checked. "
+                    "Re-run during regular hours; a pass here would be a lie.")
     from gate.tickets import create_ticket
     from orchestrator.clock import iso
     from state.db import connect
@@ -299,48 +376,100 @@ def test_a_stopped_ticket_places_with_a_flat_stop_leg(tmp_path):
                 "Execution stage: execute all open tickets per your charter.",
                 {"alpaca", "fund"}, open_ticket_count=1)
 
-    tool_calls = asyncio.run(run_turn())
-    assert any(t.startswith("mcp__alpaca__place_") for t in tool_calls), (
-        f"seat never attempted a placement: {tool_calls}")
+    # EVERYTHING from the placement onward is inside try/finally. The seat is
+    # about to put a REAL order on the account, and the assertions below are
+    # the ones under test — which makes them the ones that can fail. Teardown
+    # that only runs on success is teardown that never runs when it matters.
+    try:
+        tool_calls = asyncio.run(run_turn())
+        assert any(t.startswith("mcp__alpaca__place_") for t in tool_calls), (
+            f"seat never attempted a placement: {tool_calls}")
 
-    # THE assertion: the order reached the broker at all. On 2026-08-17 this
-    # is where it died — the gate denied every shape the seat could send.
-    order = _alpaca_get(
-        f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
-    assert order.get("client_order_id") == ticket_id, order
-
-    # ...carrying the ticket's stop, as a real oto leg the broker accepted.
-    # Polled: on an oto the child is created held and can lag the parent in
-    # the API by a moment, so an immediate read is a false negative.
-    assert order.get("order_class") == "oto", order.get("order_class")
-    leg_stops = []
-    for _ in range(10):
+        # THE assertion: the order reached the broker at all. On 2026-08-17
+        # this is where it died — the gate denied every shape the seat could
+        # send.
         order = _alpaca_get(
             f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
-        leg_stops = [float(l["stop_price"]) for l in (order.get("legs") or [])
-                     if l.get("stop_price")]
-        if leg_stops:
-            break
-        time.sleep(2)
-    assert stop_price in leg_stops, (
-        f"ticket stop {stop_price} not on the order's legs: {leg_stops}")
+        assert order.get("client_order_id") == ticket_id, order
 
-    # ...and the recorder mirrored it, so the DB tells the truth about it
-    row = conn.execute("SELECT * FROM orders WHERE client_order_id = ?",
-                       (ticket_id,)).fetchone()
-    assert row is not None, "recorder did not write the order row"
+        # ...carrying the ticket's stop, as a real oto leg the broker accepted.
+        # Polled: on an oto the child is created held and can lag the parent in
+        # the API by a moment, so an immediate read is a false negative.
+        assert order.get("order_class") == "oto", order.get("order_class")
+        leg_stops = []
+        for _ in range(10):
+            order = _alpaca_get(
+                f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
+            leg_stops = [float(l["stop_price"])
+                         for l in (order.get("legs") or [])
+                         if l.get("stop_price")]
+            if leg_stops:
+                break
+            time.sleep(2)
+        assert stop_price in leg_stops, (
+            f"ticket stop {stop_price} not on the order's legs: {leg_stops}")
 
-    # cleanup: cancel anything still working, then flatten the share if filled
-    for _ in range(20):
-        o = _alpaca_get(
-            f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
-        if o["status"] in ("filled", "canceled", "rejected", "expired"):
-            break
-        time.sleep(3)
-    for leg in (o.get("legs") or []):
-        if leg["status"] not in ("filled", "canceled", "rejected", "expired"):
-            _alpaca_delete(f"/v2/orders/{leg['id']}")
-    if o["status"] not in ("filled", "canceled", "rejected", "expired"):
-        _alpaca_delete(f"/v2/orders/{o['id']}")
-    if o["status"] == "filled":
-        _alpaca_delete("/v2/positions/AAPL")
+        # ...with a lifetime that OUTLIVES the session. This is the 2026-08-19
+        # class: on 08-17 the parent and its leg both went in tif DAY, the leg
+        # expired at 20:00:06Z the same day, and NVDA 80 sat unprotected for
+        # two sessions while the DB asserted a live stop at 215.
+        # gate/tickets.py now denies a stop-carrying order that is not gtc —
+        # this is the other half of that rule, and the only place it can be
+        # checked: that Alpaca ACCEPTS gtc on an OTO market parent and hands
+        # the lifetime down to the leg. If the leg comes back 'day', the stop
+        # dies at the bell and the gate rule bought nothing.
+        assert str(order.get("time_in_force")).lower() == "gtc", (
+            f"parent time_in_force is {order.get('time_in_force')!r}, not gtc")
+        legs = order.get("legs") or []
+        assert legs, f"no stop leg on the placed order: {order}"
+        for leg in legs:
+            assert str(leg.get("time_in_force")).lower() == "gtc", (
+                f"stop leg time_in_force is {leg.get('time_in_force')!r}, not"
+                " gtc — it will expire at the close and leave the position"
+                " naked")
+
+        # ...and once the parent FILLS, that leg is visible to the protection
+        # assertion. Measured 2026-08-19: a `held` OTO child is NOT returned by
+        # QueryOrderStatus.OPEN, so this must be checked after the fill
+        # activates it — which is also the only moment that matters, because
+        # orchestrator/protection.py runs after reconciliation, when a position
+        # exists precisely because its parent filled. If the activated leg were
+        # invisible here, protection.py would report every correctly-stopped
+        # position as naked, every day, and the alert channel would be dead in
+        # a week. tests/fake_alpaca.py cannot settle it — the fake picks the
+        # leg's status itself, a fixture agreeing with our code while both may
+        # disagree with Alpaca, which is the 2026-08-17 defect exactly.
+        source = AlpacaSource()
+        for _ in range(20):
+            parent = _alpaca_get(
+                f"/v2/orders:by_client_order_id?client_order_id={ticket_id}")
+            if parent["status"] == "filled":
+                break
+            time.sleep(3)
+        assert parent["status"] == "filled", (
+            f"parent never filled ({parent['status']}) — leg visibility is "
+            "unproven, not proven")
+        live = []
+        for _ in range(10):                 # the leg activates a beat later
+            live = [o for o in source.open_orders() if o["symbol"] == "AAPL"
+                    and o["side"] == "sell" and o["type"].startswith("stop")]
+            if live:
+                break
+            time.sleep(2)
+        assert live, (
+            "the activated stop leg is invisible to open_orders() — "
+            "protection.py would call this position naked every day. Saw: "
+            f"{[o for o in source.open_orders() if o['symbol'] == 'AAPL']}")
+
+        # ...and the recorder mirrored it, so the DB tells the truth about it
+        row = conn.execute("SELECT * FROM orders WHERE client_order_id = ?",
+                           (ticket_id,)).fetchone()
+        assert row is not None, "recorder did not write the order row"
+    finally:
+        leftovers = _flatten_aapl_test_artifacts()
+        if leftovers:
+            # Printed, never raised: raising here would replace the real
+            # failure with a teardown error and hide what actually broke.
+            print("\n!!! LIVE SMOKE TEARDOWN INCOMPLETE — CHECK THE ACCOUNT:")
+            for problem in leftovers:
+                print("   ", problem)

@@ -101,9 +101,31 @@ def _as_price(value):
     return None
 
 
+def _as_time_in_force(value):
+    """Lowercased time-in-force from a string; None otherwise.
+
+    The Alpaca MCP place tool omits this field from its OUTPUT unless the seat
+    passes it (captured 2026-07-12 in tests/fixtures/alpaca/place_stock_order.json),
+    and its schema default is 'day' — that default is what the 08-17 stop leg
+    inherited, and it is pinned in tests/test_live_smoke.py's schema pin along
+    with the field's presence and string type. So a missing key arrives here as
+    None and denies.
+
+    Case is normalized on input and compared exactly. Non-strings (bool
+    included, since bool is not a str) deny: a lifetime the gate cannot read is
+    a stop it cannot verify."""
+    if isinstance(value, str):
+        return value.strip().lower()
+    return None
+
+
 def validate_order(conn: sqlite3.Connection, tool_input,
                    now_iso: str) -> tuple[bool, str]:
-    """The five acceptance checks + malformed-input denial (invariant 4)."""
+    """The five acceptance §Hook deny cases (no ticket / expired / over
+    max_qty / wrong symbol / stop leg != ticket stop_price), plus the rules a
+    stop exit must satisfy to be deliverable at all — flat leg parameters, no
+    nested object, order_class 'oto', and time_in_force 'gtc' — plus
+    malformed-input denial (invariant 4)."""
     if not isinstance(tool_input, dict):
         return False, "malformed tool input: not an object"
     coid = tool_input.get("client_order_id")
@@ -172,4 +194,16 @@ def validate_order(conn: sqlite3.Connection, tool_input,
         if tool_input.get("order_class") != "oto":
             return False, (f"order_class {tool_input.get('order_class')!r} must "
                            "be 'oto' for a stop exit — bracket is unplaceable")
+        # A DAY stop leg dies at the close of the session it was placed in.
+        # On 2026-08-17 that left NVDA 80 unprotected for two full sessions
+        # while decisions.stop_price still asserted a live stop at 215. The
+        # tool's default IS 'day' and it omits the field unless asked, so the
+        # gate must require gtc explicitly: Alpaca applies one time_in_force
+        # to the parent and its legs, so the whole order goes gtc.
+        if _as_time_in_force(tool_input.get("time_in_force")) != "gtc":
+            return False, (
+                f"time_in_force {tool_input.get('time_in_force')!r} must be"
+                " 'gtc' for a stop exit — a 'day' stop leg expires at the"
+                " close of the session it is placed in and leaves the"
+                " position unprotected overnight")
     return True, "ok"

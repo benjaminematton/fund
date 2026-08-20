@@ -164,3 +164,98 @@ def test_account_state_last_equity_is_nan_when_unparseable():
     src = _bare_source()
     src._trading = Trading()
     assert math.isnan(src.account_state()["last_equity"])
+
+
+# ---- open_positions / open_orders: the protection assertion's broker reads ----
+
+def test_installed_alpaca_py_exposes_the_read_apis_we_call():
+    """Same posture as the cancel-wiring pin: a wrong alpaca-py method name
+    can otherwise only fail LIVE, and this read is what stands between a naked
+    position and nobody noticing."""
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import GetOrdersRequest
+    assert callable(TradingClient.get_all_positions)
+    assert callable(TradingClient.get_orders)
+    for field in ("status", "nested", "limit"):
+        assert field in GetOrdersRequest.model_fields
+
+
+def test_open_positions_unwraps_alpaca_enums():
+    """THE trap. alpaca-py returns (str, Enum) members and str(PositionSide.
+    LONG) is 'PositionSide.LONG', not 'long'. A plain str() here makes every
+    position unclassifiable and every stop unmatchable, so the protection
+    check would alert on a fully protected book every day — and a fake built
+    from plain strings would never show it. This fake uses the REAL enums."""
+    from alpaca.trading.enums import PositionSide
+
+    class Trading:
+        def get_all_positions(self):
+            return [_Clock(symbol="NVDA", qty="80", side=PositionSide.LONG)]
+    src = _bare_source()
+    src._trading = Trading()
+    assert src.open_positions() == [
+        {"symbol": "NVDA", "qty": "80", "side": "long"}]
+
+
+def test_open_positions_propagates_broker_errors():
+    """Unlike get_order_by_client_order_id (which swallows because its caller
+    re-polls), this read has no retry behind it. A swallowed error would read
+    as "no positions held", which is a silent pass on exactly the condition
+    the check exists to catch."""
+    class Trading:
+        def get_all_positions(self): raise ConnectionError("down")
+    src = _bare_source()
+    src._trading = Trading()
+    with pytest.raises(ConnectionError):
+        src.open_positions()
+
+
+def test_open_orders_requests_open_status_and_flattens_legs():
+    """nested=False (the default) is deliberate: an OTO's stop leg must come
+    back as its OWN row, because the leg is the protective order the check is
+    looking for. Grouped under the parent it would be invisible. Built from
+    the REAL enums for the same reason as the positions test above."""
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
+
+    seen = {}
+    class Trading:
+        def get_orders(self, filter=None):
+            seen["status"] = str(filter.status)
+            seen["nested"] = filter.nested
+            seen["limit"] = filter.limit
+            return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="80",
+                           order_type=OrderType.STOP, status=OrderStatus.NEW)]
+    src = _bare_source()
+    src._trading = Trading()
+    assert src.open_orders() == [
+        {"symbol": "NVDA", "side": "sell", "qty": "80",
+         "type": "stop", "status": "new"}]
+    assert "open" in seen["status"].lower()
+    assert not seen["nested"]
+    assert seen["limit"] == 500
+
+
+def test_open_orders_raises_rather_than_returning_a_truncated_page():
+    """A full page means orders were dropped, and a dropped protective order
+    reads as 'nothing is protecting this'. The caller turns this raise into an
+    'unverified' alert — the honest answer. No silent caps."""
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
+
+    class Trading:
+        def get_orders(self, filter=None):
+            return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="1",
+                           order_type=OrderType.STOP, status=OrderStatus.NEW)
+                    for _ in range(500)]
+    src = _bare_source()
+    src._trading = Trading()
+    with pytest.raises(RuntimeError, match="page limit"):
+        src.open_orders()
+
+
+def test_open_orders_propagates_broker_errors():
+    class Trading:
+        def get_orders(self, filter=None): raise ConnectionError("down")
+    src = _bare_source()
+    src._trading = Trading()
+    with pytest.raises(ConnectionError):
+        src.open_orders()

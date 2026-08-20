@@ -49,14 +49,32 @@ def test_replayed_place_order_denied(fund_db, sim_clock, recording,
     assert fund_db.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"] == 0
 
 
-def test_stop_ticket_yields_oto_order(fund_db, sim_clock):
+def test_a_recorded_day_stop_never_reaches_the_broker(fund_db, sim_clock):
+    """oto.jsonl is the REAL 2026-08-17 shape: an oto with a matching stop leg
+    and time_in_force 'day'. It placed, it filled, and the stop leg died at
+    the bell — the position was naked for two sessions. The gate now stops it
+    at the hook, so the recording that documents the incident is also the
+    regression test for it. The recording is never edited: it is what the seat
+    actually sent."""
     _seed(fund_db, stop_price=168.0)
     broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
     outcomes = _replay(fund_db, sim_clock, broker, "oto.jsonl")
+    assert "gtc" in outcomes[-1]["denied"]
+    assert broker.place_attempts == []
+    assert fund_db.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"] == 0
+
+
+def test_stop_ticket_yields_oto_order(fund_db, sim_clock):
+    """The healthy stopped path, unchanged except that the stop now outlives
+    the session that placed it."""
+    _seed(fund_db, stop_price=168.0)
+    broker = FakeAlpaca({"NVDA": 180.00}, {"NVDA": 180.14}, mode="instant")
+    outcomes = _replay(fund_db, sim_clock, broker, "oto_gtc.jsonl")
     assert json.loads(outcomes[-1]["result"])["data"]["status"] == "filled"
     placed = broker.place_attempts[0]
     assert placed["order_class"] == "oto"
     assert placed["stop_loss_stop_price"] == "168.0"
+    assert placed["time_in_force"] == "gtc"
 
 
 def test_stopless_ticket_yields_plain_order(fund_db, sim_clock):

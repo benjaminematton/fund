@@ -92,6 +92,29 @@ class FakeAlpaca:
             "take_profit_limit_price": args.get("take_profit_limit_price"),
         }
         self.orders[coid] = order
+        # An OTO's stop leg is a SEPARATE order at the broker, with its own
+        # lifetime. Modelling the parent as one indivisible thing is what let
+        # the 2026-08-17 leg die unnoticed: nothing in this fake could express
+        # "the parent filled and the protection is gone".
+        if args.get("stop_loss_stop_price") is not None:
+            leg_id = f"{coid}-stop"
+            self.orders[leg_id] = {
+                "id": f"alp-{len(self.orders) + 1:04d}",
+                "client_order_id": leg_id,
+                "symbol": symbol,
+                "side": "sell" if args["side"] == "buy" else "buy",
+                "qty": args["qty"],
+                # 'held' until the parent fills, exactly like the real child.
+                "status": "new" if instant else "held",
+                "filled_qty": 0,
+                "filled_avg_price": None,
+                "order_class": "",
+                "order_type": "stop",
+                "stop_loss_stop_price": None,
+                "stop_loss_limit_price": None,
+                "take_profit_limit_price": None,
+                "parent": coid,
+            }
         return dict(order)
 
     def cancel_order(self, coid: str) -> None:
@@ -126,9 +149,25 @@ class FakeAlpaca:
         are left untouched."""
         if self.mode in ("instant", "never_fill", "fill_during_cancel"):
             return
+        if self.mode == "stop_expires_at_the_bell":
+            # The 2026-08-17 defect, reproduced: the parent fills, and the
+            # stop leg dies at the close of the same session because it
+            # inherited time_in_force DAY. The position is left naked and
+            # nothing about the run looks wrong.
+            for order in self.orders.values():
+                if order.get("parent") is not None:
+                    order["status"] = "expired"
+                elif order["status"] == "accepted":
+                    order["status"] = "filled"
+                    order["filled_qty"] = order["qty"]
+                    order["filled_avg_price"] = self.fill_prices.get(
+                        order["symbol"], self.prices[order["symbol"]])
+            return
         for order in self.orders.values():
             px = self.fill_prices.get(order["symbol"], self.prices[order["symbol"]])
-            if self.mode == "fill" and order["status"] == "accepted":
+            if self.mode == "fill" and order["status"] == "held":
+                order["status"] = "new"          # the stop leg is now working
+            elif self.mode == "fill" and order["status"] == "accepted":
                 order["status"] = "filled"
                 order["filled_qty"] = order["qty"]
                 order["filled_avg_price"] = px
@@ -155,3 +194,27 @@ class FakeAlpaca:
             if out.get(k) is not None:
                 out[k] = str(out[k])
         return out
+
+    def open_positions(self) -> list[dict]:
+        """Positions implied by filled orders, in AlpacaSource.open_positions'
+        dict shape — numbers as STRINGS, because the caller must do its own
+        coercion and cannot if this fake has already guessed."""
+        held: dict[str, int] = {}
+        for o in self.orders.values():
+            if o["status"] != "filled":
+                continue
+            n = int(o["filled_qty"] or 0)
+            held[o["symbol"]] = held.get(o["symbol"], 0) + (
+                n if o["side"] == "buy" else -n)
+        return [{"symbol": s, "qty": str(q), "side": "long"}
+                for s, q in sorted(held.items()) if q > 0]
+
+    def open_orders(self) -> list[dict]:
+        """Every order still working, legs FLATTENED — matching
+        AlpacaSource.open_orders (nested=False), which is what makes an OTO's
+        stop leg visible as the protective order it is."""
+        return [{"symbol": o["symbol"], "side": o["side"], "qty": str(o["qty"]),
+                 "type": o.get("order_type", "market"), "status": o["status"]}
+                for o in self.orders.values()
+                if o["status"] in ("new", "accepted", "partially_filled",
+                                   "held")]
