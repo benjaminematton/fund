@@ -67,7 +67,6 @@ def _critic_expectations(trace, seat, case) -> Verdict:
                            f" named — right verdict, wrong reason:"
                            f" {objections}",
                            tag="wrong-reason")
-        checked += 1
     return Verdict(NAME, PASS, f"{checked} expectation(s) met")
 
 
