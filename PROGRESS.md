@@ -16,7 +16,7 @@ The following table summarizes where the fund stands:
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
 | **Live since** | 2026-08-17 — first clean end-to-end day |
-| **Tests** | 909 offline green at `c0ad2d4`, identical on macOS arm64, linux/amd64 and linux/arm64 |
+| **Tests** | 955 offline green at `51bc7eb`, identical on macOS arm64, linux/amd64 and linux/arm64 |
 | **CI** | runs all 909 (was 36); **first green run in the repo's history on 2026-08-19** |
 | **Watchlist** | NVDA, MSFT, AAPL |
 | **Open position** | NVDA 80 @ 227.09, stop 215 gtc (expires 2026-11-17) — **hand-placed 2026-08-19 11:46 PDT** after two sessions unprotected (see below) |
@@ -54,8 +54,16 @@ Three layers each had a reason not to look:
 - Nothing compared open positions against live protective orders, so
   `AUDIT CLEAN` was clean by not asking. It audits the *run*, not the *account*.
 
+**None of the 08-18 work could have caught this.** Every fix that day —
+`PATH=`, `OnFailure`, the heartbeat, `make preflight`, the version pin — targets
+a run that *fails*. This one succeeds, audits clean, and posts a digest. It has
+also been dormant by luck: every day since 08-17 has been holds, so no second
+stopped order has been placed to trip it again.
+
 Same family as the two before it: **the system asserted something nobody
-compared to the source of truth.**
+compared to the source of truth.** Fixtures agreed with the gate and both
+disagreed with Alpaca (08-17). A rehearsal passed by exiting early (08-18). The
+database says "stop at 215" and the broker says no open orders (08-19).
 
 #### What closes it
 
@@ -430,6 +438,8 @@ either.
 | 2026-08-19 | golden snapshot hash made platform-independent — **first green `ci` run in the repo's history** (`557d1cd`) |
 | 2026-08-19 | CI widened from 36 to 909 tests; `mcp` 2.0 compatibility in tests (`e072f73`) |
 | 2026-08-19 | renderer guard stopped scanning sibling worktrees (`c0ad2d4`) |
+| 2026-08-19 | clean run; **found the NVDA stop had expired at the 08-17 bell** — two sessions unprotected, never breached; stop re-placed by hand at 11:46 PDT |
+| 2026-08-20 | missing-stop class closed: the gate requires `gtc`, and the day asserts every position is protected (`51bc7eb`) — leg inheritance and leg visibility both measured live |
 
 ### The stop-leg shape the broker never accepted
 
