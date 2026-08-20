@@ -8,7 +8,7 @@ Update it when a milestone lands or an open item closes — not per commit.
 
 ---
 
-## Status — 2026-08-18
+## Status — 2026-08-19
 
 The following table summarizes where the fund stands:
 
@@ -16,10 +16,86 @@ The following table summarizes where the fund stands:
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
 | **Live since** | 2026-08-17 — first clean end-to-end day |
-| **Tests** | 769 offline green on arm64 at `92ad9f3`; **768 + 1 known failure on x86_64** — see Open items |
+| **Tests** | 909 offline green at `c0ad2d4`, identical on macOS arm64, linux/amd64 and linux/arm64 |
+| **CI** | runs all 909 (was 36); **first green run in the repo's history on 2026-08-19** |
 | **Watchlist** | NVDA, MSFT, AAPL |
 | **Open position** | NVDA 80 @ 227.09, live stop at 215 |
 | **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
+
+### 2026-08-19 — the check that had never passed
+
+`ci` was red on `tests/test_golden.py::test_golden_pass_path`. The prior
+investigation read the run history as a green baseline on `990a9ae` followed by
+41 red runs, concluded the environment had drifted under a frozen hash, and
+recommended pinning `numpy` and `pandas`.
+
+**Filtering the run list by workflow says something else: 55 runs, zero
+successes. `ci` had never passed once.** The "green baseline" was a
+`Dependency Graph` run that fired on the same commit one second earlier and was
+picked up by a `--branch master` query with no `--workflow` filter. That single
+misread is what produced the rest: born-red and regressed-on-a-date are
+different diagnoses, and only the second makes dependency drift the obvious
+story. A check that had never worked would have pointed straight at the
+platform.
+
+**Root cause, and it is not architecture.** `snapshot_hash` hashed the decimal
+*text* of the float matrix, so it asserted bit-identical floats across machines —
+something numpy does not provide. numpy's macOS wheel FMA-contracts the
+multiply-add inside `Generator.uniform` (`low + (high-low)*u`, one rounding);
+the manylinux wheel rounds twice. Confirmed by exact rational arithmetic:
+macOS returns `0x1.6974569e58a45p-6`, Linux `...44p-6`. The 1 ULP lands on
+`vol[0]` at the very first draw and 2520 iterations of `rng.normal` + `cumprod`
+amplify it into 30,151 of 50,400 cells differing at ~5.4e-15 relative, which
+survives `round(10)` and changes the CSV bytes.
+
+The axis is **macOS vs Linux, not arm64 vs x86_64** — this file previously said
+otherwise. linux/amd64 and linux/arm64 are byte-identical at every layer; a
+fresh Python 3.12 on arm64 macOS reproduces the macOS value. It is the wheel's
+compiler, not the ISA. Likewise `db738d7`'s message blamed numpy 1.26 vs 2.x;
+numpy 2.5.2 on Linux still produces its "numpy 1.26" value today. The old
+constant was simply the Linux value, and re-recording it from a Mac is what
+turned CI red.
+
+**The fix quantizes the hash, not the market.** Hashing at 6 significant digits
+(`to_csv(float_format="%.6g")`) changed 2 of 19 pinned values rather than the 16
+this file anticipated, because rounding `tests/synthetic.py` would have moved
+every economic number while quantizing at the hash moves only the hash and its
+derived `run_key`. The precision was chosen by measuring distance to the nearest
+rounding boundary: **1289x** the observed drift at `%.6g`, but only **1.6x** at
+`%.6f` and already straddling at `%.8f`. The previously suggested "8 decimal
+places or coarser" sits in that thin band — it would have passed on the day and
+re-broken later. The regression test asserts stability under perturbation rather
+than a new frozen constant, so a third re-record cannot arrive quietly.
+
+**CI covered 36 of 909 tests.** It installed `numpy`+`pandas` only and ran
+`tests/run_tests.py`. That gap is why five real failures in `test_fund_tools.py`
+sat invisible while master read green, and it is the same blind spot that let
+the golden failure be misdiagnosed for weeks: a check covering a fraction of the
+suite still reports one green tick. CI now installs from `pyproject.toml` — not
+a second hardcoded list, since restating a version range in the workflow is
+exactly the drift vector at issue — and runs `pytest tests/`.
+
+Two defects surfaced immediately, both in tests that reached past their subject:
+
+- **`mcp` 2.0.** `claude-agent-sdk~=0.2.116` admits `<0.3.0`; a fresh resolve
+  gets `0.2.141`, which widened *its own* cap from `mcp<2.0.0` to `mcp<3.0.0`,
+  so `mcp` 2.0.0 lands and `Server.request_handlers` is gone. Only tests broke,
+  because only tests reached into that internal — production hands the instance
+  to the SDK and was verified working end-to-end under the new versions. No pin,
+  nothing touching the droplet.
+- **The renderer guard scanned other branches.** `test_every_written_kind_has_a_renderer`
+  walked `root.rglob("*.py")` skipping only `.venv` and `tests`, so it descended
+  into `.claude/worktrees/` and reported sibling checkouts' `append_event` kinds
+  as defects in whatever branch you stood on. CI never saw it (`actions/checkout`
+  has no nested worktrees), so it fell entirely on developers — and since
+  `make test` must pass before every commit, it made that gate unpassable for
+  anyone with a worktree open.
+
+**The shape all three share.** Each was a check that looked authoritative while
+measuring something else: a dependency-graph workflow read as `ci`, 36 tests read
+as the suite, another branch's code read as this one's. None was a wrong answer;
+each was a right answer to a question nobody had checked. Two were fixed without
+touching production code at all.
 
 ### 2026-08-18 — a lost day, and what it bought
 
@@ -232,6 +308,9 @@ either.
 | 2026-08-18 | **moved off the Mac** onto a DigitalOcean droplet on an ET clock; systemd timers, Slack failure alerting, nightly verified snapshots |
 | 2026-08-18 | Slack posts rewritten for a person — mrkdwn, then Block Kit (`02a6848`, `b7bc91e`, `3ae9073`) |
 | 2026-08-18 | workspace cut to one channel per job; host failures split into `#fund-ops` (`92ad9f3`) |
+| 2026-08-19 | golden snapshot hash made platform-independent — **first green `ci` run in the repo's history** (`557d1cd`) |
+| 2026-08-19 | CI widened from 36 to 909 tests; `mcp` 2.0 compatibility in tests (`e072f73`) |
+| 2026-08-19 | renderer guard stopped scanning sibling worktrees (`c0ad2d4`) |
 
 ### The stop-leg shape the broker never accepted
 
@@ -253,21 +332,12 @@ move.
 
 **Now**
 
-- [ ] **`test_golden` is arm64-only — re-record it portably.** The golden
-      `data_snapshot_hash` cannot be reproduced on x86_64, so `make test` is
-      708/709 on the droplet. Root cause, measured not guessed: `rng.uniform`
-      computes `low + (high-low)*x`, and arm64 and x86_64 contract that into FMA
-      differently, so `vol[0]` differs by **one unit in the last place (ULP) at the very first draw**
-      (`0x1.6974569e58a45p-6` vs `...44p-6`) and 2520 iterations amplify it. The
-      RNG integer stream is identical and the `DIP_PCT` branch is *not* the
-      culprit — kick counts match exactly (4837) on both.
-      **Verified fix:** quantizing the market makes hashes bit-identical at 8 decimal places
-      or coarser (10dp and finer still diverge); `close.round(6)` in
-      `tests/synthetic.py` is one line. The work is the re-record: 16 pinned
-      values across two tests, and the fixture's *meaning* must survive — golden
-      params must still pass G2/G3 and `FAIL_PARAMS` must still fail on `wfe`.
-      Deferred deliberately on 2026-08-18: `fundbt/` is unwired from the daily
-      cycle, so this cannot affect trading.
+- [ ] **Decide whether to pin `claude-agent-sdk` exactly.** CI now resolves the
+      SDK and `mcp` fresh on every run, so a future release can break the build.
+      That is deliberate — it surfaces where it previously hid — but it is a
+      standing exposure, and `~=0.2.116` is what let `mcp` 2.0 in via a cap the
+      SDK widened underneath it. Pinning reaches the droplet, so it needs a human
+      commit either way. Not urgent while the break is test-only.
 
 **Next branches** — each belongs in a **new chat**, per the standing rule that
 new implementation branches get fresh context.
