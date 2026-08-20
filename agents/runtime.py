@@ -20,6 +20,47 @@ log = logging.getLogger(__name__)
 
 PLACE_PREFIX = "mcp__alpaca__place_"
 
+# Every tool the broker MCP server exposes. The exec seat's tool surface is
+# `mcp__alpaca__*` — a wildcard over this whole namespace — so the gate, not
+# the allow-list, is what decides which of them may reach the broker
+# (CLAUDE.md: hooks run before allow rules, and `allowed_tools` fails open).
+BROKER_PREFIX = "mcp__alpaca__"
+
+# Broker verbs that MUTATE state and are authorized by a gate ticket.
+# THE SINGLE EXTENSION POINT. A verb added here is routed to validate_order —
+# the same ticket check place_* gets — instead of being denied. An amend path
+# needs `mcp__alpaca__replace_` here; that is one line, deliberately.
+#
+# If you add one: the PostToolUse recorder below still matches PLACE_PREFIX
+# alone, so a newly-gated verb would execute and leave no `orders` row. Extend
+# both or the broker and SQLite disagree about what happened.
+GATED_PREFIXES = (PLACE_PREFIX,)
+
+# Broker verbs that only READ. Matched by naming convention rather than an
+# enumerated list so a new getter does not take the exec turn down for a quote;
+# every alpaca verb in the entire recorded corpus (test recordings and live
+# traces alike) is a get_* or place_stock_order.
+READ_PREFIX = "mcp__alpaca__get_"
+
+
+def _broker_verb_policy(tool: str) -> str:
+    """`allow` | `gated` | `deny` for one tool name.
+
+    Anything under the broker namespace that is neither a known read nor a
+    gated mutation is DENIED, not waved through. This is an allowlist on
+    purpose: a denylist of the verbs we happen to know about fails open the
+    first time the toolset grows one nobody enumerated — which is exactly how
+    cancel_all_orders and close_all_positions came to be reachable with no
+    ticket, no max_qty and no `orders` row (invariant 4: ambiguity resolves to
+    no action, never to a guess)."""
+    if not tool.startswith(BROKER_PREFIX):
+        return "allow"                      # not the gate's business
+    if tool.startswith(GATED_PREFIXES):
+        return "gated"
+    if tool.startswith(READ_PREFIX):
+        return "allow"
+    return "deny"
+
 
 def _cached(conn_factory):
     """Lazily open conn_factory() once and reuse it. Scope = the hook
@@ -44,6 +85,29 @@ def _deny_alert_text(tool_input, reason) -> str:
     return f"⛔ ORDER DENIED {ticker} (ticket {ticket}) — {reason}"
 
 
+def _deny(conn, clock, reason: str, alert_text: str) -> dict:
+    """The denial, plus the alert that makes it visible.
+
+    A deny is runbook abort criterion #1, so it must be OBSERVABLE: the alert
+    projects to #risk and reddens scripts/audit_day.py. The denial is built
+    BEFORE the append and the append's failure is swallowed — an UNRECORDABLE
+    deny is still a deny, and observability must never open the gate
+    (invariant 4)."""
+    denial = {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }}
+    try:
+        append_event(conn(), "alert", {"text": alert_text}, iso(clock.now()))
+    # Logged, never silent: if this path is broken, denies go dark again.
+    except Exception as exc:
+        log.error("order gate: DENIED %s but could not record the alert —"
+                  " %s: %s; the denial still stands",
+                  alert_text, type(exc).__name__, exc)
+    return denial
+
+
 def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
                     clock: Clock):
     """PreToolUse: deny any order lacking a valid gate ticket (invariant 5;
@@ -51,8 +115,22 @@ def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
     conn = _cached(conn_factory)
 
     async def order_gate(input_data, tool_use_id, context) -> dict:
-        if not str(input_data.get("tool_name", "")).startswith(PLACE_PREFIX):
+        tool = str(input_data.get("tool_name", ""))
+        policy = _broker_verb_policy(tool)
+        if policy == "allow":
             return {}
+        if policy == "deny":
+            # A broker mutation with no gated route. charters/exec.md rule 7
+            # already forbids these ("You never modify, cancel, or work an
+            # order beyond the ticket's terms") — but a charter is a prompt,
+            # and this gate is the deterministic layer between the model and
+            # the broker. Denied here so the rule survives a model that
+            # ignores it.
+            verb = tool.removeprefix(BROKER_PREFIX)
+            reason = (f"{verb} is not gated: no ticket authorizes it, and a"
+                      " ticket authorizes only the order it names")
+            return _deny(conn, clock, reason,
+                         f"⛔ BROKER VERB DENIED {verb} — {reason}")
         try:
             ok, reason = validate_order(conn(),
                                         input_data.get("tool_input"),
@@ -63,27 +141,8 @@ def make_order_gate(conn_factory: Callable[[], sqlite3.Connection],
             ok, reason = False, f"gate error: {exc}"
         if ok:
             return {}
-        denial = {"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }}
-        # A deny is runbook abort criterion #1, so it must be OBSERVABLE: the
-        # alert projects to #risk and reddens scripts/audit_day.py. Built
-        # before the append and swallowed on failure — an UNRECORDABLE deny is
-        # still a deny; observability must never open the gate (invariant 4).
-        try:
-            append_event(conn(), "alert", {
-                "text": _deny_alert_text(input_data.get("tool_input"), reason)},
-                iso(clock.now()))
-        # Logged, never silent: if this path is broken, denies go dark again.
-        except Exception as exc:
-            log.error(
-                "order gate: DENIED %s but could not record the alert —"
-                " %s: %s; the denial still stands",
-                _deny_alert_text(input_data.get("tool_input"), reason),
-                type(exc).__name__, exc)
-        return denial
+        return _deny(conn, clock, reason,
+                     _deny_alert_text(input_data.get("tool_input"), reason))
 
     return order_gate
 

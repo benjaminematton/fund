@@ -230,12 +230,24 @@ from claude_agent_sdk import (ClaudeSDKClient, ClaudeAgentOptions,
 from agents.tools import fund_tools_server   # create_sdk_mcp_server: submit_* (strict)
 
 async def order_gate(input_data, tool_use_id, context):
-    """Execution trader only: deny any order lacking a valid gate ticket."""
-    if input_data["tool_name"].startswith("mcp__alpaca__place_"):
-        if not ticket_store.matches(input_data["tool_input"]):   # symbol, side, qty, id, expiry
-            return {"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": "No valid risk ticket."}}
+    """Execution trader only: deny any BROKER VERB with no gated route.
+
+    Allowlist, not denylist. `place_*` is checked against the ticket store,
+    `get_*` passes, and every OTHER `mcp__alpaca__*` verb is denied — the
+    seat's tool surface is the whole namespace and the trading toolset also
+    exposes cancel_* and close_*, which carry no ticket, no max_qty and no
+    `orders` row. A denylist of the verbs we happen to know about fails open
+    the first time the toolset grows one (invariant 4).
+
+    agents/runtime.py:_broker_verb_policy is the implementation; its
+    GATED_PREFIXES is the single place a new mutating verb is authorized."""
+    policy = _broker_verb_policy(input_data["tool_name"])       # allow|gated|deny
+    if policy == "allow":
+        return {}
+    if policy == "deny" or not ticket_store.matches(input_data["tool_input"]):
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "No valid risk ticket."}}
     return {}
 
 options = ClaudeAgentOptions(
@@ -252,7 +264,10 @@ options = ClaudeAgentOptions(
         "slack": slack_sdk_mcp_server,
     },
     allowed_tools=["Read", "mcp__alpaca__*", "mcp__slack__*", "mcp__fund__*"],
-    hooks={"PreToolUse": [HookMatcher(matcher="^mcp__alpaca__place_", hooks=[order_gate])]},
+    # matcher=None, NOT a prefix: the CLI matches `matcher` as a full/anchored
+    # name, and a prefix matcher was verified live NOT to fire the gate at all.
+    # It also has to see cancel_*/close_* in order to deny them.
+    hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[order_gate])]},
 )
 
 async def main():
