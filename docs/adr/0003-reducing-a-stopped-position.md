@@ -130,6 +130,23 @@ simplification and pays for that with risk.
   standalone `stop` order as protection and compares promised against actual. It does need
   to survive the transient: between the amend and the sell fill, the promised and actual
   stop quantities disagree with the position.
+- **Two tickets per decision breaks an assumption the gate currently relies on.**
+  `_gate_handle` (`orchestrator/daily.py`) looks up a decision's existing ticket with
+  `SELECT * FROM tickets WHERE decision_id = ?` and `fetchone()`, and its crash-resume path
+  reconciles that single ticket by UPDATE rather than expire-and-remint — deliberately,
+  because the ticket id *is* the `client_order_id`, so a new id would break order
+  idempotency. With two tickets against one decision that `fetchone()` returns an arbitrary
+  row and the resume path reconciles at most one of the pair. Whatever mints an amend
+  ticket has to make the pairing explicit and make the resume path handle both, or the
+  reduce and its amendment can drift apart across a crash.
+- **A reduce ticket without its amendment must resolve to HOLD.** The pairing is only
+  meaningful if an unpaired reduce ticket is unfillable, so the gate should refuse to mint
+  one against a stopped position rather than leave the seat to discover the reservation at
+  the broker. Tickets predating this change are exactly that shape: `c0a9ae97` (NVDA sell
+  40, 2026-08-20) is still `open` and stays that way until a run calls
+  `expire_open_tickets`. It will not be offered to the seat — `open_tickets()` filters on
+  expiry at read time — but anything querying `tickets.status` directly sees an open sell
+  that can never fill.
 - **The seat's ungated mutation surface is a separate exposure.** `cancel_all_orders`,
   `close_position`, `close_all_positions` and `update_account_config` are reachable today
   under the `mcp__alpaca__*` glob with nothing but charter text between the seat and the
