@@ -3,6 +3,33 @@
 **Date** 2026-08-20 · **Branch** to be cut off `master` (`41a48dd` or later) · **ADRs**
 [0004](../../adr/0004-the-protection-record.md) (the model), [0003](../../adr/0003-reducing-a-stopped-position.md) (the amend path this enables)
 
+> ## ⚠️ Amended 2026-08-20 — read this before anything below
+>
+> Adversarial review ([findings](../reviews/2026-08-20-protection-record-review.md)) established
+> by execution that four things in this spec were wrong. The
+> [plan](../plans/2026-08-20-protection-record.md) is revision 2 and is correct; where the two
+> disagree, **the plan wins**.
+>
+> 1. **The writer is `orchestrator/protection.py`, not the reconcile pass.** Neither this spec nor
+>    ADR-0004 considered the module that already reads `open_orders()`. The reconcile placement
+>    would have **aborted the trading day** on a transient broker read failure (`daily.py` wraps
+>    stage bodies in no try/except), recorded nothing on a resumed day (reconcile is
+>    checkpointed), and never run at all on a day with no submitted orders.
+> 2. **Two states, not seven.** No branch-one writer could produce `cancelled`, `triggered`,
+>    `expired`, `superseded` or `pending`, so rows would stay `live` forever after their stop
+>    died — the table asserting protection that is gone. Now `live` and `closed`, with the
+>    writing pass closing rows whose order has left the live list. The transition needs an
+>    `EDGES`/`KEYS` entry and a `contracts.md` §1 machine, which this spec omitted in breach of
+>    CLAUDE.md.
+> 3. **`client_order_id` is its own column.** `manual-protective-stop-nvda-2026-08-19` is a
+>    *client* id; the `alpaca_order_id` is `5abc139f-…`. This spec asserted the human string as
+>    the broker reference — a property the schema could not hold, satisfiable only by making the
+>    fake disagree with Alpaca.
+> 4. **`provenance` splits into `provenance_kind` + `provenance_ref`.** A single column mixing an
+>    id with an enum token can carry no CHECK and cannot be grouped. And there is no path from a
+>    broker order back to a ticket, so every row would have been `'adopted'` — including
+>    fund-placed legs.
+
 ## The problem
 
 The fund models decisions, tickets and orders. It has no record of **what protects a
