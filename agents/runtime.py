@@ -36,11 +36,23 @@ BROKER_PREFIX = "mcp__alpaca__"
 # both or the broker and SQLite disagree about what happened.
 GATED_PREFIXES = (PLACE_PREFIX,)
 
-# Broker verbs that only READ. Matched by naming convention rather than an
-# enumerated list so a new getter does not take the exec turn down for a quote;
-# every alpaca verb in the entire recorded corpus (test recordings and live
-# traces alike) is a get_* or place_stock_order.
+# Broker verbs that only READ.
+#
+# Prefix FIRST, so a getter added in an upstream bump keeps working instead of
+# taking the exec turn down for a quote.
 READ_PREFIX = "mcp__alpaca__get_"
+
+# ...and then the reads whose names do NOT match that prefix, enumerated,
+# because name shape is not a reliable classifier. Four of the 27 read tools in
+# the pinned surface are docs/spec helpers with no `get_`, and the prefix alone
+# denied every one of them — a bug this list fixes rather than papers over.
+# (`get_alpaca_endpoint_docs` does match, and is deliberately not repeated.)
+READ_VERBS = frozenset({
+    "mcp__alpaca__search_alpaca_api_specs",
+    "mcp__alpaca__search_alpaca_docs",
+    "mcp__alpaca__fetch_alpaca_doc",
+    "mcp__alpaca__list_alpaca_api_endpoints",
+})
 
 
 def _broker_verb_policy(tool: str) -> str:
@@ -57,7 +69,7 @@ def _broker_verb_policy(tool: str) -> str:
         return "allow"                      # not the gate's business
     if tool.startswith(GATED_PREFIXES):
         return "gated"
-    if tool.startswith(READ_PREFIX):
+    if tool.startswith(READ_PREFIX) or tool in READ_VERBS:
         return "allow"
     return "deny"
 

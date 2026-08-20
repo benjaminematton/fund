@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve schema-pin preflight
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve schema-pin surface-pin score-day preflight
 .PHONY: staging-day staging-reset eval eval-report
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
@@ -50,6 +50,21 @@ replay:
 # Offline tests cannot catch that by construction — run this before a live day.
 schema-pin: deps
 	$(PYTHON) -m pytest -m live tests/test_live_smoke.py -k schema_pin -v
+
+# Pin WHICH tools the broker exposes, as opposed to schema-pin's what-one-tool-
+# takes. Same read-only introspection, different question.
+#
+# The exec seat's allow-array is `mcp__alpaca__*`, so the SERVER decides its
+# capability surface. On 2026-08-20 four sessions enumerated that surface and
+# got four different answers (4, 5, 7, 8 mutating verbs) while
+# close_all_positions sat reachable in production with no gate ticket.
+#
+# DETECTION, not protection: _broker_verb_policy is deny-by-default, so a verb
+# nobody has pinned is already denied. This says WHEN the surface moved, so a
+# new mutating verb is a decision someone makes rather than a fact someone
+# discovers. Run it after any alpaca-mcp-server bump or toolset change.
+surface-pin: deps
+	$(PYTHON) -m pytest -m live tests/test_live_smoke.py -k surface_pin -v
 
 # Host preflight: exercises uvx -> MCP connect -> Anthropic -> a real seat turn
 # under the EXACT environment systemd will use. Run after ANY host, unit, or

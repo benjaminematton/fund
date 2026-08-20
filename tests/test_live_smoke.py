@@ -179,9 +179,9 @@ STOP_LEG_FIELDS = ("stop_loss_stop_price", "stop_loss_limit_price",
                    "take_profit_limit_price")
 
 
-def _place_stock_order_schema() -> dict:
-    """tools/list the real alpaca-mcp-server and return place_stock_order's
-    JSON schema. Read-only: initialize + list, no tool is ever called."""
+def _tools_list() -> list[dict]:
+    """tools/list the real alpaca-mcp-server under the exec seat's own
+    toolsets. Read-only: initialize + list, no tool is ever called."""
     import subprocess
 
     from agents.seats import ALPACA_MCP_SPEC
@@ -205,11 +205,59 @@ def _place_stock_order_schema() -> dict:
         tools = json.loads(proc.stdout.readline())["result"]["tools"]
     finally:
         proc.kill()
-    for t in tools:
+    return tools
+
+
+def _place_stock_order_schema() -> dict:
+    for t in _tools_list():
         if t["name"] == "place_stock_order":
             return t["inputSchema"]
     raise AssertionError(
-        f"alpaca-mcp-server exposes no place_stock_order; got {[t['name'] for t in tools]}")
+        "alpaca-mcp-server exposes no place_stock_order; got "
+        f"{[t['name'] for t in _tools_list()]}")
+
+
+def test_surface_pin_no_unpinned_broker_verb_has_appeared():
+    """Checks `config/broker_tool_surface.yaml` against the real server.
+    Live-only because `make test` is offline by contract — no network, no keys.
+
+    This is DETECTION, not protection. `_broker_verb_policy` is
+    deny-by-default, so an unpinned verb is ALREADY denied and nothing is
+    exposed while this is red. What it buys is knowing WHEN the surface moved,
+    so a new mutating verb is a decision someone makes rather than a fact
+    someone discovers — which is how `close_all_positions` went unnoticed.
+
+    On failure, classify each new name as `gated`, `mutating` or `read`. There
+    is deliberately no 'harmless' bucket: `update_account_config` would have
+    qualified for one, and it is the verb that can clear `no_shorting` and
+    flip `suspend_trade`."""
+    from pathlib import Path
+
+    import yaml
+
+    from agents.seats import ALPACA_MCP_SPEC
+
+    pin = yaml.safe_load(
+        (Path(__file__).resolve().parents[1]
+         / "config/broker_tool_surface.yaml").read_text())
+    assert pin["spec"] == ALPACA_MCP_SPEC, (
+        f"pin records {pin['spec']}, agents/seats.py pins {ALPACA_MCP_SPEC};"
+        " the surface is a function of the spec string, so these cannot drift")
+
+    live = {t["name"] for t in _tools_list()}
+    pinned = set(pin["gated"]) | set(pin["mutating"]) | set(pin["read"])
+
+    appeared = sorted(live - pinned)
+    assert not appeared, (
+        f"unpinned broker tools: {appeared}. Each is currently DENIED by"
+        " _broker_verb_policy, so nothing is exposed — classify them in"
+        " config/broker_tool_surface.yaml.")
+
+    vanished = sorted(pinned - live)
+    assert not vanished, (
+        f"pinned tools no longer exposed: {vanished}. A verb disappearing is"
+        " not automatically good news: if a GATED one vanished, the exec seat"
+        " can no longer place that order at all.")
 
 
 def test_schema_pin_place_stock_order_takes_a_flat_stop_leg():
