@@ -57,6 +57,30 @@ def test_tools_are_exactly_the_two_mcp_globs(seat, tmp_path):
     assert _opts(seat, tmp_path).tools == ["mcp__fund__*", "mcp__alpaca__*"]
 
 
+def test_the_alpaca_glob_is_safe_only_because_the_gate_denies_what_it_admits():
+    """The assertion above pins a WILDCARD, and for a while that was the whole
+    check — which is how a seat holding `alpaca_toolsets: trading` passed a
+    test named for its tool surface while `cancel_all_orders` and
+    `close_all_positions` were reachable with no ticket and no `orders` row.
+
+    `mcp__alpaca__*` is the right shape: enumerating every read verb would
+    break the exec turn the first time the toolset grew a getter. What makes it
+    SAFE is that the PreToolUse gate allowlists what the glob admits. This
+    pins the two together, so loosening either one alone reddens here.
+
+    Deliberately asserted at the policy level rather than by driving the hook:
+    this file is about what the SEAT can reach, and tests/test_runtime_hooks.py
+    owns the hook's behaviour. All this claims is that the two agree."""
+    from agents.runtime import _broker_verb_policy
+
+    for verb in ("cancel_order_by_id", "cancel_all_orders", "close_position",
+                 "close_all_positions"):
+        assert _broker_verb_policy(f"mcp__alpaca__{verb}") == "deny", verb
+    # ...and the glob must still admit the surface the seat genuinely needs
+    assert _broker_verb_policy("mcp__alpaca__place_stock_order") == "gated"
+    assert _broker_verb_policy("mcp__alpaca__get_account_info") == "allow"
+
+
 @pytest.mark.parametrize("seat", SEATS)
 def test_no_builtin_tool_is_available_to_the_seat(seat, tmp_path):
     tools = _opts(seat, tmp_path).tools or []

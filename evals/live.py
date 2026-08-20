@@ -27,9 +27,47 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from evals.trace import Trace
+from evals.trace import ROW_COLUMNS, WRITE_TABLES, Trace
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+
+def rows_written(conn, seat: str, run_date: str) -> dict:
+    """The rows THIS seat wrote today, for `Trace.rows_written`.
+
+    Four graders read that field — EXPECT, I1, I3, I4 — and `build_trace` left
+    it empty until 2026-08-20, so every live trace graded as if the seat had
+    written nothing. I4's answer was the loud one and it was a LIE: no rows
+    plus a submit tool in `tool_names` reads as FAIL/schema-reject, "the
+    handler refused the submission", on turns whose rows are in production.
+    It also made the regression ratchet's preferred corpus ungradeable, since
+    a promoted case needs exactly the rows that were missing.
+
+    NOT evals/runner.py's `_rows`, and the difference is the point. The rig
+    gives every trial a fresh database, so a scan keyed on run_date alone
+    returns exactly one seat's rows. A LIVE database accumulates the whole
+    day: two analyst seats write `signals`, so an unscoped scan would hand the
+    news seat's trace the analyst's rows, and I1/I3 would grade one seat on
+    another's output. `signals` carries `agent`, so it is scoped by it;
+    `decisions` has no such column and only the PM writes it.
+
+    An unmapped seat returns {} rather than raising. `exec` places orders
+    instead of submitting rows, and a KeyError here would cost the trace of the
+    one seat that touches the broker (invariant 4: a trace is evidence, never
+    control flow).
+    """
+    out = {}
+    for table in WRITE_TABLES.get(seat, ()):
+        cols = ROW_COLUMNS[table]
+        scoped = "agent" in cols
+        rows = conn.execute(
+            f"SELECT {', '.join(cols)} FROM {table} WHERE run_date = ?"
+            + (" AND agent = ?" if scoped else "")
+            + " ORDER BY ticker",
+            (run_date, seat) if scoped else (run_date,)).fetchall()
+        if rows:
+            out[table] = [dict(zip(cols, tuple(r))) for r in rows]
+    return out
 
 
 def git_sha() -> str:
@@ -54,7 +92,7 @@ def git_sha() -> str:
 def build_trace(*, seat: str, run_date: str, turn_seq: int, git_sha: str,
                 charter_text: str, model: str, snapshot: dict,
                 brief_tickers: list[str], tool_names: list[str],
-                result: object | None) -> Trace:
+                result: object | None, rows: dict | None = None) -> Trace:
     """Map one completed seat turn onto a Trace.
 
     `result` is the SDK's ResultMessage, read by attribute and never by
@@ -85,6 +123,11 @@ def build_trace(*, seat: str, run_date: str, turn_seq: int, git_sha: str,
         snapshot=snapshot,
         brief_tickers=list(brief_tickers),
         tool_names=list(tool_names),
+        # What the seat actually wrote. Defaults to {} rather than being
+        # required, so a caller that cannot reach a connection still records a
+        # trace — but every production caller passes it, because a trace
+        # without rows grades as a seat that submitted nothing.
+        rows_written=dict(rows or {}),
         turns=getattr(result, "num_turns", None),
         cost_usd=getattr(result, "total_cost_usd", None),
         duration_ms=getattr(result, "duration_ms", None),

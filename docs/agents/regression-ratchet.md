@@ -41,6 +41,15 @@ Two corpora, and they are not equally strong evidence.
 - **Live traces** — `$FUND_TRACES` on the droplet, one JSON per seat turn,
   written by `evals/live.py` from a real trading day. These are the real
   thing: a live failure has already cost something.
+
+  **Traces written before 2026-08-20 carry no `rows_written` and cannot be
+  promoted.** `build_trace` did not populate the field, so every live trace up
+  to that date grades as a seat that submitted nothing — and the eligibility
+  rule below needs exactly those rows. The bug is fixed forward only; a trace
+  cannot be repaired after the fact, which is the same reason there is no
+  retention policy. Check the field before reading a grade on an old trace:
+  an empty `rows_written` makes I4 report `schema-reject` — a refusal that
+  did not happen — and I1/I3 return INCONCLUSIVE.
 - **Eval-suite traces** — `evals/traces/<run>/<sha>/<case>/<trial>.json`,
   from `make eval`. Real model turns against real charters, so a failure here
   is real too — but the run may be a deliberate charter ablation, in which

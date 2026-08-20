@@ -2,6 +2,8 @@ import asyncio
 import json
 import sqlite3
 
+import pytest
+
 from agents.runtime import (make_decision_recorder, make_order_gate,
                             make_order_recorder, record_cost,
                             record_turn_result)
@@ -103,6 +105,145 @@ def test_order_gate_deny_alert_survives_malformed_tool_input(fund_db, sim_clock)
                          "tool_input": bad}, "t1", None))
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert len(_alerts(fund_db)) == 3
+
+
+# --- ungated broker verbs ----------------------------------------------------
+#
+# The gate used to return {} — allow — for every tool whose name did not start
+# with `mcp__alpaca__place_`. The exec seat holds `alpaca_toolsets: trading`
+# and `tools: ["mcp__fund__*", "mcp__alpaca__*"]`, so the trading toolset's
+# other mutating verbs were reachable AND unexamined: cancel_order_by_id,
+# cancel_all_orders, close_position, close_all_positions. No ticket, no
+# max_qty, no `orders` row, no gate_approved event. `close_all_positions`
+# would have liquidated the book.
+#
+# charters/exec.md rule 7 already forbids this ("You never modify, cancel, or
+# work an order beyond the ticket's terms") — but a charter is a prompt, and
+# the whole architecture is a deterministic gate BETWEEN the LLM and the
+# broker. A rule with no enforcement is a rule the next model ignores.
+
+# The mutating surface the exec seat can reach, introspected from the live
+# server on 2026-08-20 (38 tools at `account,trading,stock-data`).
+#
+# THE COUNT WENT 4 -> 5 -> 7 -> 8 IN ONE AFTERNOON, three of those corrections
+# landing after the fix had shipped, and the mechanism was right every time
+# because it never depended on the number. That history is the argument for
+# the design, so it is recorded here rather than in a commit message nobody
+# will read.
+#
+# These are denied because they are NOT GATED, never because they appear in
+# this list. The list is a regression guard; `_broker_verb_policy` is the
+# mechanism. A ninth verb in the next upstream bump is already denied with
+# nobody editing this file — which is the only reason the three corrections
+# above cost a test edit instead of an incident.
+MUTATORS = ["mcp__alpaca__cancel_order_by_id",
+            "mcp__alpaca__cancel_all_orders",
+            "mcp__alpaca__close_position",
+            "mcp__alpaca__close_all_positions",
+            "mcp__alpaca__replace_order_by_id",
+            "mcp__alpaca__exercise_options_position",
+            "mcp__alpaca__do_not_exercise_options_position",
+            # from the `account` toolset, not `trading` — a different class
+            # (it mutates account settings, not the book) but still a
+            # broker mutation with no ticket behind it
+            "mcp__alpaca__update_account_config"]
+
+# All three, not just stock: the gated prefix has to cover the whole family or
+# a crypto/option order routes around the ticket check.
+PLACE_VERBS = ["mcp__alpaca__place_stock_order",
+               "mcp__alpaca__place_crypto_order",
+               "mcp__alpaca__place_option_order"]
+
+
+@pytest.mark.parametrize("tool", PLACE_VERBS)
+def test_every_place_verb_is_gated_not_just_the_stock_one(tool, fund_db,
+                                                          sim_clock):
+    from agents.runtime import _broker_verb_policy
+    assert _broker_verb_policy(tool) == "gated"
+
+
+@pytest.mark.parametrize("tool", MUTATORS)
+def test_a_broker_mutation_with_no_gated_route_is_denied(tool, fund_db,
+                                                         sim_clock):
+    """Denied even with a VALID ticket seeded: a ticket authorizes the order it
+    names, never a cancel or a liquidation."""
+    _seed(fund_db)
+    gate = make_order_gate(lambda: fund_db, sim_clock)
+    out = _run(gate({"tool_name": tool, "tool_input": {}}, "t1", None))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_an_unknown_broker_verb_is_denied_rather_than_waved_through(fund_db,
+                                                                    sim_clock):
+    """The direction that matters. A denylist of the four known verbs would
+    fail OPEN the first time the toolset grows one nobody enumerated — which is
+    exactly how these four arrived. Anything not explicitly routed is denied
+    (invariant 4: ambiguity resolves to no action)."""
+    gate = make_order_gate(lambda: fund_db, sim_clock)
+    out = _run(gate({"tool_name": "mcp__alpaca__liquidate_everything",
+                     "tool_input": {}}, "t1", None))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("tool", [
+    "mcp__alpaca__get_account_info", "mcp__alpaca__get_stock_latest_quote",
+    "mcp__alpaca__get_stock_snapshot", "mcp__alpaca__get_stock_bars",
+    "mcp__alpaca__get_stock_latest_trade"])
+def test_read_only_verbs_still_pass_through(tool, fund_db, sim_clock):
+    """Every alpaca verb in the whole recorded corpus — recordings and live
+    traces — is one of these or place_stock_order. Denying a read would take
+    the exec turn down for a quote."""
+    gate = make_order_gate(lambda: fund_db, sim_clock)
+    assert _run(gate({"tool_name": tool, "tool_input": {}}, "t1", None)) == {}
+
+
+def test_a_non_broker_tool_is_never_the_gates_business(fund_db, sim_clock):
+    gate = make_order_gate(lambda: fund_db, sim_clock)
+    for tool in ("mcp__fund__list_open_tickets", "mcp__fund__submit_decision",
+                 "Read", "Bash"):
+        assert _run(gate({"tool_name": tool, "tool_input": {}},
+                         "t1", None)) == {}
+
+
+def test_a_denied_mutation_is_observable_not_silent(fund_db, sim_clock):
+    """Same contract as an order deny: it reddens audit_day and reaches #risk.
+    A silent block is indistinguishable from a seat that never tried."""
+    gate = make_order_gate(lambda: fund_db, sim_clock)
+    _run(gate({"tool_name": "mcp__alpaca__close_all_positions",
+               "tool_input": {}}, "t1", None))
+    alerts = _alerts(fund_db)
+    assert len(alerts) == 1
+    assert "close_all_positions" in alerts[0]
+
+
+def test_gated_prefixes_is_the_one_place_a_new_verb_is_authorized(fund_db,
+                                                                  sim_clock):
+    """The extension point, pinned so the next verb is a one-line change.
+
+    An amend path needs `replace_order_by_id` AUTHORIZED rather than denied.
+    Adding its prefix to GATED_PREFIXES must route it to validate_order — the
+    same ticket check place_* gets — not to a second bespoke branch.
+
+    If you add a prefix here, the PostToolUse recorder also needs revisiting:
+    it still matches PLACE_PREFIX alone, so a newly-gated verb would execute
+    and leave no `orders` row behind."""
+    from agents import runtime
+
+    assert runtime.PLACE_PREFIX in runtime.GATED_PREFIXES
+    seen = {}
+    original = runtime.validate_order
+    monkey = list(runtime.GATED_PREFIXES) + ["mcp__alpaca__replace_"]
+    try:
+        runtime.GATED_PREFIXES = tuple(monkey)
+        runtime.validate_order = lambda *a, **k: (seen.setdefault("hit", True),
+                                                  (True, ""))[1]
+        gate = make_order_gate(lambda: fund_db, sim_clock)
+        assert _run(gate({"tool_name": "mcp__alpaca__replace_order_by_id",
+                          "tool_input": {}}, "t1", None)) == {}
+    finally:
+        runtime.GATED_PREFIXES = tuple(monkey[:-1])
+        runtime.validate_order = original
+    assert seen.get("hit"), "a gated prefix must reach validate_order"
 
 
 class _NoEventWrites:

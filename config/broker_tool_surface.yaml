@@ -1,0 +1,88 @@
+# The exec seat's reachable broker tool surface, PINNED.
+#
+# Why this file exists: the seat's tool allow-array is `mcp__alpaca__*`, a
+# wildcard over this whole namespace, so what the seat can reach is decided by
+# the server, not by us. On 2026-08-20 that surface was enumerated four times
+# by four sessions and produced four different numbers — 4, 5, 7, 8 mutating
+# verbs — while `close_all_positions` sat reachable in production with no gate
+# ticket, no max_qty and no `orders` row.
+#
+# The gate does NOT read this file. `agents/runtime.py:_broker_verb_policy` is
+# the mechanism and it is deny-by-default, which is why every one of those
+# miscounts was harmless. This pin is DETECTION: it fails a test when the
+# surface moves, so a new mutating verb is a red build instead of a discovery.
+#
+# The surface is a function of BOTH lines below. A toolset change moves it as
+# surely as a version bump, so neither is inferable from the other.
+spec: alpaca-mcp-server@2.2.1
+toolsets: account,trading,stock-data
+
+# Mutations authorised by a gate ticket. Adding one here is not enough: see
+# GATED_PREFIXES in agents/runtime.py, and the PostToolUse recorder that still
+# matches PLACE_PREFIX alone.
+gated:
+  - place_stock_order
+  - place_crypto_order
+  - place_option_order
+
+# Mutations with NO gated route. Every one is denied by _broker_verb_policy.
+# Listed so the next upstream release reddens a test rather than the invariant.
+mutating:
+  - cancel_all_orders
+  - cancel_order_by_id
+  - close_all_positions
+  - close_position
+  - do_not_exercise_options_position
+  - exercise_options_position
+  - replace_order_by_id
+  # `account` toolset, not `trading` — and the one worth reading twice. The
+  # others move the book by a bounded amount that reconciliation eventually
+  # sees in positions. This one changes the BOUNDARY the gate enforces within:
+  # AccountConfigurations carries no_shorting, suspend_trade,
+  # max_margin_multiplier, fractional_trading, max_options_trading_level,
+  # disable_overnight_trading, ptp_no_exception_entry, trade_confirm_email.
+  # Invariant 3 makes gate thresholds human-commit-only, but they stand on
+  # account settings a seat could otherwise change at runtime. `no_shorting` is
+  # the sharp one: the fund is long-only by construction and
+  # orchestrator/protection.py treats a broker-side short as unclassifiable and
+  # fails closed, so clearing that flag removes the last mechanical guarantee
+  # behind an assumption deterministic code relies on. `suspend_trade` is a
+  # kill switch. `max_margin_multiplier` is the WEAKEST limb and is recorded as
+  # such rather than amplified: sizing is bounded by min(dollar, cash) in
+  # gate/risk.py, so more buying power does not inflate a position the way it
+  # first reads.
+  - update_account_config
+
+# Everything else. Classified by ENUMERATION, not by name shape: the last four
+# are read tools with no `get_` prefix, and a prefix heuristic alone denied all
+# four until this pin caught it. `get_account_config` reads what
+# `update_account_config` writes — the pairing to use if anyone later wants
+# drift detection on the account settings themselves.
+read:
+  - get_account_activities
+  - get_account_activities_by_type
+  - get_account_config
+  - get_account_info
+  - get_all_positions
+  - get_open_position
+  - get_orders
+  - get_order_by_id
+  - get_order_by_client_id
+  - get_portfolio_history
+  - get_stock_bars
+  - get_stock_latest_bar
+  - get_stock_latest_quote
+  - get_stock_latest_trade
+  - get_stock_quotes
+  - get_stock_snapshot
+  - get_stock_trades
+  - get_crypto_bars
+  - get_crypto_quotes
+  - get_crypto_trades
+  - get_market_movers
+  - get_most_active_stocks
+  - get_alpaca_endpoint_docs
+  - fetch_alpaca_doc
+  - list_alpaca_api_endpoints
+  - search_alpaca_api_specs
+  - search_alpaca_docs
