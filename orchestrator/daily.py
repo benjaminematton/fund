@@ -20,7 +20,8 @@ from typing import Callable
 from gate.risk import Approved, Rejected, size
 from gate.tickets import create_ticket, expire_open_tickets, open_tickets
 from orchestrator.clock import Clock, et_hhmm, iso
-from orchestrator.protection import assert_positions_protected
+from orchestrator.protection import (assert_positions_accounted,
+                                     assert_positions_protected)
 from orchestrator.reconcile import reconcile_orders
 from slackkit.outbox import append_event, drain
 from state.critiques import insert_default_critiques
@@ -481,7 +482,15 @@ def run_day(ctx: StageCtx, *, execution_turn: Callable[[], None] | None = None,
     # run. `sleep` is threaded through for the one short re-read a
     # just-created OTO leg needs to become visible.
     now = iso(ctx.clock.now())
-    if assert_positions_protected(ctx.conn, broker=broker, now_iso=now,
-                                  sleep=sleep):
+    # Two directions, deliberately separate calls: protection asks whether what
+    # the broker holds is covered, accounting asks whether what the fund's own
+    # orders claim is still held. A position that CLOSED produces no broker
+    # position, so the first is structurally silent on exactly the case the
+    # second exists to catch.
+    findings = assert_positions_protected(ctx.conn, broker=broker,
+                                          now_iso=now, sleep=sleep)
+    findings += assert_positions_accounted(ctx.conn, broker=broker,
+                                           now_iso=now, sleep=sleep)
+    if findings:
         drain(ctx.conn, ctx.slack, now)
     run_stage(ctx, "close", lambda: run_close(ctx))

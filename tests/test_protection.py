@@ -4,7 +4,8 @@ failure of all three incidents, so 'fails closed' is a test, not a comment."""
 
 import json
 
-from orchestrator.protection import assert_positions_protected
+from orchestrator.protection import (assert_positions_accounted,
+                                     assert_positions_protected)
 
 NOW = "2026-08-19T20:05:00+00:00"
 
@@ -427,3 +428,178 @@ def test_the_re_read_waits_once_per_run_not_once_per_position(fund_db):
         now_iso=NOW, sleep=naps.append)
     assert n == 3
     assert naps == [3.0]
+
+
+# --- the mirror case: records account for shares the broker does not hold ----
+#
+# assert_positions_protected iterates BROKER positions, so a position that has
+# closed produces no iteration and no alert. That is correct for protection —
+# a closed position needs none — and it is exactly why nothing notices when a
+# stop fires. An OTO stop leg has no `orders` row by construction (one row per
+# place_* response, keyed on the parent), so the fund never records that its
+# own stop closed the position.
+
+
+def _recorded_sell(conn, *, symbol="NVDA", qty=80, filled_qty=None,
+                   tid="b7c90000-0000-4000-8000-000000000001",
+                   submitted_at="2026-08-18T19:59:00+00:00", status="filled"):
+    """A filled SELL the fund placed through the gate — the thing whose absence
+    makes a broker-side exit unexplainable."""
+    cur = conn.execute(
+        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+        " invalidation, stop_price, status, created_at) VALUES"
+        " (?, ?, 'sell', ?, 't', 'i', NULL, 'executed', ?)",
+        (submitted_at[:10], symbol, qty, submitted_at))
+    conn.execute(
+        "INSERT INTO tickets (id, decision_id, ticker, side, max_qty,"
+        " stop_price, expires_at, status, created_at)"
+        " VALUES (?, ?, ?, 'sell', ?, NULL, ?, 'consumed', ?)",
+        (tid, cur.lastrowid, symbol, qty, submitted_at, submitted_at))
+    conn.execute(
+        "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
+        " filled_qty, submitted_at) VALUES (?, ?, 'sell', ?, ?, ?, ?)",
+        (tid, symbol, qty, status, qty if filled_qty is None else filled_qty,
+         submitted_at))
+    conn.commit()
+
+
+def test_a_holding_the_broker_confirms_is_silent(fund_db):
+    _promised(fund_db)
+    n = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "80")], []), now_iso=NOW)
+    assert n == 0
+    assert _alerts(fund_db) == []
+
+
+def test_a_recorded_buy_the_broker_no_longer_holds_alerts(fund_db):
+    """The issue-5 case. The stop fired, the broker is flat, and no `orders`
+    row explains it."""
+    _promised(fund_db)
+    n = assert_positions_accounted(fund_db, broker=Broker([], []), now_iso=NOW)
+    assert n == 1
+    text = _alerts(fund_db)[0]
+    assert "NVDA" in text and "80" in text
+    assert "0" in text
+
+
+def test_a_partial_disappearance_names_the_shortfall(fund_db):
+    _promised(fund_db)
+    n = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "30")], []), now_iso=NOW)
+    assert n == 1
+    assert "30" in _alerts(fund_db)[0]
+
+
+def test_a_recorded_sell_explains_the_absence(fund_db):
+    """Bought 80 and sold 80, both through the gate. Nothing is unexplained."""
+    _promised(fund_db)
+    _recorded_sell(fund_db)
+    n = assert_positions_accounted(fund_db, broker=Broker([], []), now_iso=NOW)
+    assert n == 0
+    assert _alerts(fund_db) == []
+
+
+def test_a_position_with_no_record_is_not_this_guards_business(fund_db):
+    """The other direction — the broker holds something the fund never opened.
+    assert_positions_protected already alerts on that via _UNKNOWN; two alerts
+    for one condition would be noise."""
+    n = assert_positions_accounted(
+        fund_db, broker=Broker([_long("MSFT", "40")], []), now_iso=NOW)
+    assert n == 0
+    assert _alerts(fund_db) == []
+
+
+def test_an_unchanged_discrepancy_alerts_once_not_every_run(fund_db):
+    """The condition is permanent until a human reconciles it. Repeating it
+    daily would redden the audit forever, and a permanently red audit is what
+    masks the next new failure."""
+    _promised(fund_db)
+    broker = Broker([], [])
+    first = assert_positions_accounted(fund_db, broker=broker, now_iso=NOW)
+    second = assert_positions_accounted(fund_db, broker=broker, now_iso=NOW)
+    assert (first, second) == (1, 0)
+    assert len(_alerts(fund_db)) == 1
+
+
+def test_a_discrepancy_that_changes_shape_alerts_again(fund_db):
+    """30 of 80 missing and then all 80 missing are different facts. Dedup must
+    not swallow the second."""
+    _promised(fund_db)
+    assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "30")], []), now_iso=NOW)
+    n = assert_positions_accounted(
+        fund_db, broker=Broker([], []), now_iso=NOW)
+    assert n == 1
+    assert len(_alerts(fund_db)) == 2
+
+
+def test_unreadable_positions_fail_closed(fund_db):
+    """Same rule as the rest of the module: a check that can pass while lying
+    is worse than no check at all."""
+    class Broken:
+        def open_positions(self): raise ConnectionError("401 unauthorized")
+        def open_orders(self): return []
+
+    _promised(fund_db)
+    n = assert_positions_accounted(fund_db, broker=Broken(), now_iso=NOW)
+    assert n == 1
+    assert "UNVERIFIED" in _alerts(fund_db)[0]
+
+
+def test_no_broker_fails_closed(fund_db):
+    _promised(fund_db)
+    n = assert_positions_accounted(fund_db, broker=None, now_iso=NOW)
+    assert n == 1
+    assert "UNVERIFIED" in _alerts(fund_db)[0]
+
+
+def test_a_position_that_is_merely_slow_to_appear_is_not_a_discrepancy(fund_db):
+    """A buy that just filled is recorded before the broker lists the position.
+    Without one short wait the fund would alert on every day it actually
+    trades — the same lag assert_positions_protected naps for."""
+    class SlowPosition(Broker):
+        def __init__(self, positions):
+            super().__init__(positions, [])
+            self.reads = 0
+
+        def open_positions(self):
+            self.reads += 1
+            return self._positions if self.reads > 1 else []
+
+    _promised(fund_db)
+    broker = SlowPosition([_long("NVDA", "80")])
+    naps = []
+    n = assert_positions_accounted(fund_db, broker=broker, now_iso=NOW,
+                                   sleep=naps.append)
+    assert n == 0, "alerted on a position the broker had not listed yet"
+    assert broker.reads == 2, "positions were not re-read after the wait"
+    assert naps == [3.0]
+
+
+def test_a_discrepancy_that_clears_and_recurs_alerts_again(fund_db):
+    """The failure dedup-by-history would introduce. Matching "have I ever
+    alerted about NVDA" leaves the old event in the table forever, so the
+    SECOND occurrence stays silent — trading a noise problem for a silence
+    problem, which is the worse one."""
+    _promised(fund_db)
+    assert assert_positions_accounted(
+        fund_db, broker=Broker([], []), now_iso=NOW) == 1
+    # the gap closes: the broker shows the shares again
+    assert assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "80")], []), now_iso=NOW) == 1
+    # ...and the identical gap returns. It must be reported, not swallowed.
+    n = assert_positions_accounted(fund_db, broker=Broker([], []), now_iso=NOW)
+    assert n == 1, "a recurrence of a cleared discrepancy was swallowed"
+    texts = _alerts(fund_db)
+    assert len(texts) == 3
+    assert "closed" in texts[1]
+
+
+def test_a_standing_discrepancy_is_not_reported_as_cleared(fund_db):
+    """The clear must fire on a real transition, not on every quiet run."""
+    _promised(fund_db)
+    _recorded_sell(fund_db)                 # nets to zero: nothing to account
+    for _ in range(3):
+        assert assert_positions_accounted(
+            fund_db, broker=Broker([], []), now_iso=NOW) == 0
+    assert _alerts(fund_db) == []
