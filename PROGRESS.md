@@ -18,6 +18,7 @@ The following table summarizes where the fund stands:
 | **Live since** | 2026-08-17 — first clean end-to-end day |
 | **Tests** | 955 offline green at `51bc7eb`, identical on macOS arm64, linux/amd64 and linux/arm64 |
 | **CI** | runs all 909 (was 36); **first green run in the repo's history on 2026-08-19** |
+| **Seats** | PM, exec, and **two** analysts — `analyst` (price/fundamentals) and `news` (news/sentiment, read-only, blind to the book). The `news` seat is deployed but **defective**, see #6 |
 | **Watchlist** | NVDA, MSFT, AAPL |
 | **Open position** | NVDA 80 @ 227.09, stop 215 gtc (expires 2026-11-17) — **hand-placed 2026-08-19 11:46 PDT** after two sessions unprotected (see below) |
 | **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
@@ -223,6 +224,61 @@ measuring something else: a dependency-graph workflow read as `ci`, 36 tests rea
 as the suite, another branch's code read as this one's. None was a wrong answer;
 each was a right answer to a question nobody had checked. Two were fixed without
 touching production code at all.
+
+### 2026-08-19 — a second analyst, and what it got wrong on day one
+
+The research stage runs two analysts, not one (`d21b755`, `2c119c7`, PR #2). The
+new `news` seat reads news and sentiment, is **read-only and blind to the book**
+— `alpaca_toolsets: "news,stock-data"`, no account access, `place_*` denied at
+both the toolset and `disallowed_tools` layers, `setting_sources: []`. Per-seat
+neutral/0 defaulting landed with it: a seat that files no report defaults per
+seat, not per ticker. Staging day green on the scratch account, real order
+filled, 7/7 checkpoints.
+
+**It has never yet produced a usable signal.** On 2026-08-19 it called
+`get_news` with `start == end == "2026-08-19"`. Both date-only bounds resolve to
+`T00:00:00Z`, so the interval is zero-width and Alpaca returns an empty list with
+a clean 200 and no error. The seat wrote "No news published 2026-08-19 … zero
+reported catalyst. Down move without headline is noise, not signal" for all three
+tickers, on a day with **30 articles** across them and four directly on NVDA.
+The analyst seat, same run, same tool, same minute, cited five.
+
+Two defects, and the second is the one that did the damage. The query is wrong.
+But `charters/news.md:59` also said "if the feed is **empty**" where
+`charters/analyst.md:52` says "if data is **missing**", and `:57` elevated
+"absence of news is information" to a principle — so the charter instructed the
+seat to treat silence as a measured fact. **Fixing the query alone leaves a seat
+that still asserts absence from an empty response.** Both tracked as #6.
+
+The lesson generalises past this seat: **an empty result is unmeasured, never
+measured-as-nothing.** The same rule `3ff004e` already encodes for resolutions
+("Unmeasurable is no row, never a zero"), and what invariant 4 means applied to
+evidence rather than to actions. Note also what makes this the dangerous shape —
+a hallucinated headline is visibly suspect, while a confident false negative
+reads as diligence and passes into the PM's evidence unchallenged.
+
+`max_turns: 16` for this seat remains **unmeasured**: the staging figures
+(8 of 16 turns, $0.0301/day) measured a seat doing nothing useful.
+
+### 2026-08-18 — the feedback loop closed, and the crossing that nearly emptied it
+
+`orchestrator/resolve.py` + `scripts/resolve_day.py` write `resolutions`
+nightly (`3ff004e`), riding `fund-pnl.service`'s 16:35 fire for the same
+SIP_DELAY reason `close_pnl` has.
+
+`calibration/rows.py` is the crossing, and it is where this quietly fails:
+resolutions are **per-decision** but `grade_rows` wants **per-analyst**, and
+`signals.direction` (bullish/bearish) is not `signal_probability`'s vocabulary
+(long/short). Untranslated, three rows in yields one out — and the board renders
+near-empty **without erroring**, which is the failure mode that hides. Verified
+over 90 resolutions: 360 signal rows in, 360 graded out, 0 dropped.
+
+**The loop is not fully closed.** `resolutions.reflection` is still never
+written, because the daily cycle has no reflection stage to write it, and it
+cannot live in the 09:35 run — resolutions are written at 16:35. Tracked as #4.
+`orchestrator/reflect.py` computes the factual frame a seat would reflect on
+(call, per-seat confidence, realized return and alpha) and stores it ahead of any
+prose; what consumes it does not exist yet.
 
 ### 2026-08-18 — a lost day, and what it bought
 
@@ -438,7 +494,10 @@ either.
 | 2026-08-19 | golden snapshot hash made platform-independent — **first green `ci` run in the repo's history** (`557d1cd`) |
 | 2026-08-19 | CI widened from 36 to 909 tests; `mcp` 2.0 compatibility in tests (`e072f73`) |
 | 2026-08-19 | renderer guard stopped scanning sibling worktrees (`c0ad2d4`) |
+| 2026-08-18 | **the feedback loop closed** — `resolutions` written nightly (`3ff004e`); reflection stage still absent (#4) |
+| 2026-08-19 | **second analyst seat** (`news`, read-only, blind to the book) merged and deployed; per-seat neutral/0 defaults; staging day green on the scratch account |
 | 2026-08-19 | clean run; **found the NVDA stop had expired at the 08-17 bell** — two sessions unprotected, never breached; stop re-placed by hand at 11:46 PDT |
+| 2026-08-19 | the `news` seat's first live signals asserted "No news published" on a day with 30 articles — zero-width query, and a charter that licensed it (#6) |
 | 2026-08-20 | missing-stop class closed: the gate requires `gtc`, and the day asserts every position is protected (`51bc7eb`) — leg inheritance and leg visibility both measured live |
 
 ### The stop-leg shape the broker never accepted
@@ -475,9 +534,16 @@ new implementation branches get fresh context.
       injection case at the PM boundary.
 - [ ] **Union asymmetry** in the price-history exclusion (ledgered ruling,
       2026-08-17)
-- [ ] **Resolutions and reflection loop** — nothing closes the feedback
-      cycle from outcome back into analyst calibration
-- [ ] **Second analyst seat** — the debate mechanic in the design has one voice
+- [x] ~~**Resolutions and reflection loop**~~ — **half done.** `resolutions` is
+      written nightly (`3ff004e`) and `calibration/rows.py` grades it. What
+      remains is the reflection stage that would write `resolutions.reflection`;
+      it cannot live in the 09:35 run because resolutions land at 16:35. Tracked
+      as **#4**, no longer a blank cycle.
+- [x] ~~**Second analyst seat**~~ — **shipped and defective.** The `news` seat
+      is merged and deployed; it has never produced a usable signal, and both
+      defects are prompt-level. Tracked as **#6**. Its `max_turns` is still
+      unmeasured. Do not treat the debate mechanic as having two voices until #6
+      closes — it currently has one voice and one confident silence.
 - [ ] README demo recording
 
 **Last, after everything above** — decided 2026-08-17
