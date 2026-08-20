@@ -245,7 +245,22 @@ simplification and pays for that with risk.
   `mcp__alpaca__place_`; `tests/test_exec_seat_tool_surface.py` asserts the glob and never the
   resolved tool names. Exactly one of the eight — `replace_order_by_id` — is in this decision's
   scope, because the amend path calls it. The other seven remain a separate exposure this
-  decision does not close. Gating the amend verb does not close that, and closing it is not required by this
+  decision does not close.
+
+  **The count itself is the argument for deny-by-default, and it is worth recording verbatim.**
+  Across one afternoon, four independent enumerations by four sessions produced **4 → 5 → 7 → 8**.
+  Every one of them was made carefully, by someone reading the actual tool surface, and every one
+  of the first three was wrong: the first from a grep that could only find what it thought to look
+  for, the later ones from filtering by verb shape rather than enumerating. Two sessions missed
+  `exercise_options_position` and `do_not_exercise_options_position`; two more disagreed about
+  whether `update_account_config` counted.
+  <br><br>
+  A guard built from any of those counts would have been correct on the day it shipped and wrong
+  at the next upstream bump. The fix that landed does not depend on the count at all — it denies a
+  broker verb *because it is not gated*, not because it appears on a list, so the list is a
+  regression guard and never the mechanism. That property is what makes it survivable; the
+  enumeration history is the evidence that nothing which depends on an accurate list would have
+  been. Gating the amend verb does not close that, and closing it is not required by this
   decision. It is recorded here because it was found while verifying this one, and because
   CLAUDE.md's "`tools` governs availability — the real lock" does not currently describe the
   config.
