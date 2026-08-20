@@ -52,19 +52,63 @@ order has including legs. The row id doubles as the order's `client_order_id` **
 fund itself places the order — which is the amend case and nothing else. This is what makes the
 three origins uniform instead of one-plus-exceptions:
 
-| origin | row id | broker reference |
-|---|---|---|
-| amend replacement | fund-minted, used as `client_order_id` | the new order |
-| OTO stop leg | fund-minted | **Alpaca-generated** — verified: leg `client_order_id` `910638b1-…` bears no relation to ticket `a14aa36b-…` |
-| adopted (hand-placed) | fund-minted | the existing order |
+| origin | row id | `alpaca_order_id` | `client_order_id` | `provenance_kind` |
+|---|---|---|---|---|
+| amend replacement | fund-minted, used as the order's `client_order_id` | the new order's UUID | = row id | `ticket` |
+| OTO stop leg | fund-minted | the leg's UUID | **Alpaca-generated** — verified: `910638b1-…`, unrelated to ticket `a14aa36b-…` | `oto_leg` |
+| adopted (hand-placed) | fund-minted | `5abc139f-…` | `manual-protective-stop-nvda-2026-08-19` | `adopted` |
+
+**Corrected 2026-08-20 on two counts, both found by review.**
+
+*The table needs a `client_order_id` column, and an earlier draft had none.* It then claimed the
+hand-placed marker "carries the meaning" while giving it nowhere to live —
+`manual-protective-stop-nvda-2026-08-19` is a **`client_order_id`**; the `alpaca_order_id` is
+`5abc139f-…` (`PROGRESS.md:123-124`). The only way to satisfy the old assertion was to make the
+fake return the human string as the broker id: a fixture agreeing with our code while both
+disagree with Alpaca, which is 2026-08-17 exactly.
+
+*Provenance splits in two.* A single `provenance` column holding "a ticket id, or `'adopted'`"
+mixes an identifier with an enum token, so it can carry no CHECK and cannot be grouped — while
+being justified by contracts §2's vocabulary rule, which is about exactly that. It becomes
+`provenance_kind` (`ticket` | `oto_leg` | `adopted`, NOT NULL) plus a nullable `provenance_ref`.
+
+That split also fixes a hole the review found: there is **no resolution path** from a broker order
+back to a ticket, because `open_orders()` carries no `client_order_id` and a leg's id bears no
+relation to the ticket's anyway. Under the old single column every row branch one wrote would
+have been `'adopted'` — including fund-placed legs the fund did place — collapsing the
+three-origin table to one value and making the adoption test vacuous. `oto_leg` is the honest
+kind for a stop the fund placed but cannot trace to its ticket from the broker's side.
+
+**The irregular id is evidence, not the mechanism.** `provenance_kind = 'adopted'` is what marks
+a human-placed order. The id is stored verbatim because it is real broker data, not because the
+system reads meaning from its shape.
 
 A fund-minted id on an adopted row is a *record handle*, not fabricated provenance — which is
 what "record and reference, never invent" requires in practice. The fund never invents a
 decision or ticket for protection it did not authorize; `protection.py`'s `_UNKNOWN` sentinel is
 the existing precedent for representing something without inventing its origin.
 
-**States:** `live`, `superseded`, `cancelled`, `triggered`, `expired`, plus `pending` once amend
-ships. There is deliberately **no `rejected`** — `_extract_order` returns `None` on a rejection
+**States, corrected 2026-08-20.** An earlier draft listed `live`, `superseded`, `cancelled`,
+`triggered`, `expired` and `pending`. Review established that **no writer in branch one could
+produce any of them but `live`** — nothing detects a stop dying — so `live_for()` would return
+permanently stale rows and the aggregate test would pin a property no code can violate. Worse,
+a stale `live` row rendered into an alert is the table asserting protection that is gone: the
+standing rule broken by omission rather than by query.
+
+Branch one therefore ships **two** states: **`live`**, and **`closed`** — no longer live at the
+broker, reason unknown. The writing pass has the full live-order list in hand, so anything marked
+`live` whose `alpaca_order_id` is absent from it gets closed. That is a diff, not a new mechanism.
+
+`cancelled`, `triggered` and `expired` are **not** in the CHECK, because distinguishing them
+requires reading order history and nothing in branch one does. A state no writer can produce is
+worse than an absent one — it makes a test look like a guard while it guards nothing. Branch two
+adds `pending`, `superseded` and `lapsed` by migration.
+
+`live → closed` is a real transition, so it needs an `EDGES`/`KEYS` entry in `state/transition.py`
+and a `specs/contracts.md` §1 machine. CLAUDE.md requires it — *"every workflow table is a state
+machine… apply them only through `state/transition()`"* — and the earlier draft simply missed it.
+
+There is deliberately **no `rejected`** — `_extract_order` returns `None` on a rejection
 payload ("a rejection is never recorded", invariant 4), so a rejected stop produces no row at
 all, and adding the state for symmetry would create rows the code cannot write.
 
@@ -78,8 +122,28 @@ but not yet effective protects nothing, and counting it would be the table asser
 
 ## Who writes it
 
-**The reconcile pass writes rows for OTO-placed stops**, reading `open_orders()`. Not the
-PostToolUse recorder — this reverses an earlier decision, on evidence:
+**`orchestrator/protection.py` writes rows for OTO-placed stops**, from the `open_orders()` list
+it already reads. **Amended 2026-08-20 after adversarial review**, which found that neither this
+ADR nor its spec had considered the module that already does the job. `assert_positions_protected`
+already calls `open_orders()`; runs unconditionally every day; is *deliberately not a checkpointed
+stage*, so it re-runs on a resumed day; handles `broker is None`; catches every broker exception
+and converts it to an alert rather than raising; and performs the 3-second re-read a lagging OTO
+leg needs. All verified in source.
+
+The earlier answer — the reconcile pass — was wrong on three counts the review established by
+running the code: `daily.py` calls stage bodies with no try/except, so a transient broker read
+failure would have **aborted the trading day** before the naked-position assertion ran; reconcile
+*is* checkpointed, so a resumed day would record nothing; and its `if not pending: return` fires
+first on any day with no submitted orders, which is most days.
+
+Note what does **not** change: the writer is still not the PostToolUse recorder, and the reasons
+below still hold. What changed is which non-recorder does it.
+
+`_evaluate` stays read-only — that constraint is about `_evaluate`, and
+`assert_positions_protected` already writes (it appends alert events). The row write goes
+alongside the existing `read_orders()` call, inside the try that already catches its failures.
+
+Not the PostToolUse recorder, on evidence:
 
 - the captured place response has `"legs": null`;
 - `tests/fake_alpaca.py` echoes the request's flat leg parameters rather than returning a legs array;
@@ -116,9 +180,11 @@ Three constraints on adoption, from the sessions that own the pieces it touches:
   `protection.py` pass on NVDA correctly today and wrongly the moment the stop is cancelled —
   which is the standing rule again, arrived at from the other direction. The row says *what was
   observed and when*, and the broker stays the authority on whether it still exists.
-- **The adopted id is deliberately not a UUID.** `manual-protective-stop-nvda-2026-08-19` was
-  chosen so the format itself marks an order a human placed outside the pipeline. Do not
-  normalise it into a UUID column shape; the irregularity carries the meaning.
+- **The adopted id is stored verbatim, in the `client_order_id` column.**
+  `manual-protective-stop-nvda-2026-08-19` is deliberately not a UUID, and that irregularity is
+  good evidence a human placed it — but `provenance_kind = 'adopted'` is what the system actually
+  reads. Never infer provenance from the shape of an id, and never store it in
+  `alpaca_order_id`, which holds `5abc139f-…`. An earlier draft conflated the two.
 - **Adoption targets whatever protection exists when the script runs**, never a hardcoded order
   id. The NVDA stop is under active review for cancellation or resizing, and branch one is
   behind `/to-spec` and a 🔏 ruling — so the order adopted may not be the order that exists
