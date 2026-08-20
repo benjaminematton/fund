@@ -55,9 +55,9 @@ trials, and the reason a re-run does not fix the charter/case coupling:
 
 A fourth cause was raised and **retracted**: the `model_fallback_used` event on
 all 37 trials is a false positive, and the seat did run on the configured
-Sonnet 5. What it exposed instead is a fund-wide instrumentation bug — the
-event now fires on every seat turn, on the droplet included — which belongs to
-`agents/runtime.py`, not to G1.
+Sonnet 5. What it exposed instead is an instrumentation bug that belongs to
+`agents/runtime.py`, not to G1: the event now fires on every turn of every
+Sonnet-configured seat, which in production is the PM.
 
 Separately, the 80% target above and the plan's 8-of-9 threshold are not the
 same number — 8/9 is 88.9%, and a seat performing exactly at 80% clears it only

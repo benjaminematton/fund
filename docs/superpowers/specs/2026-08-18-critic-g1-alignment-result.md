@@ -120,19 +120,29 @@ call the SDK makes on its own.
 docstring calls the quantifier "the point", because `any()` would stay silent
 on a genuine mid-turn haiku-then-sonnet fallback. That was right when written.
 It is now wrong for the world it runs in — the SDK routes an auxiliary Haiku
-call on **every turn of every seat**, so:
+call on every turn — but **only for Sonnet-configured seats**, and that
+narrowness makes it worse rather than better. `analyst`, `news` and `exec` are
+configured `claude-haiku-4-5-20251001`, so the auxiliary key *matches* and the
+check is correctly silent. Production on 2026-08-20: four seat turns ran, one
+`model_fallback_used` event, **`pm` only**. The one affected seat is the one
+that makes the decisions, and `model_id` on every `decisions` row is precisely
+what the absent-event guarantee was protecting.
 
-- `model_fallback_used` fires on every seat turn, every day, on the droplet.
 - [agents/runtime.py:301](../../../agents/runtime.py#L301)'s contract —
-  *"model_id is trustworthy precisely when this event is absent"* — is now
-  vacuous, because the event is never absent.
-- `scripts/score_day.py` ranks it severity 3 on the daily scorecard,
-  permanently.
+  *"model_id is trustworthy precisely when this event is absent"* — is vacuous
+  for the PM, because the event is never absent there.
+- `scripts/score_day.py` ranks it severity 3 on the daily scorecard, every day.
 
-Verified fleet-wide, not seat-specific: the same probe on the **PM** seat, whose
+Not seat-specific and not config drift: the same probe on the **PM** seat, whose
 72 archived trials across `control`, `primary2`, `postfix2` and `postfix3`
-emitted **zero** such events, now emits one identically. So this began between
-2026-08-18 and 2026-08-20 and is an SDK/backend change, not a config drift.
+emitted **zero** such events, now emits one identically to the Critic's. Both
+are Sonnet-configured. So this began between 2026-08-18 and 2026-08-20 and is
+an SDK/backend change.
+
+Owned and being fixed by another session as of 2026-08-20; the token split
+above is load-bearing in that fix, because at ~9% of the turn's tokens the
+auxiliary call sits uncomfortably close to a genuine partial fallback for any
+volume-share threshold.
 
 Consequence for the record: round 1's 6/9-with-the-answer-key **is** a Sonnet 5
 number, and the cost and turn observations below are Sonnet numbers. Causes 1–3
@@ -220,12 +230,11 @@ over the 23 fresh trials — about 4× the PM's mean, so budget ~$1.45 per
   cost mean $0.0801, p95 $0.1247, max $0.1867 — Sonnet 5 numbers (cause 4).
   Not adopted as I5 ceilings: they were measured against a charter step 2
   expects to rewrite, and I5 re-scores every run on disk.
-- **`model_fallback_used` is a false positive on every seat turn, fund-wide.**
-  Not this branch's bug and not this branch's fix — the seam is
-  `agents/runtime.py:_unmatched_models`, it affects the droplet's daily
-  scorecard at severity 3, and it has silently voided the guarantee that
-  `model_id` is trustworthy when the event is absent. Reproduced on both the
-  Critic and the PM seat. Needs an owner.
+- **`model_fallback_used` is a false positive on every Sonnet-configured seat
+  turn** — in production today that is the **PM**, the one seat whose
+  `decisions` rows the guarantee was protecting. Not this branch's bug and not
+  this branch's fix; the seam is `agents/runtime.py:_unmatched_models`. Owned
+  by another session as of 2026-08-20.
 - **Run labels** are `critic-v2-r1` / `critic-v3-r2`, which do not match the
   plan's `critic-v2-*` pooling glob. Anything pooling by that glob silently
   drops the v3 round.
