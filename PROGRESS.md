@@ -19,8 +19,122 @@ The following table summarizes where the fund stands:
 | **Tests** | 909 offline green at `c0ad2d4`, identical on macOS arm64, linux/amd64 and linux/arm64 |
 | **CI** | runs all 909 (was 36); **first green run in the repo's history on 2026-08-19** |
 | **Watchlist** | NVDA, MSFT, AAPL |
-| **Open position** | NVDA 80 @ 227.09, live stop at 215 |
+| **Open position** | NVDA 80 @ 227.09, stop 215 gtc (expires 2026-11-17) — **hand-placed 2026-08-19 11:46 PDT** after two sessions unprotected (see below) |
 | **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
+
+### 2026-08-19 — the stop that expired at the bell
+
+The 09:35 run was clean: three signals, three `hold 0` decisions, no tickets, no
+exec turn, `AUDIT CLEAN`, $0.194. **The defect was in the position it was
+holding, not in the run.**
+
+The 2026-08-17 NVDA entry went in as an OTO whose stop leg inherited the
+parent's `time_in_force: DAY`. Confirmed at the broker by resolving the fund's
+own gate ticket id:
+
+```
+get_order_by_client_id("a14aa36b-…")  →  98ce80e8-…     ← matches orders.alpaca_order_id
+  PARENT  NVDA buy  80  MARKET  OTO   FILLED    tif DAY
+  LEG     NVDA sell 80  STOP 215      EXPIRED   tif DAY
+                                      expired_at 2026-08-17T20:00:06Z
+```
+
+20:00:06Z is 16:00 ET — the close of the day it was placed. **The position was
+unprotected for two full sessions** while `decisions.stop_price` and this file
+both asserted a live stop at 215. No loss was taken and that is luck, not
+design: lows since the leg died were 218.69 and 216.76 against a 215 stop.
+
+Three layers each had a reason not to look:
+
+- `validate_order` never checked `time_in_force`. A `DAY` stop passed every
+  other check hardened on 08-17.
+- `reconcile_orders` polls only `status IN ('submitted','partially_filled')`.
+  Once the parent filled, its row went terminal; the exit leg is invisible to
+  it by construction.
+- Nothing compared open positions against live protective orders, so
+  `AUDIT CLEAN` was clean by not asking. It audits the *run*, not the *account*.
+
+Same family as the two before it: **the system asserted something nobody
+compared to the source of truth.**
+
+#### What closes it
+
+Two changes, and one thing deliberately left open.
+
+- **The gate requires `gtc` on any stop-carrying order** (`gate/tickets.py`).
+  The root cause sits one layer deeper than the broker: the MCP place tool's
+  `time_in_force` **default is `day`** and it omits the field unless the seat
+  passes it — both now schema-pinned in `tests/test_live_smoke.py`. The gate is
+  the enforcement and its denial message carries the reason, but a seat that
+  only ever learns the rule by being denied burns a turn on every stopped
+  ticket, so `charters/exec.md` (v4) states it as well. The contract also went
+  into `specs/design.md` and `specs/acceptance.md` — it was living only in the
+  plan file, which nothing treats as canonical. The recorded 08-17 turn (`tests/recordings/oto.jsonl`) is now the
+  hook-level regression test proving a `day` stop never reaches the broker —
+  the recording was not edited, and the healthy path got a new `oto_gtc.jsonl`.
+- **`orchestrator/protection.py` asserts, after every run, that a promised stop
+  is still live at the broker.** Which source owns which fact is the whole
+  design: the **broker** owns what protection *exists*, the fund's **record**
+  owns what was *promised*, and comparing them is the comparison nobody
+  performed on 08-17. The database is never allowed to assert a stop exists —
+  only what was intended. It runs on a full-HOLD day too, which is the shape
+  this incident had, and it fails closed on every ambiguity: broker
+  unreachable, a number that will not parse, a truncated order page, a position
+  with no provenance in our own records.
+
+A position the PM opened *without* a stop on purpose (`charters/pm.md:25` — a
+non-price invalidation) is **standing exposure, not a fault**, and stays silent
+here. Alerting on it would red the audit every day on a correct day, and a
+channel that cries wolf daily protects nothing. Making that exposure visible is
+a follow-up: a protection line in the EOD digest, where state belongs
+(invariant 6). Two smaller follow-ups go with it — a second trigger outside
+`run_day` (a run that dies early performs no check, as 08-18 would have), and
+unifying the three near-copies of whole-share coercion.
+
+**None of this is merged, and one claim is still unproven.** The live smoke has
+confirmed at the broker that Alpaca accepts `gtc` on an OTO market parent and
+hands that lifetime down to the stop leg — the assumption the whole branch rests
+on. What it has *not* confirmed is the leg being visible in `open_orders()` once
+the parent fills, which is what the protection assertion actually reads. A
+`held` OTO child is genuinely absent from `QueryOrderStatus.OPEN`, so that
+assertion can only run against a filled parent during market hours; it currently
+skips when the market is closed and has never passed. Until it does, the branch
+stays unmerged. A green offline suite does not settle a question about the
+broker — that is the 08-17 mistake exactly.
+
+#### The position itself
+
+**Closed by hand, not by code.** The NVDA 80 was naked from 2026-08-17 16:00 ET
+until **2026-08-19 11:46 PDT**, two full sessions. Benjamin then had a stop
+placed directly through the REST API — `NVDA sell stop 80 @ 215, tif gtc`,
+`client_order_id manual-protective-stop-nvda-2026-08-19`, broker order
+`5abc139f-4817-4a34-aedd-f2ca28203c5c`, `submitted_at 2026-08-19T18:46:22.978Z`
+— deliberately outside the gate. It is risk-reducing only, and the database
+already asserted a stop at 215, so this makes the broker agree with the source
+of truth rather than editing the belief down to match a diminished reality.
+
+**That `gtc` is not permanent: the order carries `expires_at
+2026-11-17T21:00:00Z`.** Alpaca caps good-till-canceled at roughly 90 days, so
+this stop dies in November unless it is replaced. Nothing watches for that.
+Reading "gtc" as "forever" is the same class of mistake as reading a `day` leg
+as protection that lasts — the incident above is what happens when an order's
+lifetime is assumed rather than checked.
+
+No code path places a stop, and none was added. A missing stop alerts a human;
+placing a replacement is order placement, which belongs to the gate and the exec
+seat (invariant 4).
+
+That order has **no row in `orders` and no gate ticket**, which is the correct
+outcome and is pinned by a test: the assertion asks one question in one
+direction — did a promised stop survive at the broker — and never the converse.
+Asserting that every live broker order maps back to a DB row would alert on
+exactly the human intervention these alerts ask for.
+
+**The next hole in the same class is now live, not theoretical.** `reconcile_orders`
+polls only rows in `orders`, so if that hand-placed stop fills, the fund's
+database will go on believing it holds NVDA 80 while the broker is flat. The
+protection assertion does not catch it either: it iterates broker *positions*,
+and a closed position produces none. Not solved on this branch.
 
 ### 2026-08-19 — the check that had never passed
 
