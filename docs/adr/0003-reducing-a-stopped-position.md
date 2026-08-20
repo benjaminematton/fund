@@ -225,11 +225,18 @@ simplification and pays for that with risk.
   `expire_open_tickets`. It will not be offered to the seat — `open_tickets()` filters on
   expiry at read time — but anything querying `tickets.status` directly sees an open sell
   that can never fill.
-- **The seat's ungated mutation surface is a separate exposure.** `cancel_all_orders`,
-  `close_position`, `close_all_positions` and `update_account_config` are reachable today
-  under the `mcp__alpaca__*` glob with nothing but charter text between the seat and the
-  book; `tests/test_exec_seat_tool_surface.py` asserts the glob and never the resolved tool
-  names. Gating the amend verb does not close that, and closing it is not required by this
+- **The seat's ungated mutation surface is a separate exposure, and larger than first counted.**
+  An earlier draft named four verbs. The resolved surface carries **eight** mutating tools
+  outside the `place_*` prefix: `replace_order_by_id`, `cancel_order_by_id`,
+  `cancel_all_orders`, `close_position`, `close_all_positions`,
+  `exercise_options_position`, `do_not_exercise_options_position` — seven that move the book —
+  plus `update_account_config`, which mutates account settings rather than positions. All are
+  reachable today under the `mcp__alpaca__*` glob with nothing but charter text between the
+  seat and the broker, because `agents/runtime.py` scopes both the gate and the recorder to
+  `mcp__alpaca__place_`; `tests/test_exec_seat_tool_surface.py` asserts the glob and never the
+  resolved tool names. Exactly one of the eight — `replace_order_by_id` — is in this decision's
+  scope, because the amend path calls it. The other seven remain a separate exposure this
+  decision does not close. Gating the amend verb does not close that, and closing it is not required by this
   decision. It is recorded here because it was found while verifying this one, and because
   CLAUDE.md's "`tools` governs availability — the real lock" does not currently describe the
   config.
