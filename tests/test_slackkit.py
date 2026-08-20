@@ -698,8 +698,8 @@ def test_real_slack_leaves_every_other_slack_error_transient():
     assert not isinstance(exc.value, PermanentPostError)
 
 
-def test_every_written_kind_has_a_renderer():
-    """Static guard: every append_event kind literal in the codebase renders.
+def _written_kinds(root: Path) -> set[str]:
+    """Every append_event kind literal under `root`.
 
     AST-based (not regex): finds every append_event call, requires its kind
     argument to be a string literal (2nd positional or kind= kwarg), and
@@ -708,10 +708,13 @@ def test_every_written_kind_has_a_renderer():
     """
     import ast
 
-    root = Path(__file__).resolve().parents[1]
     kinds = set()
     for py in root.rglob("*.py"):
-        if ".venv" in py.parts or "tests" in py.parts:
+        # Relative to root, never the absolute path: the checkout itself may sit
+        # under a dot-directory (a worktree lives in `.claude/worktrees/`), and
+        # matching absolute components would skip every file and pass vacuously.
+        rel = py.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts) or "tests" in rel.parts:
             continue
         tree = ast.parse(py.read_text(), filename=str(py))
         for node in ast.walk(tree):
@@ -736,5 +739,35 @@ def test_every_written_kind_has_a_renderer():
             assert isinstance(kind_arg, ast.Constant) and isinstance(kind_arg.value, str), (
                 f"{loc}: append_event kinds must be string literals")
             kinds.add(kind_arg.value)
-    missing = kinds - set(RENDERERS)
+    return kinds
+
+
+def test_every_written_kind_has_a_renderer():
+    """Static guard: every append_event kind literal in the codebase renders."""
+    missing = _written_kinds(Path(__file__).resolve().parents[1]) - set(RENDERERS)
     assert not missing, f"event kinds without renderer: {missing}"
+
+
+def test_the_kind_scan_ignores_nested_checkouts_but_keeps_its_teeth(tmp_path):
+    """`.claude/worktrees/` holds sibling checkouts of OTHER branches, and the
+    scan walked into them — so the guard failed on whatever branch you were
+    standing on, naming kinds belonging to code that branch does not contain.
+
+    Both directions are pinned here on purpose. Skipping the nested checkout is
+    only half the requirement; a filter that skips too much (say, one matching
+    dot-components of the absolute path, which contains `.claude` whenever the
+    checkout itself lives under a worktree dir) would empty the scan and leave
+    the guard passing vacuously forever.
+    """
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "real.py").write_text(
+        "append_event(conn, 'kind_in_this_checkout', {})\n")
+    nested = tmp_path / ".claude" / "worktrees" / "other-branch" / "pkg"
+    nested.mkdir(parents=True)
+    (nested / "stray.py").write_text(
+        "append_event(conn, 'kind_from_another_branch', {})\n")
+
+    kinds = _written_kinds(tmp_path)
+
+    assert "kind_in_this_checkout" in kinds          # teeth: still scans
+    assert "kind_from_another_branch" not in kinds   # ignores the sibling
