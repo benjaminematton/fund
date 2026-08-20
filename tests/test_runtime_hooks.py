@@ -122,23 +122,31 @@ def test_order_gate_deny_alert_survives_malformed_tool_input(fund_db, sim_clock)
 # the whole architecture is a deterministic gate BETWEEN the LLM and the
 # broker. A rule with no enforcement is a rule the next model ignores.
 
-# The mutating surface of the `trading` toolset, introspected from the live
-# server on 2026-08-20 (38 tools at `account,trading,stock-data`). SEVEN, not
-# the four first reported: `exercise_options_position` and
-# `do_not_exercise_options_position` surface from optionExercise /
-# optionDoNotExercise and were missed by two separate counts.
+# The mutating surface the exec seat can reach, introspected from the live
+# server on 2026-08-20 (38 tools at `account,trading,stock-data`).
 #
-# That miscount is the argument for the design. These are denied because they
-# are not gated, NOT because they appear in this list — the list is a
-# regression guard, never the mechanism. An eighth verb in the next upstream
-# bump is already denied without anyone editing this file.
+# THE COUNT WENT 4 -> 5 -> 7 -> 8 IN ONE AFTERNOON, three of those corrections
+# landing after the fix had shipped, and the mechanism was right every time
+# because it never depended on the number. That history is the argument for
+# the design, so it is recorded here rather than in a commit message nobody
+# will read.
+#
+# These are denied because they are NOT GATED, never because they appear in
+# this list. The list is a regression guard; `_broker_verb_policy` is the
+# mechanism. A ninth verb in the next upstream bump is already denied with
+# nobody editing this file — which is the only reason the three corrections
+# above cost a test edit instead of an incident.
 MUTATORS = ["mcp__alpaca__cancel_order_by_id",
             "mcp__alpaca__cancel_all_orders",
             "mcp__alpaca__close_position",
             "mcp__alpaca__close_all_positions",
             "mcp__alpaca__replace_order_by_id",
             "mcp__alpaca__exercise_options_position",
-            "mcp__alpaca__do_not_exercise_options_position"]
+            "mcp__alpaca__do_not_exercise_options_position",
+            # from the `account` toolset, not `trading` — a different class
+            # (it mutates account settings, not the book) but still a
+            # broker mutation with no ticket behind it
+            "mcp__alpaca__update_account_config"]
 
 # All three, not just stock: the gated prefix has to cover the whole family or
 # a crypto/option order routes around the ticket check.
