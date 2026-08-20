@@ -29,6 +29,12 @@ NAME = "I4"
 SUBMISSIONS = {
     "pm": ("mcp__fund__submit_decision", "decisions", Decision),
     "analyst": ("mcp__fund__submit_signal", "signals", Signal),
+    # Same contract as the analyst: both are research seats writing Signal
+    # rows through submit_signal. Absent this entry a news trace raised
+    # KeyError inside the grader, which grade_trace catches as INCONCLUSIVE —
+    # so the seat was not merely ungraded, it was ungraded in the one outcome
+    # a reader skims past.
+    "news": ("mcp__fund__submit_signal", "signals", Signal),
 }
 DB_OWNED = ("status",)
 

@@ -1,0 +1,33 @@
+# Eval-owned config for the news/sentiment seat. Tool glob, deny list, model
+# and charter are NOT here — they are derived from agents/config/news.yaml and
+# charters/news.md by evals/config.py, so they cannot drift out of production.
+seat: news
+
+# I5 ceilings. EVAL ceilings (regression detectors), deliberately tighter than
+# the SDK backstops in agents/config/news.yaml (max_turns 16, max_budget_usd
+# 0.50) — a backstop that only fires at 16 turns cannot detect a turn-count
+# regression from 8 to 15.
+#
+# MEASURED from the seat's only two real runs, both against charters/news.md
+# v1, both on a 3-ticker watchlist:
+#   2026-08-19  staging day   8 turns   $0.0301
+#   2026-08-20  live 09:35    8 turns   $0.0420
+#
+# TWO SAMPLES IS NOT A BASELINE AND THESE NUMBERS ARE PROVISIONAL. pm.yaml's
+# ceilings rest on 54 trials across three suite runs; these rest on two days.
+# Re-derive from a real suite run before treating a red I5 here as a genuine
+# regression rather than as a thin sample.
+#
+# WORSE: BOTH MEASUREMENTS ARE OF A BROKEN SEAT. On both days get_news
+# returned nothing, so 8 turns is the cost of a seat that retrieved no
+# articles and had nothing to read. A seat that actually receives 30 headlines
+# will plausibly need MORE turns and more tokens, not fewer. Expect these to
+# rise once N2 goes green, and raise them on evidence rather than treating the
+# first honest run as a regression.
+max_turns: 9              # measured max 8 + 1
+max_cost_usd: 0.06        # 1.4x measured max ($0.0420)
+
+# I1-I5 are Tier S. N1-N2 are this seat's own, and are merged in by
+# evals.invariants.for_seat — see evals/invariants/n1_absence.py for why a
+# retrieval seat needs rules the other seats do not.
+invariants: [I1, I2, I3, I4, I5, N1, N2]

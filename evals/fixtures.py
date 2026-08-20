@@ -58,7 +58,24 @@ def _analyst_preconditions(conn, case: Case, now_iso: str,
     return
 
 
-PRECONDITIONS = {"pm": _pm_preconditions, "analyst": _analyst_preconditions}
+def _news_preconditions(conn, case: Case, now_iso: str,
+                        run_date: str) -> None:
+    """Mirrors the same production body as the analyst — orchestrator/daily.py
+    run_research writes nothing before either research turn, and since
+    2026-08-19 that stage runs both seats from one `research_seats` list.
+
+    Named separately rather than aliased to the analyst's function so that the
+    day the two seats' preconditions diverge, the divergence has somewhere to
+    go. An alias would make that a shared-function edit affecting both seats.
+
+    The neutral/0 "no report" defaults run AFTER the turn and must not be
+    seeded: seeding them hands the seat a fait accompli and hides the silent-
+    seat failure I4 exists to catch."""
+    return
+
+
+PRECONDITIONS = {"pm": _pm_preconditions, "analyst": _analyst_preconditions,
+                 "news": _news_preconditions}
 
 
 def build_case_state(case: Case, db_path: Path | str,

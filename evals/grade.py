@@ -23,7 +23,7 @@ from typing import Callable
 from evals.cases import Case
 from evals.config import load_eval_seat
 from evals.expectations import case_expectations
-from evals.invariants import REGISTRY
+from evals.invariants import REGISTRY, for_seat
 from evals.trace import Trace
 from evals.verdict import INCONCLUSIVE, Verdict
 
@@ -56,6 +56,11 @@ class TrialResult:
 def grade_trace(trace: Trace, case: Case,
                 invariants: dict[str, Invariant]) -> TrialResult:
     seat = load_eval_seat(trace.seat)
+    # The caller's mapping is the floor, not the ceiling: a seat's own
+    # declared invariants are merged in so that a seat-specific rule cannot be
+    # lost by a caller that passed the Tier S set. Callers keep full control of
+    # what they pass; they simply cannot silently DROP a seat's own checks.
+    invariants = {**invariants, **for_seat(seat)}
     result = TrialResult(case=trace.case, trial=trace.trial, seat=trace.seat)
     for name, fn in invariants.items():
         if trace.is_error:
