@@ -24,9 +24,23 @@ account `PA3F4TS1XLKV`):
 The mechanism is the reservation: an 80-share GTC stop against an 80-share position holds
 every share, so `qty_available` is 0 and any sell is refused. **This is not specific to
 that stop having been placed by hand.** Any full-size stop does it, and `gtc` on a stopped
-order is now required fund-wide (`94e0f6b`, `2f238ab`), so every position the PM opens with
-a hard invalidation joins the set of positions that cannot be trimmed. The generality is
-the finding; the NVDA ticket is one instance of it.
+order is required fund-wide on `origin/master` (`94e0f6b`, `2f238ab`) — so every position
+the PM opens with a hard invalidation joins the set of positions that cannot be trimmed.
+The generality is the finding; the NVDA ticket is one instance of it.
+
+**Timing, corrected 2026-08-20.** An earlier draft said that requirement is in force *now*.
+It is not. Production is 28 commits behind master and carries none of the missing-stop
+chain — `94e0f6b`, `0d5f71b`, `30cc957`, `4ebf9ea`, `2f238ab` are all absent, and
+`orchestrator/protection.py` does not exist there. Today's failure was the hand-placed
+stop reserving the position, exactly as diagnosed; what is *not* yet true is that every
+stopped position is systematically untrimmable. That begins when the chain deploys.
+
+The coupling is worth stating outright, because it is the reason this work is not optional
+follow-up: **deploying the fix for the 2026-08-17 naked-position incident is what makes the
+reduce conflict systematic.** The rule that keeps a stop alive overnight is the rule that
+makes the position it protects unsellable. Whoever schedules that deploy is also scheduling
+the first day the PM cannot trim a protected position, and the two should be planned
+together rather than discovered in sequence.
 
 ## What the exec seat can actually do
 
