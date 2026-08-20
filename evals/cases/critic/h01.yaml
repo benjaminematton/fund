@@ -2,41 +2,51 @@ id: h01
 seat: critic
 split: dev
 notes: >
-  NOT THE CRITIC'S JOB. An F3 spec with llm_in_loop set, where the hypothesis
-  and the rule genuinely agree: the sentiment score drives entry, the model
-  and prompt are named as part of the config, and the invalidation is
-  testable. specs/strategy.md invariant 5 does apply to it — LLM-scored
-  history is contaminated and its edge must come from incubation — but that is
-  an EVIDENCE rule enforced at G2/G3, not a mechanism-vs-rule misalignment. A
-  Critic that rejects at G1 over it is blocking the LLM-native family on the
-  wrong gate. CLEAR.
+  NOT THE CRITIC'S JOB — the out-of-remit boundary, dev half. An F2 spec whose
+  hypothesis and rule genuinely agree: bottom-quintile small caps, thin analyst
+  coverage, EDGAR-validated announcement timestamps, drift held for weeks. What
+  is questionable is the EVIDENCE it promises — a predicted net Sharpe of 1.6
+  from a 90-configuration search over three parameters, which is a
+  multiple-testing story rather than a mechanism story. specs/strategy.md
+  handles exactly that at G2 with the deflated-Sharpe correction against the
+  logged trial registry; it is not a rule-versus-hypothesis defect and there is
+  nothing at G1 to reject. A Critic that blocks here is doing G2's arithmetic a
+  gate early, on a spec whose mechanism is sound. CLEAR.
+
+  RE-AUTHORED 2026-08-19. This case previously turned on llm_in_loop, which
+  charter v2 named outright as not-an-alignment-defect, so passing it required
+  no judgment. Optimistic evidence is the harder boundary: it looks wrong, it
+  IS wrong, and it is still not this seat's call.
 clock: "2026-07-06T15:00:00+00:00"
 spec:
-  family: F3
+  family: F2
   seat: quant
   hypothesis: >-
-    News diffuses slowly into small-cap prices because coverage is thin and
-    few readers act on it the same day. We are paid for reading the feed
-    faster than the marginal holder does; the constraint on arbitrage is
-    attention, not capital.
-  mechanism_class: behavioral
-  universe: {index: Russell 2000, pit_constituents: true, filters: [has_news_coverage]}
-  liquidity_bucket: small
+    Post-earnings drift persists in analyst-neglected small caps because
+    institutions cannot deploy meaningful size there. Nobody arbitrages it
+    away because the capacity is too small to be worth an institutional
+    desk's time — which is exactly our structural advantage.
+  mechanism_class: institutional
+  universe:
+    index: Russell 3000
+    pit_constituents: true
+    filters: [market_cap_quintile == 1, analyst_count <= 3]
+  liquidity_bucket: micro
   signal_rule:
-    scoring: fixed prompt v3 on claude-haiku-4-5-20251001, part of the config hash
-    entry: long names scoring above thr on a same-session headline
-    sizing: equal weight, max 20 names
-  param_ranges: {thr: [0.5, 0.9, 0.05], max_names: [10, 30, 5]}
-  search_budget: 12
-  holding_period_d: 3
-  rebalance: daily
-  expected_turnover: 60.0
-  exit_rule: close at 3 trading days or on a contradicting headline
+    entry: SUE top decile at next open after the SEC EDGAR 8-K acceptance timestamp
+    sizing: equal weight, max 25 names, long only
+    orders: patient limit, 10 percent of ADV cap
+  param_ranges: {sue_decile: [8, 10, 1], hold_d: [10, 30, 5], adv_cap: [0.05, 0.25, 0.05]}
+  search_budget: 90
+  holding_period_d: 25
+  rebalance: event-driven
+  expected_turnover: 9.0
+  exit_rule: close after 25 trading days or on a second negative surprise
   invalidation: >-
-    Incubation spread between above-threshold and below-threshold names is
-    under 30 bps net over a trailing 6 months.
-  capacity_usd: 1000000.0
-  predicted: {net_sharpe: 0.5, max_dd: 0.25, hit_rate: 0.52}
-  llm_in_loop: 1
+    Trailing 8-quarter drift in the bottom cap quintile is under 50 bps net
+    of the modelled 100 bps per side.
+  capacity_usd: 1500000.0
+  predicted: {net_sharpe: 1.6, max_dd: 0.12, hit_rate: 0.61}
+  llm_in_loop: 0
 expect:
   verdict: clear

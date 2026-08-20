@@ -2,21 +2,24 @@ id: h03
 seat: critic
 split: holdout
 notes: >
-  NARROWER IS NOT DIFFERENT — the false-positive boundary. The rule adds two
-  filters the hypothesis never mentions: a minimum-price screen and an
-  earnings blackout at entry. Both shrink the traded universe; neither
-  changes what the strategy is paid for, and both are ordinary implementation
-  hygiene for a monthly-rebalanced momentum sleeve. A Critic that treats "the
-  rule does something the hypothesis does not say" as misalignment will fail
-  this case, and a G1 gate built on that Critic would reject every real spec
-  ever written. CLEAR.
+  NARROWER IS NOT DIFFERENT — the false-positive boundary, holdout half. The
+  rule adds two clauses the hypothesis never mentions: a tradability floor
+  (skip names whose ADV cannot absorb the sleeve's per-name size) and an
+  execution instruction (work entries over the first hour rather than at the
+  open). Both are implementation, not mechanism: neither changes what the
+  strategy is paid for, and a momentum sleeve that cannot fill is not a
+  different strategy, it is the same strategy failing to trade. A Critic that
+  reads "the rule does something the hypothesis does not say" as misalignment
+  fails this case, and a G1 gate built on that Critic rejects every real spec.
+  CLEAR.
 
-  BOTH FILTERS MUST BE LIVE ONES. An earlier draft used "no borrow
-  availability" here, which is inert on a long-only sleeve — you need borrow
-  to short, not to buy. That handed a competent Critic a legitimate objection
-  ("this filter does nothing") on a case demanding CLEAR, which would have
-  scored real insight as a failure. If this case is ever edited, check that
-  every added clause actually does something.
+  RE-AUTHORED 2026-08-19. Charter v2 named this case's previous clauses
+  verbatim ("price floors, earnings blackouts — hygiene... Aligned"), so a
+  pass proved pattern-matching rather than judgment. Its replacement clauses
+  are execution-level on purpose: they are the least arguable kind of
+  narrowing, and an earlier draft of this case was withdrawn for handing a
+  competent Critic a legitimate objection. Every added clause must actually do
+  something, and must not change what is being paid for.
 clock: "2026-07-06T15:00:00+00:00"
 spec:
   family: F4
@@ -33,7 +36,8 @@ spec:
     selection: top decile 12-1 momentum, long only
     sizing: weight proportional to target_vol / trailing_60d_realized_vol
     filter: skip entries while index is below its 200d ma
-    hygiene: drop names under 8 dollars and names reporting earnings within 2 sessions
+    tradability: skip a name whose 20-day ADV cannot absorb its target weight
+    execution: work entries over the first hour rather than at the opening print
   param_ranges: {lookback_m: [9, 15, 1], skip_m: [1, 2, 1], target_vol: [0.05, 0.2, 0.05]}
   search_budget: 16
   holding_period_d: 21

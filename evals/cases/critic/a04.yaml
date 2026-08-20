@@ -2,47 +2,48 @@ id: a04
 seat: critic
 split: dev
 notes: >
-  ALIGNED BUT UGLY — the manufactured-objection trap. Seven declared
-  parameters, clumsy names, a hypothesis written in plain unimpressive prose,
-  and a modest predicted Sharpe. None of that is a G1 defect: every parameter
-  has a pre-declared range (§4.1's job, not the Critic's), and the rule's
-  every clause still traces to the stated liquidity-provision mechanism. A
-  Critic that objects here is objecting to style, and the charter says
-  manufactured objections destroy its usefulness. CLEAR.
+  INCIDENTAL IS NOT LOAD-BEARING — the manufactured-objection trap, dev half.
+  The hypothesis mentions in passing that the effect "is strongest around
+  earnings season", and the coded rule does not condition on earnings at all.
+  That reads like a missing leg and is not one: the sentence is colour, not a
+  claim about what pays us. The mechanism the hypothesis actually names is
+  liquidity provision to forced sellers, and every clause of the rule
+  implements it — the low-turnover screen, the trend filter, the short hold,
+  the limit entries. A Critic that objects has confused a passing remark with
+  a condition the hypothesis treats as essential, and a G1 gate that cannot
+  tell those apart rejects any spec whose prose says more than its code.
+  CLEAR.
+
+  RE-AUTHORED 2026-08-19. This case previously baited on parameter count and
+  plain prose, both of which charter v2 excluded by name. This bait sits
+  inside the alignment question itself rather than beside it, so passing it
+  requires reading which conditions the hypothesis leans on — not recognising
+  a category the charter already ruled out.
 clock: "2026-07-06T15:00:00+00:00"
 spec:
   family: F1
   seat: quant
   hypothesis: >-
-    We get paid to buy from people who have to sell. When a liquid name drops
-    hard in a few days without news, some of that is forced selling, and
-    somebody has to take the other side. We can hold a week; a redeeming fund
-    cannot. That is the whole edge.
+    We are paid to buy from people who have to sell: when a liquid name drops
+    hard in days without news, some of that is forced liquidation and someone
+    must take the other side. We can hold a week; a redeeming fund cannot.
+    The effect is strongest around earnings season.
   mechanism_class: liquidity_provision
   universe:
     index: Russell 1000
     pit_constituents: true
-    filters: [turnover_decile <= 4, price > 10, no_earnings_within_3d]
+    filters: [turnover_decile <= 4, price > 10]
   liquidity_bucket: mega_large
   signal_rule:
-    entry: >-
-      ret_lb below -sig sigma AND turnover_decile <= tdec AND close > ma_long
-      AND atr_pct <= atr_cap
-    sizing: equal weight, max n_max names, skip if open_positions >= pos_cap
-    orders: limit at prior close minus off_bps
-  param_ranges:
-    ret_lb: [3, 10, 1]
-    sig: [1.0, 2.5, 0.25]
-    tdec: [2, 5, 1]
-    ma_long: [100, 250, 50]
-    atr_cap: [0.03, 0.09, 0.01]
-    n_max: [10, 40, 5]
-    off_bps: [0, 20, 5]
-  search_budget: 30
+    entry: 5-day return below -1.8 sigma AND turnover_decile <= 4 AND close > ma200
+    sizing: equal weight across triggers, max 20 names
+    orders: limit at prior close minus 10 bps
+  param_ranges: {lookback_d: [3, 10, 1], sigma: [1.0, 2.5, 0.25], max_names: [10, 40, 5]}
+  search_budget: 24
   holding_period_d: 5
   rebalance: daily
   expected_turnover: 40.0
-  exit_rule: close at 5 trading days, or on a +1.0 sigma reversion, or on a stop at -2 atr
+  exit_rule: close at 5 trading days, or on a +1.0 sigma reversion, whichever first
   invalidation: >-
     Rolling 12-month low-turnover reversal spread turns negative for two
     consecutive quarters.
