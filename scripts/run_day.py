@@ -64,7 +64,8 @@ from gate.tickets import open_tickets                              # noqa: E402
 from agents.runtime import record_turn_result                      # noqa: E402
 from agents.seats import (build_seat_options, charter_text_for,   # noqa: E402
                           load_seat_config)
-from evals.live import build_trace, file_sink, git_sha            # noqa: E402
+from evals.live import (build_trace, file_sink, git_sha,           # noqa: E402
+                        rows_written)
 from agents.wallclock import WallClock                             # noqa: E402
 from market.features import (build_market_inputs, unmapped_holdings,  # noqa: E402
                              unpriceable_book_tickers)
@@ -222,7 +223,7 @@ async def _seat_session(cfg: dict, db_path: str, clock, prompt: str,
 
 
 def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
-                       snapshot, names, result, trace_sink) -> None:
+                       snapshot, names, result, trace_sink, conn=None) -> None:
     """Record one seat turn as a Trace. Never costs the day.
 
     Same posture as record_cost_guarded: a trace is EVIDENCE, not control flow,
@@ -245,7 +246,11 @@ def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
             # docstring: a ticker where both shapes are 0 is absent entirely),
             # so these are the tickers the seat was actually shown.
             brief_tickers=sorted(brief.get("allowed_actions") or {}),
-            tool_names=names or [], result=result))
+            tool_names=names or [], result=result,
+            # Read AFTER the turn, so the rows are the ones it just wrote.
+            # Without this every live trace grades as a seat that submitted
+            # nothing — and I4 reports a schema-reject that did not happen.
+            rows=rows_written(conn, seat, run_date) if conn is not None else {}))
     except Exception as exc:
         log(f"trace_write_failed {seat} — {type(exc).__name__}: {exc};"
             " trading continues")
@@ -280,7 +285,7 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
         record_cost_guarded(conn, clock, run_date, seat, result,
                             cfg.get("model", ""))
         emit_trace_guarded(seat, cfg, run_date, turn_seq, snapshot, names,
-                           result, trace_sink)
+                           result, trace_sink, conn)
         if seat == "exec":
             try:
                 # counted AFTER the turn: a ticket the seat consumed is no

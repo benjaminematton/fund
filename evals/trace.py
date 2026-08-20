@@ -15,6 +15,29 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+# The columns `rows_written` carries per table, and the tables each seat writes.
+#
+# They live HERE, beside the field they populate, because two writers fill it
+# from opposite directions — `evals/runner.py` for eval-suite trials and
+# `evals/live.py` for production turns — while four graders read it (EXPECT,
+# I1, I3, I4). Two copies would drift, and a grader would then see different
+# columns depending on which writer produced the trace.
+#
+# Deliberately NOT left in runner.py where they started: `evals/live.py` runs
+# on the live trading path, and production importing the eval rig is backwards
+# — runner pulls in agents.seats, and the SDK with it.
+ROW_COLUMNS = {
+    "decisions": ["ticker", "action", "qty", "thesis", "invalidation",
+                  "stop_price", "status"],
+    "signals": ["agent", "ticker", "direction", "confidence", "summary"],
+}
+
+# Seat -> the tables it writes. `news` is the second analyst seat and writes
+# `signals` exactly as `analyst` does. `exec` places orders rather than
+# submitting rows, so it maps to nothing and yields an empty dict.
+WRITE_TABLES = {"pm": ["decisions"], "analyst": ["signals"],
+                "news": ["signals"]}
+
 
 @dataclass
 class Trace:

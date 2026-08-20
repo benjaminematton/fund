@@ -26,21 +26,20 @@ from evals.cases import Case
 from evals.config import PRODUCTION_CONFIG, load_eval_seat
 from evals.fixtures import build_case_state
 from evals.prompts import stage_prompt
-from evals.trace import Trace
+from evals.trace import ROW_COLUMNS, WRITE_TABLES, Trace
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TRACES = Path(__file__).resolve().parent / "traces"
 REQUIRED_SERVERS = {"alpaca", "fund"}          # mirrors scripts/run_day.py:76
 
-# The table each seat WRITES. A PM case seeds `signals` as input, so scoping
-# rows_written to the seat's own write table is what keeps fixture input from
-# being reported as agent output.
-WRITE_TABLES = {"pm": ["decisions"], "analyst": ["signals"]}
-ROW_COLUMNS = {
-    "decisions": ["ticker", "action", "qty", "thesis", "invalidation",
-                  "stop_price", "status"],
-    "signals": ["agent", "ticker", "direction", "confidence", "summary"],
-}
+# WRITE_TABLES / ROW_COLUMNS now live in evals/trace.py, beside the field they
+# populate. `evals/live.py` fills the same field for production turns and must
+# not import THIS module — it would pull agents.seats, and the SDK with it,
+# onto the live trading path. One definition, two writers.
+#
+# The reason rows are scoped to the seat's own write table is unchanged: a PM
+# case seeds `signals` as input, and an unscoped scan would report fixture
+# input as agent output.
 
 
 def git_sha() -> str:
