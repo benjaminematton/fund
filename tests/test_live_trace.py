@@ -314,6 +314,10 @@ def test_i4_no_longer_reports_a_refusal_that_did_not_happen(tmp_path):
     class _Case:
         tickers = ["AAPL", "MSFT", "NVDA"]
         clock = datetime(2026, 8, 20, 13, 0, tzinfo=timezone.utc)
+        # I4 keys off `subjects`, not `tickers`, so it can grade a spec-shaped
+        # Critic case the same way it grades a ticker-shaped one. For a
+        # ticker-shaped case the real Case property returns exactly this.
+        subjects = tickers
 
     verdict = i4_schema(trace, _Seat(), _Case())
     assert verdict.outcome == "PASS", verdict.detail
