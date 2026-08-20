@@ -65,6 +65,10 @@ The PM's reduce decision mints **two** tickets: the ordinary sell ticket, and an
 ticket* naming the protective order and the quantity it may be reduced to. The execution
 seat edits the stop under the amend ticket, then places the sell under the sell ticket.
 
+How the amend ticket *attaches* is deliberately left open. Hanging it off the same
+`decision_id` as the sell ticket is the obvious reading and appears to be the wrong one —
+see the first consequence below, which is the sharpest constraint on the design.
+
 This requires the PreToolUse gate to authorize a second verb. Today `make_order_gate`
 inspects only tool names beginning with `mcp__alpaca__place_` (`agents/runtime.py`), so an
 edit is invisible to it — the seat could shrink a stop right now with no ticket and nothing
@@ -130,15 +134,30 @@ simplification and pays for that with risk.
   standalone `stop` order as protection and compares promised against actual. It does need
   to survive the transient: between the amend and the sell fill, the promised and actual
   stop quantities disagree with the position.
-- **Two tickets per decision breaks an assumption the gate currently relies on.**
-  `_gate_handle` (`orchestrator/daily.py`) looks up a decision's existing ticket with
-  `SELECT * FROM tickets WHERE decision_id = ?` and `fetchone()`, and its crash-resume path
-  reconciles that single ticket by UPDATE rather than expire-and-remint — deliberately,
-  because the ticket id *is* the `client_order_id`, so a new id would break order
-  idempotency. With two tickets against one decision that `fetchone()` returns an arbitrary
-  row and the resume path reconciles at most one of the pair. Whatever mints an amend
-  ticket has to make the pairing explicit and make the resume path handle both, or the
-  reduce and its amendment can drift apart across a crash.
+- **One ticket per decision is assumed in three places, and the third reaches
+  calibration.** This is the open question in the design, not a detail of it.
+  - `_gate_handle` (`orchestrator/daily.py`) looks up a decision's ticket with
+    `SELECT * FROM tickets WHERE decision_id = ?` and `fetchone()`, then reconciles that
+    single ticket by UPDATE rather than expire-and-remint — deliberately, since the ticket
+    id *is* the `client_order_id` and a remint would break idempotency.
+  - `_gate_reject` (same file) closes an existing open ticket with a second, separate
+    `fetchone()` before rejecting, and its comment states the hazard it exists to prevent:
+    a resumed snapshot that now rejects must "never leave a live ticket behind for
+    `validate_order` to still authorize." Against a pair it closes one. A rejected reduce
+    would leave a live amend ticket still authorizing a stop edit.
+  - `orchestrator/resolve.py`'s `_DUE` query `LEFT JOIN tickets t ON t.decision_id = d.id`,
+    then joins `orders` through `t.id` to recover the fill price. A second ticket under the
+    same decision fans that row out, and `resolutions.decision_id` is UNIQUE
+    (`calibration/rows.py`) — so the pair either collides on insert or silently decides the
+    recorded fill by which row the join happens to yield. `orchestrator/daily.py`'s digest
+    query and `scripts/audit_day.py` join tickets to decisions the same way.
+
+  The last one runs into analyst scoring and from there into PM weights, which is the path
+  CLAUDE.md singles out as corrupting fund-wide when it goes wrong quietly. So **hanging
+  the amend ticket off `decision_id` is probably the wrong shape.** Making it reference the
+  reduce ticket as its parent, or giving tickets a kind that every `decision_id`-keyed join
+  filters on, both avoid the fan-out — but that choice belongs in `specs/contracts.md`
+  with the state machine, and it is not made here.
 - **A reduce ticket without its amendment must resolve to HOLD.** The pairing is only
   meaningful if an unpaired reduce ticket is unfillable, so the gate should refuse to mint
   one against a stopped position rather than leave the seat to discover the reservation at
