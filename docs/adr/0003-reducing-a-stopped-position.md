@@ -230,7 +230,16 @@ simplification and pays for that with risk.
   outside the `place_*` prefix: `replace_order_by_id`, `cancel_order_by_id`,
   `cancel_all_orders`, `close_position`, `close_all_positions`,
   `exercise_options_position`, `do_not_exercise_options_position` — seven that move the book —
-  plus `update_account_config`, which mutates account settings rather than positions. All are
+  plus `update_account_config`, which does something categorically different and probably worse.
+  Its parameters are `no_shorting`, `suspend_trade`, `max_margin_multiplier`,
+  `fractional_trading`, `disable_overnight_trading`, `max_options_trading_level`,
+  `ptp_no_exception_entry`, `trade_confirm_email` — a risk control, a kill switch and
+  **leverage**. The seven move the book *within* the boundary the gate enforces; this one moves
+  the boundary. `gate/risk.py` takes `equity` as an input and holds its thresholds
+  (`SECTOR_CAP`, `MAX_POSITIONS`, `CIRCUIT_BREAKER`) as module constants under invariant 3's
+  human-commit rule — but nothing re-checks whether shorting became legal or margin doubled
+  underneath it. A gate whose thresholds only a human may change is standing on account
+  settings an LLM seat can change at runtime, unrecorded. All eight are
   reachable today under the `mcp__alpaca__*` glob with nothing but charter text between the
   seat and the broker, because `agents/runtime.py` scopes both the gate and the recorder to
   `mcp__alpaca__place_`; `tests/test_exec_seat_tool_surface.py` asserts the glob and never the
