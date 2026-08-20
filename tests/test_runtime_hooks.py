@@ -122,10 +122,36 @@ def test_order_gate_deny_alert_survives_malformed_tool_input(fund_db, sim_clock)
 # the whole architecture is a deterministic gate BETWEEN the LLM and the
 # broker. A rule with no enforcement is a rule the next model ignores.
 
+# The mutating surface of the `trading` toolset, introspected from the live
+# server on 2026-08-20 (38 tools at `account,trading,stock-data`). SEVEN, not
+# the four first reported: `exercise_options_position` and
+# `do_not_exercise_options_position` surface from optionExercise /
+# optionDoNotExercise and were missed by two separate counts.
+#
+# That miscount is the argument for the design. These are denied because they
+# are not gated, NOT because they appear in this list — the list is a
+# regression guard, never the mechanism. An eighth verb in the next upstream
+# bump is already denied without anyone editing this file.
 MUTATORS = ["mcp__alpaca__cancel_order_by_id",
             "mcp__alpaca__cancel_all_orders",
             "mcp__alpaca__close_position",
-            "mcp__alpaca__close_all_positions"]
+            "mcp__alpaca__close_all_positions",
+            "mcp__alpaca__replace_order_by_id",
+            "mcp__alpaca__exercise_options_position",
+            "mcp__alpaca__do_not_exercise_options_position"]
+
+# All three, not just stock: the gated prefix has to cover the whole family or
+# a crypto/option order routes around the ticket check.
+PLACE_VERBS = ["mcp__alpaca__place_stock_order",
+               "mcp__alpaca__place_crypto_order",
+               "mcp__alpaca__place_option_order"]
+
+
+@pytest.mark.parametrize("tool", PLACE_VERBS)
+def test_every_place_verb_is_gated_not_just_the_stock_one(tool, fund_db,
+                                                          sim_clock):
+    from agents.runtime import _broker_verb_policy
+    assert _broker_verb_policy(tool) == "gated"
 
 
 @pytest.mark.parametrize("tool", MUTATORS)
