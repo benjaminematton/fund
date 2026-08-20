@@ -588,18 +588,44 @@ new implementation branches get fresh context.
 
 ## Known limitations — stated plainly
 
-- **No agent judgment is tested.** 574 tests cover plumbing. Edit
-  `charters/pm.md` or `charters/analyst.md` right now and every test stays
-  green. This is the gap the eval closes.
+- **No agent judgment is tested.** The whole suite (see the Tests row above)
+  covers plumbing. Edit `charters/pm.md` or `charters/analyst.md` right now and
+  every test stays green. This is the gap the eval closes — and #6 is what it
+  costs: two prompt-level defects shipped to production and went two live days
+  unnoticed. `evals/seats/` still holds only `pm.yaml` (#18).
 - **`mcp_servers` is hardcoded** at `agents/seats.py:61` — the Alpaca server is
   always `uvx` at `ALPACA_MCP_SPEC` with real credentials. Market data and news
   cannot be faked without adding a seam.
-- **No NAV history.** The broker exposes only today and yesterday; the digest
-  reports daily P&L, not a since-inception curve. Deliberate — it would need
-  storage.
+- **No NAV history, and no fund-level P&L baseline.** The broker exposes only
+  today and yesterday; the digest reports daily P&L, not a since-inception
+  curve. `resolutions` does not fill the gap — it is **per-decision**, so it can
+  measure whether a call was right but not what the fund is worth. Fund-level
+  "P&L $ and %" per `specs/contracts.md:285` needs a stored daily equity
+  baseline. Deliberate — it would need storage, and whether that is justified is
+  undecided.
 - **Research side is unwired.** `fundbt/`, `stratgate/`, `calibration/` are
   built and tested but the daily cycle does not call them.
 - **One decision-maker.** No debate, no second opinion, no dissent.
+- **An unprotected position does not stop the day — it alerts.** Ruled
+  2026-08-20, after the 08-17 stop expiry. `orchestrator/protection.py` asserts
+  after every run that a promised stop is still live at the broker, and raises
+  an alert when it is not; nothing blocks trading on the strength of it.
+
+  The considered alternative, recorded so it is not re-derived from scratch:
+  **alert normally, but deny tickets that would INCREASE exposure to the
+  unprotected symbol.** It is the better-reasoned policy on the merits — an
+  unprotected NVDA does not make a properly-stopped MSFT ticket unsafe, so a
+  blanket halt over-reads invariant 4, while adding to the naked leg is the case
+  that actually bites. **It lost on cost, not on logic.** `GateInputs`
+  (`gate/risk.py`) is `ConfigDict(strict=True, extra="forbid", frozen=True)` with
+  twelve fields and no protection or coverage field, so expressing "is this
+  symbol covered" means an explicit schema change to a frozen gate model plus
+  feeding the gate broker coverage data it has never received — gate-threshold
+  class under invariant 3, structural rather than a policy tweak. Against that,
+  the window it would have bought is now detected rather than silent.
+
+  Revisit if `GateInputs` gains coverage data for another reason. Do not revisit
+  by widening the schema for this alone.
 
 ---
 
