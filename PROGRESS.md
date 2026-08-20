@@ -91,16 +91,21 @@ a follow-up: a protection line in the EOD digest, where state belongs
 `run_day` (a run that dies early performs no check, as 08-18 would have), and
 unifying the three near-copies of whole-share coercion.
 
-**None of this is merged, and one claim is still unproven.** The live smoke has
-confirmed at the broker that Alpaca accepts `gtc` on an OTO market parent and
-hands that lifetime down to the stop leg — the assumption the whole branch rests
-on. What it has *not* confirmed is the leg being visible in `open_orders()` once
-the parent fills, which is what the protection assertion actually reads. A
-`held` OTO child is genuinely absent from `QueryOrderStatus.OPEN`, so that
-assertion can only run against a filled parent during market hours; it currently
-skips when the market is closed and has never passed. Until it does, the branch
-stays unmerged. A green offline suite does not settle a question about the
-broker — that is the 08-17 mistake exactly.
+**Both broker claims are now confirmed against the live paper account**
+(2026-08-20 10:53 ET, market open, 4/4 live tests, zero skips). Alpaca accepts
+`gtc` on an OTO market parent and hands that lifetime down to the stop leg —
+the assumption the whole branch rests on — and once the parent fills, the
+activated leg IS visible to `open_orders()`, which is what the protection
+assertion actually reads.
+
+The second one had to be measured rather than reasoned about. A `held` OTO
+child is genuinely absent from `QueryOrderStatus.OPEN`, so the assertion can
+only run against a filled parent during market hours; the test skips loudly
+when the market is closed rather than passing on a path that proves nothing.
+It had never once passed before today. A green offline suite cannot settle a
+question about the broker — on 08-17 the fixtures and the code agreed with each
+other and both disagreed with the broker, and a fixture written from the same
+assumption would have agreed a third time.
 
 #### The position itself
 
