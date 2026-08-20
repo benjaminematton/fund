@@ -109,6 +109,21 @@ Not a migration, which would adopt whatever the broker happened to hold at deplo
 provenance by accident. Idempotence is not optional: it is a hand-run script against a live
 record, and re-running after a partial failure is the normal case.
 
+Three constraints on adoption, from the sessions that own the pieces it touches:
+
+- **An adopted row is an observation at a timestamp, not a standing promise.** The fund did not
+  place the order and does not control it. Recording it as a promise would have
+  `protection.py` pass on NVDA correctly today and wrongly the moment the stop is cancelled —
+  which is the standing rule again, arrived at from the other direction. The row says *what was
+  observed and when*, and the broker stays the authority on whether it still exists.
+- **The adopted id is deliberately not a UUID.** `manual-protective-stop-nvda-2026-08-19` was
+  chosen so the format itself marks an order a human placed outside the pipeline. Do not
+  normalise it into a UUID column shape; the irregularity carries the meaning.
+- **Adoption targets whatever protection exists when the script runs**, never a hardcoded order
+  id. The NVDA stop is under active review for cancellation or resizing, and branch one is
+  behind `/to-spec` and a 🔏 ruling — so the order adopted may not be the order that exists
+  today. This does not change *whether* to adopt; it changes what the script may assume.
+
 ## Consequences
 
 - **Invariant 5 is reworded**, because the OTO leg falsifies it. It currently reads
@@ -126,6 +141,12 @@ record, and re-running after a partial failure is the normal case.
   watches for it. The column lands now; the alerting is separate work and must read the column
   rather than compute from a placement date. An amend starts a fresh window, so computing would be
   wrong as well as fragile.
+- **If a state transition emits an event, its renderer lands in the same commit.** This is
+  enforced, not conventional: `tests/test_slackkit.py` asserts every written kind has a
+  `RENDERERS` entry, so a missing one is a red test. At runtime an unknown kind makes `render()`
+  raise, the row dead-letters, and a `projection_error` reddens the audit — one step removed from
+  the cause, which is the expensive kind of failure to debug. `specs/contracts.md` §8 also
+  requires every kind carry populated `text`.
 - **Nothing else in the schema is disturbed.** Enumerated at `41a48dd`: exactly one foreign key in
   the whole schema touches `tickets` or `orders` (`orders.client_order_id REFERENCES tickets(id)`),
   no index or CHECK references either, and every code reader of `orders` keys on
