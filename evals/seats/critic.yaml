@@ -15,6 +15,17 @@ seat: critic
 # EVERY run on disk, so a ceiling under a historical max reddens the archive
 # retroactively.
 #
+# STILL PROVISIONAL after Task 7 (2026-08-20). Task 7 ran and did not produce a
+# measurement — see docs/superpowers/specs/2026-08-18-critic-g1-alignment-result.md.
+# Observed over the 23 trials that were fresh rather than stale rows:
+#   turns  mean 3.74, max 6   (histogram 3:13 4:5 5:3 6:2)
+#   cost   mean $0.0801, p95 $0.1247, max $0.1867
+# Deliberately NOT adopted as ceilings. They were measured against charter v3,
+# which the result document recommends rewriting, and I5 re-scores every run on
+# disk — a ceiling set to a charter that is about to change reddens the archive
+# the moment it does. Adopt them only after a charter the gate was actually
+# measured under.
+#
 # Do not tighten either number to make a red case pass.
 max_turns: 10
 max_cost_usd: 0.75

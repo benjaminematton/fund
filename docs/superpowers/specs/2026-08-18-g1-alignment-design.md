@@ -41,6 +41,23 @@ So this design has a hard prerequisite. **Standing up the Critic seat is a separ
 
 Note the same fail-open shape already exists in the trade pipeline: its critique guard is currently satisfied by rows the orchestrator writes to itself. That is a deliberate, labelled MVF placeholder rather than a bug — but it is the exact pattern G1's inverted default exists to avoid, and the Critic-seat plan should replace it with real critiques.
 
+## Prerequisite result — 2026-08-20: NOT MET
+
+**This design does not ship.** The prerequisite gate above was run and did not
+produce a measurement: the charter under test was written as an index of its own
+eval set, so the seat was matching a list rather than reasoning from the spec,
+and detection under the corrected charter was never observed on a single
+misaligned case. 37 live trials across three rounds yielded 6 uncontaminated
+ones, all on aligned specs, of which one archetype held and one false-alarmed.
+The holdout is unspent. Full ledger, the two rig bugs that cost the other 31
+trials, and the reason a re-run does not fix the charter/case coupling:
+[2026-08-18-critic-g1-alignment-result.md](2026-08-18-critic-g1-alignment-result.md).
+
+Separately, the 80% target above and the plan's 8-of-9 threshold are not the
+same number — 8/9 is 88.9%, and a seat performing exactly at 80% clears it only
+43.6% of the time on a one-shot holdout. Reconciling those is a prerequisite of
+the prerequisite.
+
 ## Architecture
 
 No new lifecycle state and no new transition. `SPEC → BACKTEST` gains a precondition, and the existing `SPEC → REJECTED` transition gains two new triggers (`g1_no_review`, `g1_misaligned`) alongside G2 fail / budget exhausted / 30d idle.
