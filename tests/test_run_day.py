@@ -616,10 +616,16 @@ class _QuietSource:
 
     # orchestrator/preconditions.py fails closed on a broker it cannot read,
     # same as open_positions above — quiet means matching the baseline
-    # exactly, not staying silent.
+    # exactly, not staying silent. This reads the same file the production
+    # code compares against, rather than returning DEFAULT_ACCOUNT_CONFIG,
+    # so this stays quiet once the placeholder baseline is replaced with
+    # values captured from the real account. Tying the fake to its own
+    # defaults would pass today only by coincidence, and once a real capture
+    # made it red, the tempting "fix" would be to edit the captured baseline
+    # to match this fixture instead of the other way around.
     def account_config(self) -> dict:
-        from tests.fake_alpaca import DEFAULT_ACCOUNT_CONFIG
-        return dict(DEFAULT_ACCOUNT_CONFIG)
+        from scripts.run_day import ACCOUNT_BASELINE_YAML
+        return yaml.safe_load(ACCOUNT_BASELINE_YAML.read_text()) or {}
 
 
 def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
