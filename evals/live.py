@@ -64,6 +64,14 @@ def rows_written(conn, seat: str, run_date: str) -> dict:
     bug: whoever adds that stage must give this function the seat-scoped scan
     the table actually needs (`WHERE seat = ?`, ordered by `spec_id`), and
     should not discover the requirement from a traceback on the trading path.
+
+    TWO halves are needed there, not one. The scan is the obvious half; the
+    other is JSON decoding. `strategy_critiques.objections` is stored as JSON
+    text, so a scan alone hands every grader a raw string where the model
+    declares a list — `evals/runner.py:JSON_COLUMNS` already does this for the
+    rig, and a live trace that skipped it would grade differently from an eval
+    trace of the same turn. That divergence is exactly what moving ROW_COLUMNS
+    into evals/trace.py exists to prevent.
     """
     out = {}
     for table in WRITE_TABLES.get(seat, ()):
