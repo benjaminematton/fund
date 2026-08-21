@@ -606,6 +606,27 @@ new implementation branches get fresh context.
 - **Research side is unwired.** `fundbt/`, `stratgate/`, `calibration/` are
   built and tested but the daily cycle does not call them.
 - **One decision-maker.** No debate, no second opinion, no dissent.
+- **A stopped position cannot be trimmed — only exited whole.** A full-size GTC
+  stop reserves the entire position at the broker, which reports
+  `qty_available` 0, so a partial sell is refused. The one size that works is a
+  full exit, because it is the only one the reservation does not block.
+
+  **The 08-19 hardening is what makes this systematic rather than incidental.**
+  The gate now requires `gtc` on stop-carrying orders and
+  `assert_positions_protected` checks the stop is still live, so full-size GTC
+  protection is the *intended* output of the fix — and full-size GTC protection
+  is exactly what makes a position unsellable in part. Deploying the fix for the
+  first problem created the second. Both are correct; they are in tension, and
+  neither is a bug.
+
+  The resolution is ruled and **unmerged**: amend the stop down to the
+  post-sale size first, then sell — never cancel-then-sell, which leaves the
+  position naked in between and reintroduces the 08-17 class. `ADR-0003
+  reducing-a-stopped-position`, on `docs/adr-stop-amend`, not on master. **No
+  code exists**; the branch is docs-only and its plan has not passed review.
+
+  Until that lands, treat "reduce a position" as unavailable rather than
+  untested. A partial sell does not fail gracefully — the broker refuses it.
 - **An unprotected position does not stop the day — it alerts.** Ruled
   2026-08-20, after the 08-17 stop expiry. `orchestrator/protection.py` asserts
   after every run that a promised stop is still live at the broker, and raises
