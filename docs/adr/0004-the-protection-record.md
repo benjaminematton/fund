@@ -55,7 +55,7 @@ three origins uniform instead of one-plus-exceptions:
 | origin | row id | `alpaca_order_id` | `client_order_id` | `provenance_kind` |
 |---|---|---|---|---|
 | amend replacement | fund-minted, used as the order's `client_order_id` | the new order's UUID | = row id | `ticket` |
-| OTO stop leg | fund-minted | the leg's UUID | **Alpaca-generated** — verified: `910638b1-…`, unrelated to ticket `a14aa36b-…` | `oto_leg` |
+| OTO stop leg | fund-minted | the leg's UUID | **Alpaca-generated** — verified: `910638b1-…`, unrelated to ticket `a14aa36b-…` | `observed` |
 | adopted (hand-placed) | fund-minted | `5abc139f-…` | `manual-protective-stop-nvda-2026-08-19` | `adopted` |
 
 **Corrected 2026-08-20 on two counts, both found by review.**
@@ -76,8 +76,10 @@ That split also fixes a hole the review found: there is **no resolution path** f
 back to a ticket, because `open_orders()` carries no `client_order_id` and a leg's id bears no
 relation to the ticket's anyway. Under the old single column every row branch one wrote would
 have been `'adopted'` — including fund-placed legs the fund did place — collapsing the
-three-origin table to one value and making the adoption test vacuous. `oto_leg` is the honest
-kind for a stop the fund placed but cannot trace to its ticket from the broker's side.
+three-origin table to one value and making the adoption test vacuous. `observed` is the honest
+kind for a stop the fund saw at the broker but cannot trace to a ticket — including one it placed
+itself, since the broker gives it no way to prove that. A later draft used `oto_leg`, which claimed
+an origin with the same confidence the ADR had just refused for `ticket`.
 
 **The irregular id is evidence, not the mechanism.** `provenance_kind = 'adopted'` is what marks
 a human-placed order. The id is stored verbatim because it is real broker data, not because the
@@ -113,10 +115,10 @@ There is deliberately **no `rejected`** — `_extract_order` returns `None` on a
 payload ("a rejection is never recorded", invariant 4), so a rejected stop produces no row at
 all, and adding the state for symmetry would create rows the code cannot write.
 
-**The aggregate is `status = 'live'`** — a positive predicate, never a `NOT IN` list, so a state
-added later cannot silently join the aggregate by omission. That is pinned by a test rather than
-a comment: it is the same missed-filter-corrupts-silently class that decided the ticket
-question, and the failure is invisible.
+**There is no aggregate query, and that is deliberate.** An earlier draft had one keyed on
+`status = 'live'`. With no status column there is nothing to filter: a consumer asks for
+observations before a given time and reads `observed_at` to judge them. The honesty that a status
+filter was supposed to enforce is carried by the timestamp instead, where it cannot be forgotten.
 
 `pending` is excluded for the same reason `held` never becomes a row: a stop that is authorized
 but not yet effective protects nothing, and counting it would be the table asserting existence.

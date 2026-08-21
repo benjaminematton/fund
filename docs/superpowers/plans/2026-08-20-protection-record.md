@@ -71,7 +71,7 @@
 - **A row is an observation, never an assertion of currency.** `observed_at` is what makes it honest. No consumer may read a row from an earlier run as a statement about now.
 - **`gate/`, `stratgate/`, `calibration/` import no LLM code.** This branch touches none of them.
 - **Never weaken a red test or re-record a fixture to make something pass.** One task legitimately widens a test's *contract* and says so with its reason. Anywhere else: STOP and ask.
-- **Time comes from an injected `Clock`; ids from an injected `id_factory`** (`daily.py:53`). No bare `uuid4()`, or `sim-day` and replay stop being deterministic.
+- **Time comes from an injected `Clock`.** This table's ids are *derived* from `(alpaca_order_id, observed_at)` rather than minted, so no `id_factory` is threaded and determinism is structural — sim-day and replay are safe without one.
 - **Timestamps use `orchestrator.clock.iso()`.** Every other timestamp in the DB does.
 - **`make test` must pass before every commit.**
 
@@ -86,7 +86,7 @@ There is no `reconcile.py` contention: branch one does not touch that file at al
 | File | Responsibility | Task |
 |---|---|---|
 | `tests/fake_alpaca.py` | fake broker; `open_orders` must match the real contract | 1, 3 |
-| `state/schema.sql`, `state/migrations.py` | the log, and carrying it to a live database | 2 |
+| `state/schema.sql` | the log — picked up on an existing database by `_TABLES` | 2 |
 | `specs/contracts.md` | §2 DDL — 🔏 | 2 |
 | `orchestrator/broker.py`, `market/source_alpaca.py` | the widened `open_orders` contract | 3 |
 | `state/protection.py` | **new** — `STOP_TYPES`, `_qty`, appends, the this-run query | 4 |
