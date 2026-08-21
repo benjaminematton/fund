@@ -614,6 +614,13 @@ class _QuietSource:
     def open_orders(self) -> list[dict]:
         return []
 
+    # orchestrator/preconditions.py fails closed on a broker it cannot read,
+    # same as open_positions above — quiet means matching the baseline
+    # exactly, not staying silent.
+    def account_config(self) -> dict:
+        from tests.fake_alpaca import DEFAULT_ACCOUNT_CONFIG
+        return dict(DEFAULT_ACCOUNT_CONFIG)
+
 
 def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
         wired, tmp_path, monkeypatch, capsys):
@@ -819,3 +826,39 @@ def test_no_sink_configured_is_a_silent_no_op():
     run_day = _load()
     run_day.emit_trace_guarded("pm", _PM_CFG, "2026-08-18", itertools.count(),
                                None, [], _Res(), None)
+
+
+def test_account_baseline_yaml_parses_and_is_not_empty():
+    """An empty or unparseable baseline makes the drift check unable to fail,
+    so it is checked here rather than discovered at 09:00."""
+    import yaml
+    from scripts.run_day import ACCOUNT_BASELINE_YAML
+
+    baseline = yaml.safe_load(ACCOUNT_BASELINE_YAML.read_text())
+    assert isinstance(baseline, dict) and baseline
+
+
+def test_drift_alerts_without_raising(tmp_path):
+    """Alert-only: drift is recorded and returns a count rather than raising.
+
+    That the DAY still completes with the check wired in is proved by
+    `make sim-day` in this task's verification, not here — this exercises the
+    assertion alone and is named for what it actually does."""
+    import json
+
+    from orchestrator.preconditions import assert_account_config_unchanged
+    from state.db import connect
+    from tests.fake_alpaca import DEFAULT_ACCOUNT_CONFIG, FakeAlpaca
+
+    conn = connect(str(tmp_path / "t.sqlite"))
+    fake = FakeAlpaca(prices={"NVDA": 100.0},
+                      account_config=dict(DEFAULT_ACCOUNT_CONFIG,
+                                          suspend_trade=True))
+    n = assert_account_config_unchanged(
+        conn, broker=fake, baseline=DEFAULT_ACCOUNT_CONFIG,
+        now_iso="2026-08-20T09:00:00-04:00")
+    assert n == 1
+    row = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'alert'").fetchone()
+    assert "suspend_trade" in json.loads(row["payload"])["text"]
+    conn.close()

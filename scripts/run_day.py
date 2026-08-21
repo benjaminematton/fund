@@ -72,6 +72,7 @@ from market.features import (build_market_inputs, unmapped_holdings,  # noqa: E4
 from orchestrator.clock import et_run_date, iso                    # noqa: E402
 from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
                                 run_day)
+from orchestrator.preconditions import assert_account_config_unchanged  # noqa: E402
 from slackkit.outbox import append_event, drain                    # noqa: E402
 from state.db import connect                                       # noqa: E402
 
@@ -81,6 +82,7 @@ REQUIRED_ENV = ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
 REQUIRED_SERVERS = {"alpaca", "fund"}
 WATCHLIST_YAML = ROOT / "config" / "watchlist.yaml"
 SECTORS_YAML = ROOT / "config" / "sectors.yaml"
+ACCOUNT_BASELINE_YAML = ROOT / "config" / "account_config_baseline.yaml"
 SEAT_CONFIG = ROOT / "agents" / "config"
 # Stage -> the seats that run it, in run order. ALWAYS a tuple, even for a
 # single-seat stage: a str|tuple union reads fine here and then silently
@@ -603,6 +605,17 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
         db_path, clock, conn, run_date,
         "Execution stage: execute all open tickets per your charter.",
         trace_sink=trace_sink, turn_seq=turn_seq)
+
+    # Before any stage: the gate's thresholds stand on broker-side account
+    # settings nothing else reads back. Alert-only — a changed precondition is
+    # not grounds to refuse to trade, but it must not go unnamed (2026-08-20
+    # design). Drained explicitly because run_day drains per stage and this
+    # runs before the first one.
+    if assert_account_config_unchanged(
+            conn, broker=source,
+            baseline=yaml.safe_load(ACCOUNT_BASELINE_YAML.read_text()) or {},
+            now_iso=iso(clock.now())):
+        drain(conn, slack, iso(clock.now()))
 
     run_day(ctx, execution_turn=execution_turn, broker=source, sleep=time.sleep)
     post_scorecard(conn, slack, db_path, run_date, clock)
