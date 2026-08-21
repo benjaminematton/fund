@@ -1,5 +1,38 @@
 # The Protection Record (branch one) Implementation Plan
 
+> # ⛔ DO NOT EXECUTE THIS PLAN WITHOUT READING THIS BOX
+>
+> **This document looks finished and is not validated.** It is 633 lines of TDD steps with a
+> per-step "Expected: PASS". None of that is evidence.
+>
+> **Revisions 1, 2 and 3 were each run end-to-end by a fresh-context reviewer and each was found
+> NOT EXECUTABLE** — revision 1 wrong on design, 2 on mechanism, 3 on wiring and wording. The three
+> review records sit beside this file in `../reviews/`. **Revision 4 — this one — has been read by
+> nobody but its author.** The standing finding from review 3 is that every revision fixes the
+> previous critique by inverting it and does not check the new endpoint; revision 4 makes three such
+> changes and no one has checked them.
+>
+> Written by the author, against the author's own work, because the failure mode is that this file
+> gives no warning while the reviews that condemn its ancestors are in a different directory.
+>
+> **Two facts that were true when this was written and are not now:**
+>
+> 1. **The base is stale.** Merge-base `894e1b8`; master is `dbbdc5c` — **32 commits ahead**. Every
+>    line-number, file-shape and "still returns five keys" claim below was verified against the
+>    merge-base and must be re-verified before use.
+> 2. **Task 6's subject may no longer exist.** The task adopts the hand-placed NVDA stop by its
+>    literal ids — `5abc139f-4817-4a34-aedd-f2ca28203c5c` / `manual-protective-stop-nvda-2026-08-19`,
+>    80 shares @ 215. Session `f39047d8` **reports** it resized that stop 80→40 on 2026-08-21 with
+>    Benjamin's go in its own window, leaving the old leg `pending_replace` until the venue reopens.
+>    **I have not verified this and cannot** — it is a broker fact, the venue is closed, and it is
+>    that session's region, not mine. Recording it as reported, not as established:
+>    `~/.claude/align/fund/decisions.md:79` still lists the disposition as undecided and Benjamin is
+>    its only writer. **Before running Task 6, read the live order from the broker.** If the resize
+>    happened, the ids and the qty in Task 6 are wrong and the test asserts a stop that is gone.
+>
+> Nothing here says the plan is wrong. It says the plan is **unverified**, and that the last three
+> times someone checked, it was.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give the fund a record of what it has observed protecting each position, so protection stops being re-derived by join from order history.
