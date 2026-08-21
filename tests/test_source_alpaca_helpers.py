@@ -265,23 +265,49 @@ def test_open_orders_propagates_broker_errors():
 
 def test_account_config_returns_every_field_as_plain_values():
     """No filtering: a setting Alpaca adds must reach the drift check rather
-    than be dropped by a hand-written field list here."""
+    than be dropped by a hand-written field list here. Three of the real
+    model's nine fields are (str, Enum) members (dtbp_check, pdt_check,
+    trade_confirm_email) -- built from the REAL model + REAL enums, same
+    posture as test_open_positions_unwraps_alpaca_enums above, because a fake
+    built from plain strings can't catch a missing enum coercion."""
+    from alpaca.trading.enums import DTBPCheck, PDTCheck, TradeConfirmationEmail
+    from alpaca.trading.models import AccountConfiguration
     from market.source_alpaca import AlpacaSource
 
-    class _Config:
-        def __init__(self):
-            self.no_shorting = False
-            self.suspend_trade = False
-            self.max_margin_multiplier = "4"
+    config = AccountConfiguration(
+        dtbp_check=DTBPCheck.ENTRY,
+        fractional_trading=True,
+        max_margin_multiplier="4",
+        no_shorting=False,
+        pdt_check=PDTCheck.BOTH,
+        suspend_trade=False,
+        trade_confirm_email=TradeConfirmationEmail.ALL,
+        ptp_no_exception_entry=True,
+        max_options_trading_level=2,
+    )
 
     class _Trading:
         def get_account_configurations(self):
-            return _Config()
+            return config
 
     src = AlpacaSource.__new__(AlpacaSource)
     src._trading = _Trading()
-    assert src.account_config() == {
-        "no_shorting": False,
-        "suspend_trade": False,
+    result = src.account_config()
+
+    assert result == {
+        "dtbp_check": "entry",
+        "fractional_trading": True,
         "max_margin_multiplier": "4",
+        "no_shorting": False,
+        "pdt_check": "both",
+        "suspend_trade": False,
+        "trade_confirm_email": "all",
+        "ptp_no_exception_entry": True,
+        "max_options_trading_level": 2,
     }
+    # Equality alone would pass even without coercion, since these enums
+    # subclass str ("entry" == DTBPCheck.ENTRY is True) -- assert the TYPE
+    # too, so the test genuinely fails if the coercion is removed.
+    for field in ("dtbp_check", "pdt_check", "trade_confirm_email"):
+        assert type(result[field]) is str, (
+            f"{field} is {type(result[field])!r}, not a plain str")

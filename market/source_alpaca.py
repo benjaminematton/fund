@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import os
 from datetime import timedelta
+from enum import Enum
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -178,6 +179,12 @@ class AlpacaSource:
         payload against a pinned baseline precisely so a setting nobody
         classified — or one Alpaca adds in a later release — still reddens the
         check. A field list here would reintroduce the enumeration that
-        config/broker_tool_surface.yaml's comment already got wrong."""
+        config/broker_tool_surface.yaml's comment already got wrong.
+
+        Three of these fields (dtbp_check, pdt_check, trade_confirm_email) are
+        alpaca-py (str, Enum) members, not plain scalars, so each is coerced
+        via `_enum_str` -- the YAML baseline this gets diffed against holds
+        plain strings, bools, and ints only."""
         c = self._trading.get_account_configurations()
-        return {k: v for k, v in vars(c).items() if not k.startswith("_")}
+        return {k: (_enum_str(v) if isinstance(v, Enum) else v)
+                for k, v in vars(c).items() if not k.startswith("_")}
