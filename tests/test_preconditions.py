@@ -96,3 +96,29 @@ def test_empty_baseline_alerts_rather_than_passing(conn):
     n = assert_account_config_unchanged(
         conn, broker=_Broker(dict(BASE)), baseline={}, now_iso=NOW)
     assert n == 1
+
+
+def test_fake_alpaca_reports_a_default_account_config(conn):
+    """sim-day and the offline suite need the surface, and its default must
+    match its own baseline so a plain fake is silent."""
+    from tests.fake_alpaca import DEFAULT_ACCOUNT_CONFIG, FakeAlpaca
+
+    fake = FakeAlpaca(prices={"NVDA": 100.0})
+    assert fake.account_config() == DEFAULT_ACCOUNT_CONFIG
+    n = assert_account_config_unchanged(
+        conn, broker=fake, baseline=DEFAULT_ACCOUNT_CONFIG, now_iso=NOW)
+    assert n == 0
+
+
+def test_fake_alpaca_account_config_is_overridable(conn):
+    from tests.fake_alpaca import DEFAULT_ACCOUNT_CONFIG, FakeAlpaca
+
+    # Must differ from DEFAULT_ACCOUNT_CONFIG's own value (False), or there is
+    # no drift to detect and the test asserts nothing.
+    fake = FakeAlpaca(prices={"NVDA": 100.0},
+                      account_config=dict(DEFAULT_ACCOUNT_CONFIG,
+                                          no_shorting=True))
+    n = assert_account_config_unchanged(
+        conn, broker=fake, baseline=DEFAULT_ACCOUNT_CONFIG, now_iso=NOW)
+    assert n == 1
+    assert "no_shorting" in _alerts(conn)[0]

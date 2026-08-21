@@ -47,16 +47,39 @@ def mcp_envelope(resp: dict) -> str:
                        "data": order})
 
 
+# The nine fields alpaca.trading.models.AccountConfiguration carries in pinned
+# alpaca-py 0.44.0. Values are paper-account defaults; a test that cares about
+# a specific setting overrides it rather than editing this dict.
+DEFAULT_ACCOUNT_CONFIG = {
+    "dtbp_check": "entry",
+    "fractional_trading": True,
+    "max_margin_multiplier": "4",
+    "max_options_trading_level": 0,
+    "no_shorting": False,
+    "pdt_check": "entry",
+    "ptp_no_exception_entry": False,
+    "suspend_trade": False,
+    "trade_confirm_email": "all",
+}
+
+
 class FakeAlpaca:
     def __init__(self, prices: dict[str, float],
                  fill_prices: dict[str, float] | None = None,
-                 mode: str = "fill") -> None:
+                 mode: str = "fill",
+                 account_config: dict | None = None) -> None:
         self.prices = dict(prices)
         self.fill_prices = dict(fill_prices or {})
         self.mode = mode
         self.orders: dict[str, dict] = {}
         self.place_attempts: list[dict] = []
         self.cancel_attempts: list[str] = []
+        self._account_config = dict(
+            DEFAULT_ACCOUNT_CONFIG if account_config is None else account_config)
+
+    def account_config(self) -> dict:
+        """Twin of market/source_alpaca.py:AlpacaSource.account_config."""
+        return dict(self._account_config)
 
     def place_order(self, args: dict) -> dict:
         self.place_attempts.append(dict(args))
