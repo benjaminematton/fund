@@ -492,6 +492,12 @@ def test_a_genuine_fallback_is_recorded(fund_db):
                        NOW, configured_model="claude-haiku-4-5-20251001")
     rows = _divergences(fund_db)
     assert len(rows) == 1
+    # The key SET is asserted, not just the keys this test reads. Field-by-field
+    # alone cannot fail on an unexpected EXTRA field, so a payload that silently
+    # grew one would stay green here — additive means new fields are allowed,
+    # not that they arrive unnoticed. Same failure shape as issue #26, where
+    # test_state.py's subset assertion let two tables land unregistered.
+    assert set(rows[0]) == {"seat", "configured", "served", "usage", "sdk"}
     assert rows[0]["seat"] == "analyst"
     assert rows[0]["configured"] == "claude-haiku-4-5-20251001"
     assert rows[0]["served"] == ["claude-sonnet-5"]
