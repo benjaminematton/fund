@@ -30,6 +30,12 @@ actually observe the field.
 Not a stage: an assertion must re-check on a resumed day rather than be skipped
 as 'done', and a duplicate alert is the safe direction.
 
+Sibling module, deliberately separate: orchestrator/protection.py asserts that a
+promised stop still exists at the broker. Same alert-and-return-a-count
+contract, different point in the day — that one runs after reconciliation on an
+ongoing invariant, this one runs before the first stage on a precondition. The
+split is by lifecycle position, not by subject matter.
+
 Every ambiguity alerts (invariant 4) — an unreachable broker, an unreadable
 payload, an empty baseline. A check that can pass while lying is worse than no
 check at all."""
