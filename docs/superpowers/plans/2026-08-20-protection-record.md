@@ -17,9 +17,13 @@
 >
 > **Two facts that were true when this was written and are not now:**
 >
-> 1. **The base is stale.** Merge-base `894e1b8`; master is `dbbdc5c` — **32 commits ahead**. Every
->    line-number, file-shape and "still returns five keys" claim below was verified against the
->    merge-base and must be re-verified before use.
+> 1. **The base moved under the claims — and this is worse than being behind, not better.** This
+>    branch has since been rebased (twice, by something other than its author) and now sits level
+>    with master. But **every line-number, file-shape and "still returns five keys" claim below was
+>    verified against `894e1b8`**, and master advanced ~32 commits past that before the rebase
+>    landed. Sitting level with master does not mean the claims were re-checked; it means they are
+>    now stated against a tree nobody compared them to. Re-verify each one at the point of use.
+>    Do not read "0 behind master" as "current."
 > 2. **Task 6's subject may no longer exist.** The task adopts the hand-placed NVDA stop by its
 >    literal ids — `5abc139f-4817-4a34-aedd-f2ca28203c5c` / `manual-protective-stop-nvda-2026-08-19`,
 >    80 shares @ 215. Session `f39047d8` **reports** it resized that stop 80→40 on 2026-08-21 with
