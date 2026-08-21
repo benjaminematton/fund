@@ -170,3 +170,14 @@ class AlpacaSource:
             "positions": {p.symbol: int(float(p.qty)) for p in pos},
             "prices": {p.symbol: float(p.current_price) for p in pos},
         }
+
+    def account_config(self) -> dict:
+        """Every account setting the broker reports, as plain values.
+
+        Deliberately unfiltered. orchestrator/preconditions.py diffs the whole
+        payload against a pinned baseline precisely so a setting nobody
+        classified — or one Alpaca adds in a later release — still reddens the
+        check. A field list here would reintroduce the enumeration that
+        config/broker_tool_surface.yaml's comment already got wrong."""
+        c = self._trading.get_account_configurations()
+        return {k: v for k, v in vars(c).items() if not k.startswith("_")}

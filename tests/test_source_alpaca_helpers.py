@@ -259,3 +259,29 @@ def test_open_orders_propagates_broker_errors():
     src._trading = Trading()
     with pytest.raises(ConnectionError):
         src.open_orders()
+
+
+# ---- account_config: the live read behind orchestrator/preconditions.py ----
+
+def test_account_config_returns_every_field_as_plain_values():
+    """No filtering: a setting Alpaca adds must reach the drift check rather
+    than be dropped by a hand-written field list here."""
+    from market.source_alpaca import AlpacaSource
+
+    class _Config:
+        def __init__(self):
+            self.no_shorting = False
+            self.suspend_trade = False
+            self.max_margin_multiplier = "4"
+
+    class _Trading:
+        def get_account_configurations(self):
+            return _Config()
+
+    src = AlpacaSource.__new__(AlpacaSource)
+    src._trading = _Trading()
+    assert src.account_config() == {
+        "no_shorting": False,
+        "suspend_trade": False,
+        "max_margin_multiplier": "4",
+    }
