@@ -3,8 +3,9 @@
 What we are shooting for. Not a plan and not a spec — a picture of the finished
 thing, to remember what all the plumbing is in service of.
 
-*(`fund`, this repo, is the proving ground and stays paper-only. The firm below
-trades real capital, and getting there is its own deliberate project.)*
+*(The account is paper today, and stays paper for a long time — that's the
+measurement, not a holding pattern. Real capital is where this ends up: the last
+step of this project, not a different one.)*
 
 ---
 
@@ -28,9 +29,11 @@ what it doesn't know, and acts that way.
 ## The floors
 
 **The research floor.** Analyst desks, each with its own beat — the tape and
-market structure, news and sentiment, macro and rates, company fundamentals.
-Each one shows up every morning with a view, from its own data, in its own
-voice. They disagree with each other, and that's the point.
+market structure, news and sentiment, macro and rates. Each shows up every
+morning with a view, from its own data, in its own voice. They disagree with
+each other, and that's the point. Fundamentals is the desk that doesn't fit
+this rhythm: it needs evidence that arrives quarterly and a source the firm
+doesn't have yet, so it earns a seat only once there's a slower stage to sit in.
 
 **The lab.** A standing research operation inventing, testing, and killing
 systematic strategies. Most of what it proposes dies, which is how you know the
@@ -67,6 +70,12 @@ cost of the firm's own thinking.
 **The data.** The firm buys its own eyes — real-time market data rather than a
 partial free feed, a real news wire with history, corporate actions, and enough
 monitoring to know when a feed has gone stale before it acts on it.
+
+**Slack.** Where the firm is visible. Every report, argument, gate verdict, fill
+and digest lands in a channel as it happens, so a day can be read after the fact
+or watched while it runs, and any seat can be asked a question and will answer
+from its own record. It's the firm's face and its running log — never the place
+decisions actually come from.
 
 **The human.** One, and it stays one. Allocates the capital, sets the limits,
 decides which desks exist, and carries what can't be handed to a process.
