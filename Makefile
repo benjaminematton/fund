@@ -6,11 +6,13 @@
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
 # worktree — .venv is created on first run, and deps re-sync whenever
-# pyproject.toml changes (the only steps that touch the network). The sync is
-# content-hash gated in scripts/sync_deps.py, NOT mtime-gated: Apple's GNU
-# make 3.81 treats equal 1-second timestamps as up-to-date, which silently
-# skips same-second pyproject edits. BOOT_PY picks a >=3.12 interpreter
-# explicitly; macOS /usr/bin/python3 (3.9) won't do.
+# requirements.lock or pyproject.toml changes (the only steps that touch the
+# network). Every host installs the lock, never the ranges, so local, the
+# droplet and CI hold the same 52 versions. The sync is content-hash gated in
+# scripts/sync_deps.py, NOT mtime-gated: Apple's GNU make 3.81 treats equal
+# 1-second timestamps as up-to-date, which silently skips same-second edits.
+# BOOT_PY picks a >=3.12 interpreter explicitly; macOS /usr/bin/python3 (3.9)
+# won't do.
 PYTHON := .venv/bin/python3
 BOOT_PY := $(shell command -v python3.14 || command -v python3.13 || command -v python3.12 || command -v python3)
 
@@ -22,6 +24,14 @@ deps:
 	    $(BOOT_PY) -m venv .venv && $(PYTHON) -m pip install --quiet --upgrade pip; \
 	}
 	@$(PYTHON) scripts/sync_deps.py
+
+# Re-resolve pyproject.toml's ranges in a throwaway venv and rewrite the lock.
+# The only supported way to change a pinned version — hand-editing the lock
+# skips the resolver and can pin a set that does not install together. Run
+# `make test` afterwards, then commit pyproject.toml and the lock together.
+.PHONY: deps-relock
+deps-relock:
+	@$(BOOT_PY) scripts/relock.py
 
 # Full offline suite: no network, no API keys. Must pass before every commit.
 test: lint

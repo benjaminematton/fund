@@ -21,6 +21,8 @@ build/
 # WAL mode (state/db.py sets journal_mode=WAL) writes these alongside the db
 # run_day's flock handle (scripts/run_day.py acquire_lock)
 *.lock
+# ...but the dependency lock is the one file every host must receive.
+!requirements.lock
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite-journal
