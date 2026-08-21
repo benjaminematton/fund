@@ -18,14 +18,11 @@ the failure mode this repo keeps hitting: the exec verb surface was counted
 setting list in config/broker_tool_surface.yaml is already wrong against pinned
 alpaca-py 0.44.0.
 
-The pin is against alpaca-py's AccountConfiguration model, not Alpaca's raw
-API response — that model's extra='ignore' default drops a field it does not
-declare before account_config() ever hands it a dict, so a field Alpaca adds
-to the wire is unreachable here until an alpaca-py upgrade declares it. That
-is the right boundary, not a gap: a field the fund cannot see cannot affect
-the fund, and the upgrade that makes it visible is itself a human commit —
-invariant 3's own mechanism. The check reddens the first day the fund can
-actually observe the field.
+"Whole payload" means whole as far as this process can see it, which stops at
+alpaca-py's model rather than Alpaca's wire response — market/source_alpaca.py's
+account_config() documents the mechanism. That is the right boundary, not a gap:
+a field the fund cannot see cannot affect the fund, and the upgrade that makes
+it visible is itself a human commit — invariant 3's own mechanism.
 
 Not a stage: an assertion must re-check on a resumed day rather than be skipped
 as 'done', and a duplicate alert is the safe direction.

@@ -624,8 +624,8 @@ class _QuietSource:
     # made it red, the tempting "fix" would be to edit the captured baseline
     # to match this fixture instead of the other way around.
     def account_config(self) -> dict:
-        from scripts.run_day import ACCOUNT_BASELINE_YAML
-        return yaml.safe_load(ACCOUNT_BASELINE_YAML.read_text()) or {}
+        return yaml.safe_load(
+            run_day_script.ACCOUNT_BASELINE_YAML.read_text()) or {}
 
 
 def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
@@ -837,10 +837,8 @@ def test_no_sink_configured_is_a_silent_no_op():
 def test_account_baseline_yaml_parses_and_is_not_empty():
     """An empty or unparseable baseline makes the drift check unable to fail,
     so it is checked here rather than discovered at 09:00."""
-    import yaml
-    from scripts.run_day import ACCOUNT_BASELINE_YAML
-
-    baseline = yaml.safe_load(ACCOUNT_BASELINE_YAML.read_text())
+    baseline = yaml.safe_load(
+        run_day_script.ACCOUNT_BASELINE_YAML.read_text())
     assert isinstance(baseline, dict) and baseline
 
 

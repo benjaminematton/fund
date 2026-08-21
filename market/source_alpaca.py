@@ -192,4 +192,4 @@ class AlpacaSource:
         plain strings, bools, and ints only."""
         c = self._trading.get_account_configurations()
         return {k: (_enum_str(v) if isinstance(v, Enum) else v)
-                for k, v in vars(c).items() if not k.startswith("_")}
+                for k, v in c.model_dump().items()}
