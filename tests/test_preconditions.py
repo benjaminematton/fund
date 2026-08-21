@@ -122,3 +122,48 @@ def test_fake_alpaca_account_config_is_overridable(conn):
         conn, broker=fake, baseline=DEFAULT_ACCOUNT_CONFIG, now_iso=NOW)
     assert n == 1
     assert "no_shorting" in _alerts(conn)[0]
+
+
+def test_baseline_value_types_match_the_installed_alpaca_pys_model():
+    """Nothing else pins the checked-in YAML's value TYPES against what
+    account_config() actually produces. `max_margin_multiplier: "4"` is
+    quoted only by an author's care — an innocent edit to the unquoted `4`
+    makes it an int, which would drift every single morning (a str baseline
+    value never equals an int broker value), training everyone to ignore the
+    alert. This walks alpaca.trading.models.AccountConfiguration's own field
+    annotations rather than a second hand-written list, so it stays honest
+    against whatever alpaca-py version is actually installed."""
+    from enum import Enum
+
+    import yaml
+    from alpaca.trading.models import AccountConfiguration
+
+    from scripts.run_day import ACCOUNT_BASELINE_YAML
+
+    baseline = yaml.safe_load(ACCOUNT_BASELINE_YAML.read_text())
+
+    # Genuinely null on this account (see the baseline file's own header) —
+    # None must be accepted alongside the field's real type for these three.
+    NULLABLE = {"dtbp_check", "pdt_check", "max_options_trading_level"}
+
+    for name, field in AccountConfiguration.model_fields.items():
+        assert name in baseline, f"{name}: in the model but missing from" \
+            " the baseline"
+        value = baseline[name]
+        py_type = next(a for a in getattr(field.annotation, "__args__",
+                                          (field.annotation,))
+                       if a is not type(None))
+        if isinstance(py_type, type) and issubclass(py_type, Enum):
+            # account_config() (market/source_alpaca.py) coerces every enum
+            # member to its plain str value before this ever gets diffed.
+            py_type = str
+
+        if value is None:
+            assert name in NULLABLE, (
+                f"{name}: baseline is null, but this field is not one of"
+                f" the account's genuinely-null fields {sorted(NULLABLE)}")
+        else:
+            assert isinstance(value, py_type), (
+                f"{name}: baseline holds a {type(value).__name__}"
+                f" ({value!r}), but AccountConfiguration expects"
+                f" {py_type.__name__}")
