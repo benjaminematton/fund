@@ -1,10 +1,19 @@
 # The paper account's settings, PINNED.
 #
 # orchestrator/preconditions.py diffs this against the broker before every
-# trading day and alerts on ANY difference — a changed value, a field Alpaca
-# drops, or a field Alpaca adds. The whole payload is pinned on purpose: the
-# hand-written setting list in config/broker_tool_surface.yaml was already
-# wrong against pinned alpaca-py 0.44.0, which is what enumeration does.
+# trading day and alerts on ANY difference — a changed value, a field the
+# model drops, or a field the model adds. The whole payload is pinned on
+# purpose: the hand-written setting list in config/broker_tool_surface.yaml
+# was already wrong against pinned alpaca-py 0.44.0, which is what
+# enumeration does.
+#
+# The pin is against alpaca-py's AccountConfiguration model, not against
+# Alpaca's raw API response. That model defaults to pydantic's extra='ignore',
+# so a field Alpaca adds to the wire is dropped before account_config() ever
+# sees it — a field the fund cannot see cannot affect the fund. The alpaca-py
+# version bump that makes a new field visible is itself a human commit, which
+# is invariant 3's own mechanism applied here: the check reddens the first day
+# the fund can actually observe the field, not the day Alpaca ships it.
 #
 # Invariant 3 says gate thresholds change only by human commit. These are the
 # settings those thresholds stand on, so they change the same way: when a drift

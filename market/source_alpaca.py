@@ -177,9 +177,14 @@ class AlpacaSource:
 
         Deliberately unfiltered. orchestrator/preconditions.py diffs the whole
         payload against a pinned baseline precisely so a setting nobody
-        classified — or one Alpaca adds in a later release — still reddens the
-        check. A field list here would reintroduce the enumeration that
-        config/broker_tool_surface.yaml's comment already got wrong.
+        classified still reddens the check. A field list here would
+        reintroduce the enumeration that config/broker_tool_surface.yaml's
+        comment already got wrong. (A field Alpaca adds on the wire is a
+        different case: `get_account_configurations()` returns alpaca-py's
+        AccountConfiguration, whose extra='ignore' default drops any field it
+        does not declare before this method ever sees it — this reddens on
+        the alpaca-py upgrade that declares the field, not on Alpaca shipping
+        it.)
 
         Three of these fields (dtbp_check, pdt_check, trade_confirm_email) are
         alpaca-py (str, Enum) members, not plain scalars, so each is coerced
