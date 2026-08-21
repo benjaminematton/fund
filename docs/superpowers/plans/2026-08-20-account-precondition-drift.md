@@ -303,9 +303,11 @@ def test_fake_alpaca_reports_a_default_account_config(conn):
 def test_fake_alpaca_account_config_is_overridable(conn):
     from tests.fake_alpaca import DEFAULT_ACCOUNT_CONFIG, FakeAlpaca
 
+    # Must differ from DEFAULT_ACCOUNT_CONFIG's own value (False), or there is
+    # no drift to detect and the test asserts nothing.
     fake = FakeAlpaca(prices={"NVDA": 100.0},
                       account_config=dict(DEFAULT_ACCOUNT_CONFIG,
-                                          no_shorting=False))
+                                          no_shorting=True))
     n = assert_account_config_unchanged(
         conn, broker=fake, baseline=DEFAULT_ACCOUNT_CONFIG, now_iso=NOW)
     assert n == 1
