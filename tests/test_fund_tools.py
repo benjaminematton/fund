@@ -412,6 +412,34 @@ def test_seat_caps_covers_every_config_file():
     assert configs <= set(SEAT_CAPS), f"config seats with no caps: {configs - set(SEAT_CAPS)}"
 
 
+def test_every_seat_config_declares_a_model():
+    """Pins the unwritten invariant that keeps a live footgun shut.
+
+    `evals/runner.py` passes `configured_model=cfg.get("model", "")`, and
+    `_unmatched_models` returns [] on an empty configured model (deliberately
+    -- a caller that cannot name the seat's model must not manufacture a
+    divergence against the empty string, which every key would 'mismatch').
+
+    Those two are safe together only because every file in agents/config/
+    happens to declare `model`. Nothing pinned that. Add a sixth seat whose
+    yaml omits it -- entirely plausible for a seat meant to inherit a default
+    -- and fallback detection is silently off for that seat IN THE RIG THAT
+    JUDGES IT: a Haiku turn would score as though Sonnet produced it, with no
+    error, no empty result, and nothing in the trace to notice.
+
+    Pinned here rather than fixed at the call site, because the `""` default
+    is correct and the missing declaration is the actual defect. Enumerates
+    the directory so the seat that would break it reddens on the commit that
+    adds it, not on the eval run that silently mis-scores it."""
+    import pathlib as _pl
+
+    import yaml
+    root = _pl.Path(__file__).resolve().parents[1] / "agents" / "config"
+    missing = [p.name for p in root.glob("*.yaml")
+               if not (yaml.safe_load(p.read_text()) or {}).get("model")]
+    assert missing == [], f"seat configs with no model: {missing}"
+
+
 def test_news_brief_omits_the_book_while_the_analyst_keeps_it(fund_db, tmp_path):
     """Behavior, not the lookup table: the capability-gating rewrite is what
     could get this wrong, and asserting _can() against itself would not."""
