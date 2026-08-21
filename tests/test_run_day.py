@@ -844,27 +844,55 @@ def test_account_baseline_yaml_parses_and_is_not_empty():
     assert isinstance(baseline, dict) and baseline
 
 
-def test_drift_alerts_without_raising(tmp_path):
-    """Alert-only: drift is recorded and returns a count rather than raising.
+def test_a_drifted_account_setting_alerts_but_does_not_abort_the_day(
+        wired, tmp_path, monkeypatch):
+    """WIRING, not the assertion's own logic (that is test_preconditions.py's
+    job). `_trading_day`'s call to `assert_account_config_unchanged` is not
+    pinned by any existing test: deleting the `if
+    assert_account_config_unchanged(...)` block at scripts/run_day.py changes
+    no test result, because the three tests that look like they cover it do
+    not — one reads only the yaml file, one calls the assertion directly with
+    no import from run_day.py, and `make sim-day` never reaches `_trading_day`
+    at all. This drives the same entry point
+    test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean uses,
+    with a broker whose account_config() differs from the baseline in one
+    field, and proves the design's promised claim: the day still completes
+    when drift is present — alert-only, not blocking.
 
-    That the DAY still completes with the check wired in is proved by
-    `make sim-day` in this task's verification, not here — this exercises the
-    assertion alone and is named for what it actually does."""
-    import json
+    "Not blocking" is NOT the same as a clean exit code: audit_day.py counts
+    "no alert events TODAY" as part of a clean day by design (drift means the
+    fund traded under preconditions nobody verified, and that is meant to
+    surface), so a day with real drift genuinely returns 1 — that IS the
+    audit doing its job, not the day aborting. What "alert-only, not
+    blocking" actually promises, and what this asserts, is that every stage
+    still ran to completion and the day's digest still posted, rather than
+    the drift check stopping the day before a single stage runs."""
+    conn, slack, clock = wired
+    db_path = str(tmp_path / "fund.sqlite")
 
-    from orchestrator.preconditions import assert_account_config_unchanged
-    from state.db import connect
-    from tests.fake_alpaca import DEFAULT_ACCOUNT_CONFIG, FakeAlpaca
+    class _DriftingSource(_QuietSource):
+        def account_config(self) -> dict:
+            baseline = super().account_config()
+            return dict(baseline, suspend_trade=not baseline["suspend_trade"])
 
-    conn = connect(str(tmp_path / "t.sqlite"))
-    fake = FakeAlpaca(prices={"NVDA": 100.0},
-                      account_config=dict(DEFAULT_ACCOUNT_CONFIG,
-                                          suspend_trade=True))
-    n = assert_account_config_unchanged(
-        conn, broker=fake, baseline=DEFAULT_ACCOUNT_CONFIG,
-        now_iso="2026-08-20T09:00:00-04:00")
-    assert n == 1
-    row = conn.execute(
-        "SELECT payload FROM events WHERE kind = 'alert'").fetchone()
-    assert "suspend_trade" in json.loads(row["payload"])["text"]
-    conn.close()
+    async def _no_llm(*a, **k):
+        raise AssertionError("a zero-ticker day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _DriftingSource(), "2026-07-06", db_path,
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    # The audit correctly reddens on a real drift alert (see docstring) — this
+    # is the load-bearing half of the proof: delete the call site and no
+    # alert fires at all, so this becomes 0 instead.
+    assert code == 1
+    assert any("suspend_trade" in t for t in _risk_texts(slack))
+
+    # ...but every stage still ran to completion — the check did not stop the
+    # day, which is what "alert-only, not blocking" actually means.
+    assert {r["stage"]: r["status"] for r in conn.execute(
+        "SELECT stage, status FROM checkpoints WHERE run_date = '2026-07-06'")
+    } == {s: "done" for s in ("pre_gate", "research", "decision", "gate",
+                              "execution", "reconciliation", "close")}
