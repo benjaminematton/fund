@@ -7,8 +7,16 @@
 >
 > Adversarial review ([findings](../reviews/2026-08-20-protection-record-review.md)) established
 > by execution that four things in this spec were wrong. The
-> [plan](../plans/2026-08-20-protection-record.md) is revision 2 and is correct; where the two
-> disagree, **the plan wins**.
+> [plan](../plans/2026-08-20-protection-record.md) is now **revision 4**; where the two disagree,
+> **the plan wins**. Three further reviews followed, and two more things below are wrong:
+>
+> - **There is no status column and no state machine.** The `live`/`closed` design in item 2 was
+>   itself withdrawn — its sweep raced the alert reader, permanently closed rows on one unreadable
+>   read, and never fired when a stop actually triggered. The table is an append-only observation
+>   log.
+> - **There is no migration.** `state/db.py` now parses `_TABLES` from `schema.sql`, so a table
+>   added there reaches an existing database on the next `connect()`. This spec's headline
+>   finding was true at `41a48dd` and is false at `894e1b8`.
 >
 > 1. **The writer is `orchestrator/protection.py`, not the reconcile pass.** Neither this spec nor
 >    ADR-0004 considered the module that already reads `open_orders()`. The reconcile placement

@@ -43,7 +43,7 @@ the `Order` model carries no lot id, and `avg_entry_price` proves Alpaca average
 one position. Per-lot would be a fiction nothing can confirm.
 
 **One row per protective order**, carrying symbol, qty, stop price, provenance, a
-`broker_expires_at`, and status. Content is immutable once written — qty, price and ids never
+`broker_expires_at` and an `observed_at`. No status — see below. Content is immutable once written — qty, price and ids never
 change; only status transitions.
 
 **Identity and reference are separate columns.** The row's `id` is always fund-minted and is
@@ -70,7 +70,7 @@ disagree with Alpaca, which is 2026-08-17 exactly.
 *Provenance splits in two.* A single `provenance` column holding "a ticket id, or `'adopted'`"
 mixes an identifier with an enum token, so it can carry no CHECK and cannot be grouped — while
 being justified by contracts §2's vocabulary rule, which is about exactly that. It becomes
-`provenance_kind` (`ticket` | `oto_leg` | `adopted`, NOT NULL) plus a nullable `provenance_ref`.
+`provenance_kind` (`observed` | `adopted` in branch one; `ticket` arrives with branch two, when the fund places an order and knows its own id) plus a nullable `provenance_ref`.
 
 That split also fixes a hole the review found: there is **no resolution path** from a broker order
 back to a ticket, because `open_orders()` carries no `client_order_id` and a leg's id bears no
@@ -88,25 +88,26 @@ what "record and reference, never invent" requires in practice. The fund never i
 decision or ticket for protection it did not authorize; `protection.py`'s `_UNKNOWN` sentinel is
 the existing precedent for representing something without inventing its origin.
 
-**States, corrected 2026-08-20.** An earlier draft listed `live`, `superseded`, `cancelled`,
-`triggered`, `expired` and `pending`. Review established that **no writer in branch one could
-produce any of them but `live`** — nothing detects a stop dying — so `live_for()` would return
-permanently stale rows and the aggregate test would pin a property no code can violate. Worse,
-a stale `live` row rendered into an alert is the table asserting protection that is gone: the
-standing rule broken by omission rather than by query.
+**States, corrected twice — and now removed.** A first draft listed six states. A second cut
+them to `live` and `closed`. Adversarial review then established by execution that the `closed`
+sweep produced three Critical defects: it raced the alert reader and made that feature dead code,
+it permanently closed a row on a single unreadable read with no reverse edge (invariant 4 broken
+inside the record layer), and it never fired in the case that mattered — a triggered stop leaves
+no position, so the run returns early.
 
-Branch one therefore ships **two** states: **`live`**, and **`closed`** — no longer live at the
-broker, reason unknown. The writing pass has the full live-order list in hand, so anything marked
-`live` whose `alpaca_order_id` is absent from it gets closed. That is a diff, not a new mechanism.
+**Branch one therefore ships no status column at all.** The table is an append-only observation
+log: one row each time the fund sees a protective order, stamped `observed_at`. Nothing closes,
+so nothing races, nothing strands, and no ambiguity can resolve into a claim that protection is
+gone. Staleness is not a hazard to manage but the plain reading of a dated observation.
 
-`cancelled`, `triggered` and `expired` are **not** in the CHECK, because distinguishing them
-requires reading order history and nothing in branch one does. A state no writer can produce is
-worse than an absent one — it makes a test look like a guard while it guards nothing. Branch two
-adds `pending`, `superseded` and `lapsed` by migration.
+This is a house pattern rather than an exception: `tests/test_state.py` lists nine tables in
+`TABLES` and only four in `STATUSES`, and `specs/contracts.md` §1 names four machines.
+`events`, `signals`, `resolutions` and `costs` carry no status either. CLAUDE.md's "every workflow
+table is a state machine" governs workflow tables; a log is not one, which is why `events` needs
+no machine and neither does this.
 
-`live → closed` is a real transition, so it needs an `EDGES`/`KEYS` entry in `state/transition.py`
-and a `specs/contracts.md` §1 machine. CLAUDE.md requires it — *"every workflow table is a state
-machine… apply them only through `state/transition()`"* — and the earlier draft simply missed it.
+Distinguishing *why* a protective order stopped being seen — cancelled, triggered, expired — needs
+order history, and belongs to branch two along with `pending` and `superseded`.
 
 There is deliberately **no `rejected`** — `_extract_order` returns `None` on a rejection
 payload ("a rejection is never recorded", invariant 4), so a rejected stop produces no row at
@@ -220,7 +221,7 @@ Three constraints on adoption, from the sessions that own the pieces it touches:
 
 ## Branch one
 
-The table, the adoption script, the reconcile pass writing rows, the fake's filter fixed, and
+The table, the adoption script, `orchestrator/protection.py` logging what it reads, the fake's filter fixed, and
 `protection.py` reading the record layer. The existing NVDA stop is adopted as its first real
 row — safe, because NVDA is fully covered today, so `_evaluate` short-circuits at
 `covered >= held` and never reaches provenance. An adoption path with nothing adopted through it
