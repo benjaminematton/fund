@@ -185,6 +185,45 @@ def test_an_order_that_failed_or_expired_ranks_below_a_rejection(day):
     assert rows and rows[0]["severity"] == 2
 
 
+def test_a_decision_stuck_at_approved_is_ranked(day):
+    """The gap that made 2026-08-20's scorecard actively misleading.
+
+    `approved` is NOT terminal — specs/contracts.md:9 has
+    `approved -> executed | failed | expired`. A decision still sitting there
+    at day's end never became a trade AND never recorded a failure, so every
+    other band is silent on it: no `gate_rejected` (the gate said yes), no
+    `execution_failed` (nothing set that status). The fund believed it had
+    decided, and nothing had happened.
+
+    That is exactly what happened to the NVDA sell: a full-size protective
+    stop reserved all 80 shares, so the approved sell of 40 was unfillable.
+    The scorecard that day reported one severity-3 model divergence — since
+    established as a false positive — and said nothing about the trade the
+    fund failed to make. The only ranked line was the wrong one.
+
+    Severity 2, alongside execution_failed: same class, in that an approved
+    decision did not become a trade. Ranked above the severity-3 divergence
+    band, which is the inversion that has to stop."""
+    sim, path = day
+    sim.conn.execute(
+        "UPDATE decisions SET status = 'approved' WHERE ticker = 'NVDA'")
+    sim.conn.commit()
+    rows = _rows(path, sim.run_date, "decision_stranded")
+    assert len(rows) == 1
+    assert rows[0]["severity"] == 2
+    assert "NVDA" in rows[0]["detail"]
+
+
+def test_a_decision_that_executed_is_not_stranded(day):
+    """The canary for the band above. `executed` is terminal and correct; if
+    this ever reddens the band has become always-on, and a line that appears
+    every day is one the reader learns to skip."""
+    sim, path = day
+    sim.conn.execute("UPDATE decisions SET status = 'executed'")
+    sim.conn.commit()
+    assert _rows(path, sim.run_date, "decision_stranded") == []
+
+
 # --- severity 3: outliers ----------------------------------------------------
 
 def _seed_cost_history(conn, agent, run_date, days=6, usd=0.05):
