@@ -20,8 +20,9 @@
   broker, a malformed payload, or a baseline that parses to empty.
   **One deliberate exception: a baseline file that is missing or unparseable aborts the
   day.** That is not drift — it means no precondition can be verified at all, and
-  invariant 4's default is HOLD. It matches `SECTORS_YAML` two lines above, so there is one
-  rule for unreadable config rather than two. Ruled by Benjamin, 2026-08-21.
+  invariant 4's default is HOLD. It matches how `SECTORS_YAML` already behaves — both raise
+  inside `guarded()` on an unreadable file — so there is one rule for unreadable config
+  rather than two. Ruled by Benjamin, 2026-08-21.
 - **Never weaken a test or update a golden fixture to go green.** Stop and ask.
 - **Conventional commits.** Never write `Co-Authored-By` or any AI attribution in a commit or PR body.
 - **Baseline before every commit:** `make test` → 1105 passed, 1 skipped, 7 deselected at `894e1b8`. The count only grows.
@@ -187,8 +188,16 @@ The whole payload is diffed, not a list of interesting settings. Enumeration is
 the failure mode this repo keeps hitting: the exec verb surface was counted
 4 -> 5 -> 7 -> 8 by four sessions in one afternoon, and the hand-written
 setting list in config/broker_tool_surface.yaml is already wrong against pinned
-alpaca-py 0.44.0. A field Alpaca adds later must redden a check, not pass
-unseen.
+alpaca-py 0.44.0.
+
+The pin is against alpaca-py's AccountConfiguration model, not Alpaca's raw
+API response -- that model's extra='ignore' default drops a field it does not
+declare before account_config() ever hands it a dict, so a field Alpaca adds
+to the wire is unreachable here until an alpaca-py upgrade declares it. That
+is the right boundary, not a gap: a field the fund cannot see cannot affect
+the fund, and the upgrade that makes it visible is itself a human commit --
+invariant 3's own mechanism. The check reddens the first day the fund can
+actually observe the field.
 
 Not a stage: an assertion must re-check on a resumed day rather than be skipped
 as 'done', and a duplicate alert is the safe direction.
@@ -444,9 +453,12 @@ In `market/source_alpaca.py`, add to `AlpacaSource` directly after `account_stat
 
         Deliberately unfiltered. orchestrator/preconditions.py diffs the whole
         payload against a pinned baseline precisely so a setting nobody
-        classified — or one Alpaca adds in a later release — still reddens the
-        check. A field list here would reintroduce the enumeration that
-        config/broker_tool_surface.yaml's comment already got wrong."""
+        classified still reddens the check. A field list here would
+        reintroduce the enumeration that config/broker_tool_surface.yaml's
+        comment already got wrong. (A field Alpaca adds in a later release is
+        a different case: alpaca-py's extra='ignore' default drops it before
+        this method ever sees it, so it reddens on the alpaca-py upgrade that
+        declares it, not on Alpaca shipping it.)"""
         c = self._trading.get_account_configurations()
         return {k: v for k, v in vars(c).items() if not k.startswith("_")}
 ```
@@ -489,10 +501,19 @@ Create `config/account_config_baseline.yaml`:
 # The paper account's settings, PINNED.
 #
 # orchestrator/preconditions.py diffs this against the broker before every
-# trading day and alerts on ANY difference — a changed value, a field Alpaca
-# drops, or a field Alpaca adds. The whole payload is pinned on purpose: the
-# hand-written setting list in config/broker_tool_surface.yaml was already
-# wrong against pinned alpaca-py 0.44.0, which is what enumeration does.
+# trading day and alerts on ANY difference — a changed value, a field the
+# model drops, or a field the model adds. The whole payload is pinned on
+# purpose: the hand-written setting list in config/broker_tool_surface.yaml
+# was already wrong against pinned alpaca-py 0.44.0, which is what
+# enumeration does.
+#
+# The pin is against alpaca-py's AccountConfiguration model, not against
+# Alpaca's raw API response. That model defaults to pydantic's extra='ignore',
+# so a field Alpaca adds to the wire is dropped before account_config() ever
+# sees it -- a field the fund cannot see cannot affect the fund. The alpaca-py
+# version bump that makes a new field visible is itself a human commit, which
+# is invariant 3's own mechanism applied here: the check reddens the first day
+# the fund can actually observe the field, not the day Alpaca ships it.
 #
 # Invariant 3 says gate thresholds change only by human commit. These are the
 # settings those thresholds stand on, so they change the same way: when a drift

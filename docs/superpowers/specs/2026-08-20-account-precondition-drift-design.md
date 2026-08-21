@@ -39,8 +39,16 @@ mode this repo hit twice today: the exec verb surface was counted 4 → 5 → 7 
 sessions, and the hand-written setting list in `config/broker_tool_surface.yaml:41-43` is
 *already* wrong against pinned alpaca-py 0.44.0 — it omits `dtbp_check` and `pdt_check`
 and lists `disable_overnight_trading`, which that version's model does not have. A
-whole-payload diff has no list to keep current, and a field Alpaca adds later reddens a
-check instead of passing unseen.
+whole-payload diff has no list to keep current.
+
+The pin is against **alpaca-py's `AccountConfiguration` model, not Alpaca's raw API
+response.** That model defaults to pydantic's `extra='ignore'`, so a field Alpaca adds to
+the wire is dropped before `account_config()` ever sees it — this is unreachable on the
+live path, not merely untested. That is the right boundary, not a gap: a field the fund
+cannot see cannot affect the fund, and the alpaca-py version bump that makes a new field
+visible is itself a human commit, which is invariant 3's own mechanism applied here. The
+check reddens the first day the fund can actually observe the field, not the day Alpaca
+ships it.
 
 **The baseline is a checked-in file.** Drift is resolved by a human committing a new
 baseline. That is invariant 3's mechanism — human commit — applied to preconditions
@@ -132,7 +140,7 @@ can pass while lying is worse than no check:
 | Broker unreachable / raises | Alert |
 | Payload unparseable | Alert |
 | Baseline field absent from payload | Alert — Alpaca removed a setting |
-| Payload field absent from baseline | Alert — Alpaca added a setting |
+| Payload field absent from baseline | Alert — alpaca-py's model reports a field the baseline does not pin (reachable on an alpaca-py version bump that declares a new field; a field Alpaca adds on the wire but alpaca-py does not yet declare is dropped by `extra='ignore'` before this branch can see it) |
 | Exact match | Silent |
 | **Baseline file missing or unparseable** | **Aborts the day** — see below |
 
@@ -142,8 +150,8 @@ Every branch above the last one alerts and the day proceeds.
 missing or unparseable file raises before the assertion is entered and `guarded()` stops
 the day. That is deliberate and was chosen over wrapping the load: it is not drift, it
 means *no* precondition can be verified, and invariant 4's default is HOLD. It also
-matches how `SECTORS_YAML` already behaves two lines above, so unreadable config has one
-rule rather than two.
+matches how `SECTORS_YAML` already behaves — both raise inside `guarded()` on an
+unreadable file — so unreadable config has one rule rather than two.
 
 ## Testing
 
