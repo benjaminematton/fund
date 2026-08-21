@@ -12,14 +12,25 @@
 # Editing this file to silence an alert you have not explained is the one
 # misuse that makes the check worthless.
 #
-# PLACEHOLDER — captured values land in Task 5. Until then this file is
-# structurally valid but does not describe the real account.
-dtbp_check: entry
+# Captured 2026-08-21 from the live Alpaca PAPER account, read on the droplet
+# (138.197.47.97, /opt/fund) with ALPACA_PAPER_TRADE=true asserted before the
+# call. Read-only; nothing on the box was modified.
+#
+# Three fields are genuinely null on this account — dtbp_check, pdt_check and
+# max_options_trading_level. That is what the broker reports, not a gap in the
+# capture, and it is pinned as null so that a value APPEARING there is drift.
+#
+# no_shorting is FALSE: the broker permits shorting on this account. The fund
+# is long-only by construction rather than by permission — gate/risk.py caps a
+# sell at held_qty and rejects a negative one, and orchestrator/protection.py
+# treats a short as unclassifiable and fails closed. Nothing here relies on
+# this flag, which is precisely why a silent change to it needed detecting.
+dtbp_check: null
 fractional_trading: true
 max_margin_multiplier: "4"
-max_options_trading_level: 0
+max_options_trading_level: null
 no_shorting: false
-pdt_check: entry
+pdt_check: null
 ptp_no_exception_entry: false
 suspend_trade: false
 trade_confirm_email: all
