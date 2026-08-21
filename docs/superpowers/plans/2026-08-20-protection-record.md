@@ -8,6 +8,39 @@
 
 **Tech Stack:** Python 3.12, SQLite, pytest. No new dependencies.
 
+> ## Revision 4 — rebased onto current master, and two fixes that dissolved
+>
+> **The base moved 45 commits while this was being written.** Revisions 1–3 and all three
+> reviews were verified against `41a48dd`; the branch is now on `894e1b8`. Two consequences:
+>
+> - **Task 2's migration is obsolete.** `state/db.py` now parses `_TABLES` out of `schema.sql`
+>   and re-runs the script whenever a listed table is missing, so a new table reaches an existing
+>   database — the droplet included — with no migration. The task collapses to one DDL block, and
+>   review 3's H2 (the schema/migration drift test) vanishes with the duplication it tested.
+>   **The DDL must use `CREATE TABLE IF NOT EXISTS`** — that exact string is what the regex
+>   matches, and a bare `CREATE TABLE` would create the table on fresh databases and never
+>   register it, reintroducing the very failure this task existed to prevent.
+> - **`orchestrator/protection.py` grew from 251 to 421 lines.** It now carries a second
+>   assertion, `assert_positions_accounted`, and `daily.py:490-492` calls both.
+>
+> Applying review 3's process finding — *every revision inverts the last finding and stops at its
+> new endpoint* — two fixes were checked at the endpoint and **dissolved instead of flipping**:
+>
+> - **C1 (`id_factory` breaks 30 tests):** the row's natural key is
+>   `(alpaca_order_id, observed_at)`. Derive the id from it. No signature change, no call-site
+>   churn, and review 3's L2 (`ctx.id_factory` shared with tickets → `StopIteration` in a future
+>   sim day) goes too.
+> - **C2 (the nap re-read logs stale content) and H1 (the wording is false):** both came from
+>   Task 5 reading *this run's* log, which review 3 showed is a round-trip of the same broker read.
+>   Task 5 now reads the **most recent observation strictly before this run** — information the
+>   current read cannot produce. This run's write becomes irrelevant to this run's alert, so C2
+>   has nothing to corrupt and H1's contrast becomes true.
+>
+> Also fixed: **H4** (the write is now after the alert is computed, in its own try — it cannot
+> affect the day), **M1** (`stop_price` nullable, because `trailing_stop` has none and
+> `_STOP_TYPES` counts it), **M6** (`_CLOSING_SIDE` moves with `STOP_TYPES` and `_qty`), **M7**
+> (`provenance_kind` now has a consumer). **H3** is fixed in ADR-0004 and the spec, not here.
+>
 > ## Revision 3 — a different shape, not another patch
 >
 > Two adversarial reviews ([one](../reviews/2026-08-20-protection-record-review.md),
