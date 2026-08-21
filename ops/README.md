@@ -380,13 +380,19 @@ nowhere else and makes the next pull conflict. If it refuses to fast-forward,
 someone edited the tree in place — find out what before forcing anything.
 
 **3. Check the two files that a pull alone does not handle.** If
-`pyproject.toml` changed, the venv is stale — resync it **as the `fund` user**,
-never as root, or the venv ends up owned by root and the units can no longer
-write it:
+`requirements.lock` or `pyproject.toml` changed, the venv is stale — resync it
+**as the `fund` user**, never as root, or the venv ends up owned by root and
+the units can no longer write it:
 
 ```bash
 su - fund -c 'cd /opt/fund && .venv/bin/python3 scripts/sync_deps.py'
 ```
+
+The resync installs `requirements.lock` and then re-reads installed metadata,
+exiting non-zero if the venv still disagrees with it. A clean exit is the
+evidence that this host runs the locked set — check the exit code, never
+`pyproject.toml`, which is a range and matched all along while the hosts
+differed on 20 packages.
 
 If `state/schema.sql` changed, read `state/migrations.py` before pulling.
 
