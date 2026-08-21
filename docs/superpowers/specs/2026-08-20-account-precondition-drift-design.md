@@ -134,8 +134,16 @@ can pass while lying is worse than no check:
 | Baseline field absent from payload | Alert — Alpaca removed a setting |
 | Payload field absent from baseline | Alert — Alpaca added a setting |
 | Exact match | Silent |
+| **Baseline file missing or unparseable** | **Aborts the day** — see below |
 
-Nothing here blocks. Every branch either alerts or passes.
+Every branch above the last one alerts and the day proceeds.
+
+**The one exception, ruled 2026-08-21.** The baseline is loaded at the call site, so a
+missing or unparseable file raises before the assertion is entered and `guarded()` stops
+the day. That is deliberate and was chosen over wrapping the load: it is not drift, it
+means *no* precondition can be verified, and invariant 4's default is HOLD. It also
+matches how `SECTORS_YAML` already behaves two lines above, so unreadable config has one
+rule rather than two.
 
 ## Testing
 

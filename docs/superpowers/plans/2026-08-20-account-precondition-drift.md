@@ -15,7 +15,13 @@
 - **Paper only.** `ALPACA_PAPER_TRADE=true`. Never add a live-trading path, flag, or TODO.
 - **`gate/` gains nothing.** No imports, no new files, no network call. `scripts/check_purity.py` must not be edited.
 - **Default is HOLD / alert.** Every error, unreachable broker, or malformed payload alerts. No branch may pass silently.
-- **Alert-only.** Nothing in this plan may block, halt, or abort a trading day.
+- **Alert-only, for drift.** A setting that has *changed* alerts and the day proceeds — the
+  envelope already bounds it, so refusing to trade buys nothing. Likewise an unreachable
+  broker, a malformed payload, or a baseline that parses to empty.
+  **One deliberate exception: a baseline file that is missing or unparseable aborts the
+  day.** That is not drift — it means no precondition can be verified at all, and
+  invariant 4's default is HOLD. It matches `SECTORS_YAML` two lines above, so there is one
+  rule for unreadable config rather than two. Ruled by Benjamin, 2026-08-21.
 - **Never weaken a test or update a golden fixture to go green.** Stop and ask.
 - **Conventional commits.** Never write `Co-Authored-By` or any AI attribution in a commit or PR body.
 - **Baseline before every commit:** `make test` → 1105 passed, 1 skipped, 7 deselected at `894e1b8`. The count only grows.
