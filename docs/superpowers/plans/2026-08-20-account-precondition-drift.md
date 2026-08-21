@@ -520,8 +520,12 @@ def test_account_baseline_yaml_parses_and_is_not_empty():
     assert isinstance(baseline, dict) and baseline
 
 
-def test_drift_alerts_and_the_day_still_runs(tmp_path):
-    """Alert-only: drift must never stop a trading day."""
+def test_drift_alerts_without_raising(tmp_path):
+    """Alert-only: drift is recorded and returns a count rather than raising.
+
+    That the DAY still completes with the check wired in is proved by
+    `make sim-day` in this task's verification, not here — this exercises the
+    assertion alone and is named for what it actually does."""
     import json
 
     from orchestrator.preconditions import assert_account_config_unchanged
@@ -544,7 +548,7 @@ def test_drift_alerts_and_the_day_still_runs(tmp_path):
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `pytest tests/test_run_day.py -k "account_baseline or drift_alerts" -v`
+Run: `pytest tests/test_run_day.py -k "account_baseline or drift_alerts_without_raising" -v`
 Expected: FAIL — `ImportError: cannot import name 'ACCOUNT_BASELINE_YAML' from 'scripts.run_day'`
 
 - [ ] **Step 4: Add the constant and the call**
@@ -585,7 +589,7 @@ Expected: `iso` imported from `orchestrator.clock` at :72 and `drain` from `slac
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `pytest tests/test_run_day.py -k "account_baseline or drift_alerts" -v`
+Run: `pytest tests/test_run_day.py -k "account_baseline or drift_alerts_without_raising" -v`
 Expected: PASS, 2 passed
 
 - [ ] **Step 7: Run the full suite and a simulated day**
