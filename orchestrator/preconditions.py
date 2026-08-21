@@ -16,8 +16,16 @@ The whole payload is diffed, not a list of interesting settings. Enumeration is
 the failure mode this repo keeps hitting: the exec verb surface was counted
 4 -> 5 -> 7 -> 8 by four sessions in one afternoon, and the hand-written
 setting list in config/broker_tool_surface.yaml is already wrong against pinned
-alpaca-py 0.44.0. A field Alpaca adds later must redden a check, not pass
-unseen.
+alpaca-py 0.44.0.
+
+The pin is against alpaca-py's AccountConfiguration model, not Alpaca's raw
+API response — that model's extra='ignore' default drops a field it does not
+declare before account_config() ever hands it a dict, so a field Alpaca adds
+to the wire is unreachable here until an alpaca-py upgrade declares it. That
+is the right boundary, not a gap: a field the fund cannot see cannot affect
+the fund, and the upgrade that makes it visible is itself a human commit —
+invariant 3's own mechanism. The check reddens the first day the fund can
+actually observe the field.
 
 Not a stage: an assertion must re-check on a resumed day rather than be skipped
 as 'done', and a duplicate alert is the safe direction.
@@ -56,10 +64,14 @@ def assert_account_config_unchanged(conn: sqlite3.Connection, *, broker,
     try:
         actual = broker.account_config()
     except Exception as e:                       # noqa: BLE001 — every failure alerts
+        # The Slack text is capped at 120 chars for readability — a
+        # multi-field pydantic ValidationError would run the distinguishing
+        # field names past that cap. The payload keeps the FULL error so the
+        # text's cap never costs the only diagnostic that exists.
         return alert(
             f"account config: could not read from the broker —"
             f" {type(e).__name__}: {str(e)[:120]}",
-            {"reason": "unreadable"})
+            {"reason": "unreadable", "error": str(e)})
 
     if not isinstance(actual, dict):
         return alert(
