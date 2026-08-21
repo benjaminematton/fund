@@ -24,6 +24,18 @@ seat: news
 # will plausibly need MORE turns and more tokens, not fewer. Expect these to
 # rise once N2 goes green, and raise them on evidence rather than treating the
 # first honest run as a regression.
+#
+# AND THE SEAT IS NO LONGER THE ONE THESE NUMBERS DESCRIBE. charters/news.md
+# went to v2 in 8cbaa1e (PR #29), which fixed the zero-width get_news window
+# that caused the empty results above; PR #30 carried it, and the droplet has
+# it (`git merge-base --is-ancestor 8cbaa1e c91b408` -> true). So the first
+# run against v2 is the FIRST honest sample this file has ever had, and both
+# rows above describe a seat that no longer exists.
+#
+# READ N1/N2 COLOUR WITH THAT IN MIND. Both were written from v1 output. A red
+# N2 on a v1-era trace is the incident being detected correctly. A red N2 on a
+# v2 run is a real finding. Do not average them, and do not read a green as
+# "fixed" until it is a green on a v2 trace.
 max_turns: 9              # measured max 8 + 1
 max_cost_usd: 0.06        # 1.4x measured max ($0.0420)
 
