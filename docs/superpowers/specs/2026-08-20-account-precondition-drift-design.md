@@ -54,7 +54,7 @@ and `scripts/check_purity.py` are untouched.
 
 ```
 AlpacaSource.account_config()  ──┐
-                                 ├─→ assert_account_config_unchanged() ─→ findings ─→ outbox ─→ Slack
+                                 ├─→ assert_account_config_unchanged() ─→ `alert` events ─→ outbox ─→ Slack
 config/account_config_baseline.yaml ─┘
 ```
 
@@ -79,17 +79,23 @@ config/account_config_baseline.yaml ─┘
    implementation can proceed and the capture lands last.
 
 3. **`orchestrator/preconditions.py`**
-   New module. `assert_account_config_unchanged(conn, *, broker, now_iso) -> list`.
-   Diffs baseline against broker, appends one event per drift, returns findings — the
-   same contract the `protection.py` assertions use.
+   New module. `assert_account_config_unchanged(conn, *, broker, now_iso) -> int`,
+   returning the number of alerts appended — the exact contract
+   `assert_positions_protected` and `assert_positions_accounted` already use.
 
    *Why a new module rather than growing `protection.py`:* that module has one subject —
    promised stops versus broker positions — and its docstring is written entirely around
    that comparison. Account config is a different subject on a different data source.
 
-4. **`account_config_drift` event kind + its `RENDERERS` entry in `slackkit/render.py`,
-   in the same commit.** A kind with no renderer is dead-lettered by `drain()`, appends
-   `projection_error`, and reddens the day one step from the cause.
+4. **No new event kind.** Drift is appended as the existing `alert` kind, which already
+   has a renderer (`slackkit/render.py:222`) and already fails the day in
+   `scripts/audit_day.py:151`. That is the right severity: drift means the fund traded
+   under preconditions nobody verified, and it is rare enough not to cry wolf.
+
+   The `model_fallback_used` precedent — "deliberately NOT an `alert`" — points the other
+   way and does not apply. That event fires every seat turn and is not a fault; this one
+   is rare and is. Using `alert` also removes the dead-letter hazard a new kind would have
+   introduced, so the guard that hazard needed disappears with it.
 
 5. **`FakeAlpaca.account_config()`** (`tests/fake_alpaca.py`)
    So `make sim-day` and the offline suite have the surface. Returns the baseline payload
@@ -97,12 +103,23 @@ config/account_config_baseline.yaml ─┘
 
 ### Wiring
 
-Top of `run_day` in `orchestrator/daily.py`, **before the `pre_gate` stage** — a
-precondition should be known before sizing, not after it.
+Called from `scripts/run_day.py`, immediately before it calls `run_day(...)` at :607 —
+so it runs before any stage, and a precondition is known before sizing rather than after.
 
 Not a stage, for the reason already written at `daily.py:478`: an assertion must re-check
 on a resumed day rather than be skipped as done, and a duplicate alert is the safe
-direction. Drained explicitly, since `run_stage` returns before draining.
+direction. `scripts/run_day.py` is the entry point for every run including resumes, so it
+re-checks. Drained explicitly.
+
+*Why here rather than inside `orchestrator/daily.run_day`:* the check needs config, and
+config loading in this codebase lives in `scripts/run_day.py` (`SECTORS_YAML` at :83,
+loaded at :518) while `orchestrator/` and `market/` read no files and receive data.
+Putting it inside `run_day` would mean a new `StageCtx` field with a default, and that
+default is a trap — `None` either silently skips the check, which is the
+passes-while-lying failure this branch exists to prevent, or alerts and churns the eight
+existing `run_day` call sites in the tests. Loading at the `scripts/` seam removes the
+fork: a missing baseline file fails loudly at load, exactly as a missing `sectors.yaml`
+would.
 
 ## Failure semantics
 
@@ -111,7 +128,7 @@ can pass while lying is worse than no check:
 
 | Condition | Behaviour |
 |---|---|
-| Field differs from baseline | Alert, one finding per field, naming old and new |
+| Field differs from baseline | Alert, one per field, naming old and new |
 | Broker unreachable / raises | Alert |
 | Payload unparseable | Alert |
 | Baseline field absent from payload | Alert — Alpaca removed a setting |
@@ -126,12 +143,10 @@ TDD, per `specs/acceptance.md`'s red-first rule. A green suite is not evidence �
 green through all three of this week's incidents. The tests that matter show the check
 **firing**:
 
-- each drift class in the table above produces exactly one finding, with the field named
-- an exact match is silent
+- each drift class in the table above produces exactly one alert, with the field named
+- an exact match is silent and returns 0
 - a broker that raises alerts rather than propagating
-- the `account_config_drift` kind has a `RENDERERS` entry (the existing
-  `test_every_written_kind_has_a_renderer` covers this once the kind exists)
-- `run_day` still completes when drift is present — proving alert-only, not blocking
+- the day still completes when drift is present — proving alert-only, not blocking
 
 Baseline before any change: **1105 passed, 1 skipped, 7 deselected** at `894e1b8`.
 
