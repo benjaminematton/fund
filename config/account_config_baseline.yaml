@@ -1,0 +1,45 @@
+# The paper account's settings, PINNED.
+#
+# orchestrator/preconditions.py diffs this against the broker before every
+# trading day and alerts on ANY difference — a changed value, a field the
+# model drops, or a field the model adds. The whole payload is pinned on
+# purpose: the hand-written setting list in config/broker_tool_surface.yaml
+# was already wrong against pinned alpaca-py 0.44.0, which is what
+# enumeration does.
+#
+# The pin is against alpaca-py's AccountConfiguration model, not against
+# Alpaca's raw API response. That model defaults to pydantic's extra='ignore',
+# so a field Alpaca adds to the wire is dropped before account_config() ever
+# sees it — a field the fund cannot see cannot affect the fund. The alpaca-py
+# version bump that makes a new field visible is itself a human commit, which
+# is invariant 3's own mechanism applied here: the check reddens the first day
+# the fund can actually observe the field, not the day Alpaca ships it.
+#
+# Invariant 3 says gate thresholds change only by human commit. These are the
+# settings those thresholds stand on, so they change the same way: when a drift
+# alert fires, verify the change was intended, then commit the new values here.
+# Editing this file to silence an alert you have not explained is the one
+# misuse that makes the check worthless.
+#
+# Captured 2026-08-21 from the live Alpaca PAPER account, read on the droplet
+# (138.197.47.97, /opt/fund) with ALPACA_PAPER_TRADE=true asserted before the
+# call. Read-only; nothing on the box was modified.
+#
+# Three fields are genuinely null on this account — dtbp_check, pdt_check and
+# max_options_trading_level. That is what the broker reports, not a gap in the
+# capture, and it is pinned as null so that a value APPEARING there is drift.
+#
+# no_shorting is FALSE: the broker permits shorting on this account. The fund
+# is long-only by construction rather than by permission — gate/risk.py caps a
+# sell at held_qty and rejects a negative one, and orchestrator/protection.py
+# treats a short as unclassifiable and fails closed. Nothing here relies on
+# this flag, which is precisely why a silent change to it needed detecting.
+dtbp_check: null
+fractional_trading: true
+max_margin_multiplier: "4"
+max_options_trading_level: null
+no_shorting: false
+pdt_check: null
+ptp_no_exception_entry: false
+suspend_trade: false
+trade_confirm_email: all

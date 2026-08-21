@@ -614,6 +614,19 @@ class _QuietSource:
     def open_orders(self) -> list[dict]:
         return []
 
+    # orchestrator/preconditions.py fails closed on a broker it cannot read,
+    # same as open_positions above — quiet means matching the baseline
+    # exactly, not staying silent. This reads the same file the production
+    # code compares against, rather than returning DEFAULT_ACCOUNT_CONFIG,
+    # so this stays quiet once the placeholder baseline is replaced with
+    # values captured from the real account. Tying the fake to its own
+    # defaults would pass today only by coincidence, and once a real capture
+    # made it red, the tempting "fix" would be to edit the captured baseline
+    # to match this fixture instead of the other way around.
+    def account_config(self) -> dict:
+        return yaml.safe_load(
+            run_day_script.ACCOUNT_BASELINE_YAML.read_text()) or {}
+
 
 def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
         wired, tmp_path, monkeypatch, capsys):
@@ -819,3 +832,65 @@ def test_no_sink_configured_is_a_silent_no_op():
     run_day = _load()
     run_day.emit_trace_guarded("pm", _PM_CFG, "2026-08-18", itertools.count(),
                                None, [], _Res(), None)
+
+
+def test_account_baseline_yaml_parses_and_is_not_empty():
+    """An empty or unparseable baseline makes the drift check unable to fail,
+    so it is checked here rather than discovered at 09:00."""
+    baseline = yaml.safe_load(
+        run_day_script.ACCOUNT_BASELINE_YAML.read_text())
+    assert isinstance(baseline, dict) and baseline
+
+
+def test_a_drifted_account_setting_alerts_but_does_not_abort_the_day(
+        wired, tmp_path, monkeypatch):
+    """WIRING, not the assertion's own logic (that is test_preconditions.py's
+    job). `_trading_day`'s call to `assert_account_config_unchanged` is not
+    pinned by any existing test: deleting the `if
+    assert_account_config_unchanged(...)` block at scripts/run_day.py changes
+    no test result, because the three tests that look like they cover it do
+    not — one reads only the yaml file, one calls the assertion directly with
+    no import from run_day.py, and `make sim-day` never reaches `_trading_day`
+    at all. This drives the same entry point
+    test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean uses,
+    with a broker whose account_config() differs from the baseline in one
+    field, and proves the design's promised claim: the day still completes
+    when drift is present — alert-only, not blocking.
+
+    "Not blocking" is NOT the same as a clean exit code: audit_day.py counts
+    "no alert events TODAY" as part of a clean day by design (drift means the
+    fund traded under preconditions nobody verified, and that is meant to
+    surface), so a day with real drift genuinely returns 1 — that IS the
+    audit doing its job, not the day aborting. What "alert-only, not
+    blocking" actually promises, and what this asserts, is that every stage
+    still ran to completion and the day's digest still posted, rather than
+    the drift check stopping the day before a single stage runs."""
+    conn, slack, clock = wired
+    db_path = str(tmp_path / "fund.sqlite")
+
+    class _DriftingSource(_QuietSource):
+        def account_config(self) -> dict:
+            baseline = super().account_config()
+            return dict(baseline, suspend_trade=not baseline["suspend_trade"])
+
+    async def _no_llm(*a, **k):
+        raise AssertionError("a zero-ticker day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _DriftingSource(), "2026-07-06", db_path,
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    # The audit correctly reddens on a real drift alert (see docstring) — this
+    # is the load-bearing half of the proof: delete the call site and no
+    # alert fires at all, so this becomes 0 instead.
+    assert code == 1
+    assert any("suspend_trade" in t for t in _risk_texts(slack))
+
+    # ...but every stage still ran to completion — the check did not stop the
+    # day, which is what "alert-only, not blocking" actually means.
+    assert {r["stage"]: r["status"] for r in conn.execute(
+        "SELECT stage, status FROM checkpoints WHERE run_date = '2026-07-06'")
+    } == {s: "done" for s in ("pre_gate", "research", "decision", "gate",
+                              "execution", "reconciliation", "close")}

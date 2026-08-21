@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import os
 from datetime import timedelta
+from enum import Enum
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -170,3 +171,25 @@ class AlpacaSource:
             "positions": {p.symbol: int(float(p.qty)) for p in pos},
             "prices": {p.symbol: float(p.current_price) for p in pos},
         }
+
+    def account_config(self) -> dict:
+        """Every account setting the broker reports, as plain values.
+
+        Deliberately unfiltered. orchestrator/preconditions.py diffs the whole
+        payload against a pinned baseline precisely so a setting nobody
+        classified still reddens the check. A field list here would
+        reintroduce the enumeration that config/broker_tool_surface.yaml's
+        comment already got wrong. (A field Alpaca adds on the wire is a
+        different case: `get_account_configurations()` returns alpaca-py's
+        AccountConfiguration, whose extra='ignore' default drops any field it
+        does not declare before this method ever sees it — this reddens on
+        the alpaca-py upgrade that declares the field, not on Alpaca shipping
+        it.)
+
+        Three of these fields (dtbp_check, pdt_check, trade_confirm_email) are
+        alpaca-py (str, Enum) members, not plain scalars, so each is coerced
+        via `_enum_str` -- the YAML baseline this gets diffed against holds
+        plain strings, bools, and ints only."""
+        c = self._trading.get_account_configurations()
+        return {k: (_enum_str(v) if isinstance(v, Enum) else v)
+                for k, v in c.model_dump().items()}
