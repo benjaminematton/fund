@@ -22,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from evals.verdict import INCONCLUSIVE  # noqa: E402
 from scripts.eval_one import ENV, load_env  # noqa: E402
 
 TRIALS = 3
@@ -119,10 +120,29 @@ def main(argv: list[str]) -> int:
     # non-zero means the rig could not run, never that a seat judged badly.
     # Verdict FAILs stay exit 0 on purpose — `make eval` measures judgment, and
     # a case the seat fails is a result, not an error.
+    # `is_error` alone does not cover it. runner.py:216 computes it as
+    # `bool(err) or bool(getattr(result, "is_error", False))`, so a turn whose
+    # stream carried no ResultMessage — result is None, no exception — records
+    # is_error False with turns and cost None. I5 then scores it INCONCLUSIVE
+    # and every other invariant still passes, so the run reports 0/3 and the
+    # gate returns green. An INCONCLUSIVE trial is not a pass (grade.py), and
+    # TrialResult.inconclusive is that predicate; the gate reads it rather
+    # than restating the rule.
     errored = [t for t in traces if t.is_error]
+    unmeasured = [r for r in results if r.inconclusive]
     if errored:
         print(f"{len(errored)}/{len(traces)} trials never completed a turn —"
               " rig or environment failure, not a seat result", file=sys.stderr)
+    if unmeasured:
+        # Name the invariant and tag: `no-result` is a rig failure, while
+        # `cost-missing` is SDK weather the operator can clear by re-running.
+        # Both block the deploy; only one is worth debugging.
+        tags = sorted({f"{v.invariant}[{v.tag}]" for r in unmeasured
+                       for v in r.verdicts if v.outcome == INCONCLUSIVE})
+        print(f"{len(unmeasured)}/{len(results)} trials scored INCONCLUSIVE"
+              f" ({', '.join(tags)}) — not a pass, so this run did not measure"
+              " what the gate checks", file=sys.stderr)
+    if errored or unmeasured:
         return 1
     return 0
 

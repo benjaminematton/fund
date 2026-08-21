@@ -31,10 +31,15 @@ ROOT = Path(__file__).resolve().parents[1]
 CHARTER = ROOT / "charters" / "pm.md"
 
 
-def a01_trace(trial: int, *, action: str = "buy", is_error: bool = False):
+def a01_trace(trial: int, *, action: str = "buy", is_error: bool = False,
+              turns: int | None = 4):
     """One a01 trial that clears every Tier S invariant, so the only verdict
     that can move is EXPECT. a01 expects `buy` with qty >= 1; passing
-    action="hold" fails EXPECT alone (tag wrong-action)."""
+    action="hold" fails EXPECT alone (tag wrong-action).
+
+    `turns=None` is the no-ResultMessage posture: run_seat_turn returns
+    (names, None) when the stream carried one (agents/exec_turn.py:98), so
+    runner.py records turns AND cost as None while is_error stays False."""
     qty = 0 if action == "hold" else 10
     return Trace(
         case="a01", trial=trial, seat="pm", git_sha="deadbee",
@@ -51,7 +56,8 @@ def a01_trace(trial: int, *, action: str = "buy", is_error: bool = False):
              "stop_price": 150.0 if action == "buy" else None,
              "status": "submitted"}]},
         # I5 ceilings from evals/seats/pm.yaml; comfortably inside both.
-        turns=4, cost_usd=0.05, duration_ms=14200,
+        turns=turns, cost_usd=0.05 if turns is not None else None,
+        duration_ms=14200,
         is_error=is_error,
         error="RuntimeError: mcp server never connected" if is_error else None)
 
@@ -93,6 +99,19 @@ def test_a_verdict_fail_with_no_rig_error_exits_0(rig, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert "EXPECT" in out and "wrong-action" in out, out
+
+
+def test_a_run_that_measured_nothing_exits_1(rig):
+    """A suite where no trial produced a ResultMessage measured nothing, and
+    `make preflight` must not call that a green deploy.
+
+    `is_error` does not catch it: runner.py:216 computes
+    `bool(err) or bool(getattr(result, "is_error", False))`, and a `result`
+    of None reads as clean. So the trials are not errored — they are
+    INCONCLUSIVE, which grade.py:47 already says "is not a pass" and
+    TrialResult.inconclusive already computes. Gating on is_error alone hands
+    back the same green checkmark as 8903d3a, reached by a different route."""
+    assert run_suite(rig, turns=None) == 1
 
 
 def test_a_clean_run_exits_0(rig):
