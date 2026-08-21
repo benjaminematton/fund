@@ -48,8 +48,12 @@ def mcp_envelope(resp: dict) -> str:
 
 
 # The nine fields alpaca.trading.models.AccountConfiguration carries in pinned
-# alpaca-py 0.44.0. Values are paper-account defaults; a test that cares about
-# a specific setting overrides it rather than editing this dict.
+# alpaca-py 0.44.0. Values are ARBITRARY fixture placeholders, deliberately
+# NOT the real account's — the real account reports null for dtbp_check,
+# pdt_check and max_options_trading_level, where this dict below guesses a
+# value. The real captured values live in config/account_config_baseline.yaml.
+# A test that cares about a specific setting overrides it rather than editing
+# this dict.
 DEFAULT_ACCOUNT_CONFIG = {
     "dtbp_check": "entry",
     "fractional_trading": True,
