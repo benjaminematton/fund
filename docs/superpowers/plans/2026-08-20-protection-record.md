@@ -151,56 +151,41 @@ git commit -m "fix: the fake broker hides held legs, exactly as the real one doe
 
 ---
 
-### Task 2: The log, and a migration that reaches production
+### Task 2: The log
 
 **Gated on the 🔏 ruling.**
 
-`state/db.py:connect()` runs `schema.sql` only when `tickets` is absent, so a new table reaches an existing database — including the droplet's — only through a migration. `state/migrations.py` handles `(table, column)` pairs and cannot express `CREATE TABLE`.
+`state/db.py` parses `_TABLES` from `schema.sql` and re-runs the script whenever a listed table
+is missing, so adding the table there is all that is required — an existing database gains it on
+the next `connect()`. **Revisions 1–3 built a migration for this; it is unnecessary on current
+master** (`b1d8c50`).
 
-**Files:** Modify `state/schema.sql`, `state/migrations.py`, `specs/contracts.md` · Test `tests/test_migrations.py`
+**Files:** Modify `state/schema.sql`, `specs/contracts.md` · Test `tests/test_state.py`
 
-**Interfaces:** Produces table `protection`; `apply()` able to return `"0002_protection"`.
-
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
 
 ```python
-def test_a_database_without_the_table_gains_it(tmp_path):
-    """Stands in for the droplet, which predates this table. This pins that
-    apply() creates and is idempotent; the real droplet evidence is the manual
-    dry-run in the plan's final section."""
-    conn = connect(tmp_path / "fund.sqlite")
+def test_a_database_without_the_log_gains_it_on_reconnect(tmp_path):
+    """The droplet case. _TABLES is parsed from schema.sql, so a table added
+    there is created on an existing database at the next connect() — no
+    migration. This pins that the new table is actually picked up by that
+    mechanism, which depends on the DDL saying CREATE TABLE IF NOT EXISTS."""
+    path = tmp_path / "fund.sqlite"
+    conn = connect(path)
     conn.execute("DROP TABLE protection")
     conn.commit()
+    conn.close()
 
-    assert apply(conn) == ["0002_protection"]
+    conn = connect(path)
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='protection'"
     ).fetchone() is not None
-    assert apply(conn) == []
-
-
-def test_the_migration_and_the_schema_agree(tmp_path):
-    """The DDL is written twice — once in schema.sql for fresh databases, once
-    in migrations.py for existing ones. Nothing else compares them, and a drift
-    reproduces this branch's own thesis: an offline suite proving a shape
-    production does not have. (Review 2, N8.)"""
-    fresh = connect(tmp_path / "fresh.sqlite")
-    migrated = connect(tmp_path / "migrated.sqlite")
-    migrated.execute("DROP TABLE protection")
-    migrated.commit()
-    apply(migrated)
-
-    def cols(conn):
-        return [(r["name"], r["type"], r["notnull"], r["dflt_value"])
-                for r in conn.execute("PRAGMA table_info(protection)")]
-
-    assert cols(fresh) == cols(migrated)
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [ ] **Step 2: Run it and watch it fail**
 
-Run: `pytest tests/test_migrations.py -v -k protection`
-Expected: FAIL — `no such table: protection`.
+Run: `pytest tests/test_state.py -v -k gains_it_on_reconnect`
+Expected: FAIL — `no such table: protection` on the DROP.
 
 - [ ] **Step 3: Add the DDL to `state/schema.sql`**
 
@@ -208,55 +193,51 @@ Expected: FAIL — `no such table: protection`.
 -- protection: an append-only OBSERVATION LOG. One row each time the fund sees a
 -- protective order at the broker. Deliberately NO status column — see ADR-0004.
 -- What the fund KNOWS it saw and when; never what EXISTS now (_covering_qty
--- reads the broker for that). Like events/costs, this is a log, not a workflow
+-- reads the broker for that). Like events/costs this is a log, not a workflow
 -- table, so contracts.md §1 has no machine for it.
-CREATE TABLE protection (
-  id                TEXT PRIMARY KEY,          -- fund-minted, always
+CREATE TABLE IF NOT EXISTS protection (
+  id                TEXT PRIMARY KEY,          -- "<alpaca_order_id>@<observed_at>"
   symbol            TEXT NOT NULL,
   qty               INTEGER NOT NULL CHECK (qty > 0),
-  stop_price        REAL NOT NULL CHECK (stop_price > 0),
-  alpaca_order_id   TEXT NOT NULL,             -- the broker's UUID
-  client_order_id   TEXT,                      -- the broker's client id, verbatim;
-                                               -- Alpaca-minted for an OTO leg,
-                                               -- 'manual-…' for a hand-placed order
+  stop_price        REAL CHECK (stop_price IS NULL OR stop_price > 0),
+  alpaca_order_id   TEXT NOT NULL,
+  client_order_id   TEXT,
   provenance_kind   TEXT NOT NULL
                     CHECK (provenance_kind IN ('observed','adopted')),
-  broker_expires_at TEXT,                      -- Alpaca's ~90-day GTC cap
-  observed_at       TEXT NOT NULL,             -- WHEN the fund saw this. The honesty
-                                               -- of every row depends on this column.
+  broker_expires_at TEXT,
+  observed_at       TEXT NOT NULL,
   created_at        TEXT NOT NULL,
-  UNIQUE (alpaca_order_id, observed_at)        -- one observation per order per run
+  UNIQUE (alpaca_order_id, observed_at)
 );
 ```
 
-**`alpaca_order_id` is NOT unique on its own** — this is a log, and the same order is observed on many days. Uniqueness is per observation. (That also removes revision 2's N4 hazard where a nullable UNIQUE column silently permitted duplicates.)
+**`CREATE TABLE IF NOT EXISTS` is load-bearing, not style.** `state/db.py:12` matches that exact
+string to build `_TABLES`. A bare `CREATE TABLE` would create the table on fresh databases and
+never register it, so no existing database would ever gain it — the precise failure this task
+exists to prevent, reintroduced by the DDL that prevents it.
 
-**Two provenance kinds, not three.** `observed` means the fund saw this protective order at the broker and **cannot establish its origin** — which is the truth for every row this branch writes, because there is no path from a broker order back to a ticket (review 1, C3). `adopted` means a human asserted provenance through the script. Revision 2 wrote `oto_leg` unconditionally, which was a fabrication in exactly the way it accused `ticket` of being (review 2, N2). Branch two adds `ticket` when the fund places an order itself and knows its own id.
+**`id` is derived, not minted:** `f"{alpaca_order_id}@{observed_at}"`. No `id_factory`, so
+`assert_positions_protected`'s signature is untouched and its 30 existing call sites stand
+(review 3, C1). Determinism is structural rather than injected, which also keeps sim-day and
+replay safe without sharing `ctx.id_factory` with tickets (review 3, L2).
 
-- [ ] **Step 4: Write the §2 DDL into `specs/contracts.md`** — 🔏, per the ruling. Note explicitly that there is no §1 entry and why: it is a log.
+**`stop_price` is NULLABLE.** `_STOP_TYPES` counts `trailing_stop`, which carries a trail rather
+than a stop price, and `test_stop_limit_and_trailing_stop_both_count` pins that. A NOT NULL
+column would make the log silently skip an order `_covering_qty` counts, under-reporting against
+the number in the same alert (review 3, M1).
 
-- [ ] **Step 5: Teach `migrations.py` to run statements**
+- [ ] **Step 4: Write the §2 DDL into `specs/contracts.md`** — 🔏, per the ruling. State
+explicitly that there is no §1 entry, and why: it is a log, like `events`.
 
-`0001` untouched. Add `_0002_PROTECTION` holding the same DDL with `CREATE TABLE IF NOT EXISTS`, a `_has_table` helper, and in `apply()` after the `0001` block:
+- [ ] **Step 5: Run the tests**
 
-```python
-    if not _has_table(conn, "protection"):
-        conn.executescript(_0002_PROTECTION)
-        conn.commit()
-        applied.append("0002_protection")
-```
+Run: `pytest tests/test_state.py tests/test_migrations.py -v`
+Expected: PASS. `test_ddl_applies_cleanly_and_is_idempotent` covers the new table for free.
 
-Step 1's second test is what keeps the two copies honest.
-
-- [ ] **Step 6: Run the tests**
-
-Run: `pytest tests/test_migrations.py tests/test_state.py -v`
-Expected: PASS, `0001`'s tests included.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add state/schema.sql state/migrations.py specs/contracts.md tests/test_migrations.py
+git add state/schema.sql specs/contracts.md tests/test_state.py
 git commit -m "feat: an append-only log of what the fund has seen protecting a position"
 ```
 
@@ -349,8 +330,9 @@ git commit -m "feat: open_orders carries the ids, stop price and expiry a record
 - Consumes Task 2's table, Task 3's widened `open_orders()`.
 - Produces:
   - `state.protection.STOP_TYPES = ("stop", "stop_limit", "trailing_stop")` and `state.protection.qty_of(value)` — **both live here**, and `orchestrator/protection.py` imports them back. Nothing in `state/` imports `orchestrator/` today (review 1, H5). Moving `_qty` too settles review 2's N16: there is one broker-side coercer, in one place.
-  - `state.protection.log_observed(conn, orders, *, now_iso, id_factory) -> list[str]` — appends one row per protective order; returns ids written.
-  - `state.protection.observed_at_run(conn, symbol, now_iso) -> list[dict]` — **this run's** observations only.
+  - `state.protection.STOP_TYPES`, `state.protection.CLOSING_SIDE` and `state.protection.qty_of` — **all three** live here, and `orchestrator/protection.py` imports them back. Moving `_CLOSING_SIDE` too settles review 3's M6: one protective-order predicate, in one place, that cannot drift.
+  - `state.protection.log_observed(conn, orders, *, now_iso) -> list[str]` — appends one row per protective order; returns ids written. **No `id_factory`** — the id is `f"{alpaca_order_id}@{observed_at}"`.
+  - `state.protection.last_observed_before(conn, symbol, now_iso) -> list[dict]` — the most recent observation **strictly before** `now_iso`. This is what Task 5 reads.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -456,13 +438,17 @@ Update `orchestrator/protection.py` to import `STOP_TYPES` and `qty_of` from her
 Run: `pytest tests/test_state_protection.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Thread `id_factory` and call the writer**
+- [ ] **Step 5: Call the writer, after the alerts are computed**
 
-`assert_positions_protected` has no `id_factory` and `daily.py:484-485` does not pass one, while `ctx.id_factory` is right there (review 2, N6). Add a keyword-only `id_factory` with no default, and pass `ctx.id_factory` at the call site. Both files are in this task deliberately.
+**No signature change.** The id is derived, so nothing needs injecting and the 30 existing call sites are untouched.
 
-**Place the call OUTSIDE the read `try`.** Capture the order list into a variable, let the existing `try` handle the *read*, then log. `assert_positions_protected`'s docstring is explicit: *"A SQLite write failure DOES propagate, and deliberately… Swallowing a failed write here would mean the alert this module exists to raise was silently never recorded."* Revision 2 instructed the opposite and would have turned a missing table into a false `UNVERIFIED — could not read live orders` that skipped the naked-position check for every position that day (review 2, N4).
+**Place the write at the very end, after the alert loop, using the order list the final evaluation used.** That ordering resolves three findings at once:
 
-Log on the **first** read. If the nap-and-re-read path runs, log again with the same `now_iso` — `INSERT OR IGNORE` makes it a no-op, and the second test pins that.
+- Task 5 reads observations from *before* this run, so the alert never depends on this write — review 2's N1 and review 3's C2 have nothing left to corrupt.
+- The nap-and-re-read question disappears: only the final list is logged, so there is no stale-vs-fresh race to lose (review 3, C2).
+- A SQLite failure cannot cost an alert, because the alerts are already written.
+
+**Wrap it in its own `try` whose failure becomes an alert**, and let the day continue. Not bare — review 3's H4 verified that a bare write propagates through `daily.py`, emits zero alerts and skips `run_close`. Not inside the read `try` either — review 2's N4 verified that reports a false `UNVERIFIED — could not read live orders`. The alert text must name what actually failed: recording, not reading.
 
 - [ ] **Step 6: Run the suite**
 
@@ -482,9 +468,11 @@ git commit -m "feat: the fund logs what it sees protecting each position"
 
 **Files:** Modify `orchestrator/protection.py:_evaluate` · Test `tests/test_protection.py`
 
-**Interfaces:** Consumes `state.protection.observed_at_run`. Produces alert text only.
+**Interfaces:** Consumes `state.protection.last_observed_before`. Produces alert text only.
 
-**Why this now works.** Revision 2 put a close sweep ahead of this read, and the shortfall branch is reached *precisely* when the broker holds no covering order — so the row was always already closed and the clause never rendered (review 2, N1). With a log there is no sweep: if nothing was observed this run, the query returns empty and the alert correctly says nothing about the record. If a **partial** cover was observed, it is named. That is the case this feature is for.
+**Why this reads the PAST, not this run.** Review 3 established that reading this run's log makes the record layer informationally identical to the broker read `_evaluate` already holds — a restatement dressed as a comparison, with wording ("which the broker does not confirm") that is false in the same sentence that produces it.
+
+Reading the most recent observation **strictly before** this run is the opposite: *"the broker holds no protective order; the fund last saw 80 @ 215 on 2026-08-19"* is information the current read cannot produce, and the contrast is true. It is also the first thing a human needs at 16:05 — not what is there, which the alert already says, but **when it was last there**.
 
 **`_promised_stop`'s tri-state is untouched.** A price, `None` for a charter-sanctioned stopless buy, `_UNKNOWN` for no record at all. The log cannot express the `None` case, which is why intent stays on the decision.
 
