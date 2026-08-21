@@ -8,6 +8,7 @@ missing, session crash, rows captured, alerts captured — is exercised for $0.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -297,6 +298,22 @@ def test_grade_applies_the_seats_invariant_registry(case, tmp_path):
                            invariants={"I9": i_always_fails})
     assert calls == ["a01"]
     assert results[0].verdicts[0].outcome == "FAIL"
+
+
+def test_grade_refuses_a_trace_whose_seat_is_not_the_cases_seat(case,
+                                                                tmp_path):
+    """Case ids repeat across seats — a pm a02 and a critic a02 are different
+    cases sharing an id — so a lookup keyed on id alone grades a PM trace
+    against another seat's expectations and reports the verdict as real.
+    Both Trace and Case already carry `seat`, so this is a comparison rather
+    than new plumbing. Preventive: evals/cases/ is pm-only today, and the
+    collision arrives with the second seat's cases."""
+    run_trial("pm", case, 1, session=decide(), workdir=tmp_path,
+              traces_root=tmp_path / "traces")
+    with pytest.raises(ValueError, match="seat"):
+        grade_traces(tmp_path / "traces",
+                     cases={case.id: replace(case, seat="critic")},
+                     invariants={})
 
 
 def test_grade_of_an_errored_trace_is_inconclusive_not_failed(case, tmp_path):

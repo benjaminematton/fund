@@ -98,7 +98,16 @@ def grade_traces(traces_root: Path | str, cases: dict[str, Case],
 
     `invariants=None` grades each trace against ITS seat's registry — the
     right default for a traces root holding more than one seat. An explicit
-    dict is honored verbatim, which is what lets a caller grade a subset."""
+    dict is honored verbatim, which is what lets a caller grade a subset.
+
+    A case id identifies a case only WITHIN a seat — evals/cases/<seat>/ is
+    per-seat, so an `a02` exists once per seat and they are different cases.
+    A mapping that spans seats therefore collides on the id. That matters
+    most for exactly the multi-seat root the line above is written for: the
+    invariants would be selected from the TRACE's seat while the
+    expectations came from another seat's case, which reads as a plausible
+    verdict rather than an error. Both sides carry `seat`, so the pair is
+    checked rather than assumed."""
     results = []
     for path in sorted(Path(traces_root).rglob("*.json")):
         trace = Trace.read(path)
@@ -107,6 +116,12 @@ def grade_traces(traces_root: Path | str, cases: dict[str, Case],
             raise ValueError(
                 f"{path}: no case file for {trace.case!r} — a trace cannot be"
                 " graded against expectations that no longer exist")
+        if trace.seat != case.seat:
+            raise ValueError(
+                f"{path}: trace is seat {trace.seat!r} but case"
+                f" {trace.case!r} in this mapping is seat {case.seat!r} —"
+                " case ids repeat across seats, so this pair would score one"
+                " seat against another seat's expectations")
         results.append(grade_trace(
             trace, case,
             invariants if invariants is not None else seat_registry(trace.seat)))
