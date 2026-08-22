@@ -144,9 +144,25 @@ invariant in the repo.
 | decisions past horizon with a `resolutions` row | Phase 2 acceptance — reflection |
 | positions, open orders, **coverage per position** | `specs/design.md` §5 — the gate's stop contract |
 | droplet HEAD vs `origin/master`; last result of `fund-daily` and `fund-pnl` | deployment state — is the code under test the code running |
+| every `alert` finding has an open issue labelled `check:<id>` | `docs/agents/issue-tracker.md` — work in this repo lives as GitHub issues |
 
-**Dropped as incident-only:** "open PRs and unowned issues." It is a `gh` one-liner the
-skill can run directly, it answers no invariant, and it grows without bound.
+**On the issue check, because it reverses an earlier decision.** "List open PRs and
+issues" was dropped as incident-only: unbounded, and answering no invariant. What replaces
+it is bounded and derived. `docs/agents/issue-tracker.md` states that work here lives as
+GitHub issues — a documented repo convention, the same durability class as an invariant.
+The check is therefore not "show me the issues" but **the loop from detection to tracked
+work**: an `alert` finding with no issue dies when the window closes.
+
+That is not hypothetical. On 2026-08-21 four separate sessions independently re-reported
+#17, #18, #26 and #32 as unowned, and the round surfaced findings that existed nowhere but
+transcripts — the protection table shipping write-only, the November GTC expiry, `uvx`
+missing from root's `PATH`. All 8 open issues carry **zero labels**, so there is no triage
+surface either.
+
+**Mechanism:** an issue labelled `check:<check_id>` marks that finding as tracked. An
+`alert` with no such issue is itself reported, naming the `gh issue create` that would
+close the gap. Only `alert` severities participate — `warn` and `ok` never nag — so the
+check cannot grow without bound.
 
 **Moved, not dropped: local branches unpushed and unmerged.** It answers no invariant and
 is dev-side, so by the derivation rule it does not belong in a production health script.
