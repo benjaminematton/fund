@@ -149,19 +149,34 @@ is added or moved. The deliverable here is a populated, trustworthy log — noth
 - **Timestamps use `orchestrator.clock.iso()`.** Every other timestamp in the DB does.
 - **`make test` must pass before every commit.**
 
-## The 🔏 `specs/contracts.md` question — resolved by assumption, reversible in one commit
+## The 🔏 `specs/contracts.md` question — SETTLED, and the original reasoning was inverted
 
-**The DDL goes in `state/schema.sql` only.** Benjamin did not rule this explicitly; it was carried
-as a stated assumption when he cleared the work, and it is cheap to reverse.
+**The DDL is in `specs/contracts.md` §2.** Added 2026-08-21 after the Standards axis of review
+found its absence a **hard violation**, and the finding is correct.
 
-The reasoning, which is precedent rather than argument: `contracts.md` §1 is state machines and §2
-is DDL. This table is an append-only log with no status column and no transitions, so it has no §1
-entry to make. `strategy_specs` and `strategy_critiques` landed with PR #21 registered in neither
-`TABLES` nor `STATUSES`, and `tests/test_state.py` asserts `TABLES <= names` — a **subset** — so the
-suite stays green. That precedent is someone else's merged work, not a case built for this table.
+**What the earlier reasoning got wrong, because the error is instructive.** Revisions 1–5 argued the
+table needed no §2 entry, citing that `strategy_specs` and `strategy_critiques` landed "registered
+in neither `TABLES` nor `STATUSES`." That is true and irrelevant: `TABLES` is a set in
+`tests/test_state.py`, a different registry entirely. Checked at the source:
 
-**If it is ruled the other way**, the DDL is duplicated into §2 and something must keep the two
-copies honest — review 2's N8, never satisfactorily answered. One commit either way.
+- `specs/contracts.md` §2 spells DDL as `CREATE TABLE events (…)` — **without** `IF NOT EXISTS`.
+  An exact-string grep for the schema's own form therefore returns nothing, which reads as "logs
+  are not registered here." `events` is at `contracts.md:120` and `costs` at `:128`.
+- Both are **status-free logs**, which is precisely this table's argument — and both are in §2.
+- `strategy_specs` and `strategy_critiques` are in `specs/strategy-contracts.md` §2 at `:31` and
+  `:67`, and `state/schema.sql` annotates them "verbatim from specs/strategy-contracts.md §2 —
+  canonical, do not add fields here."
+
+So the precedent argues **for** registration, and every table in `state/schema.sql` has a spec home.
+`docs/agents/domain.md`: *"`specs/contracts.md` … remain the canonical source for DDL … an ADR never
+overrides them."* An ADR plus a schema comment was exactly the substitution that rule forbids.
+
+**The §1 exemption still stands** — no status column, no transitions, no `state/transition()` call,
+so there is no state machine to write. §2 without §1 is the correct shape, and it is the shape
+`events` and `costs` already have.
+
+**Review 2's N8 — two copies must be kept honest — is now live and unanswered.** The mitigation is
+a comment in each pointing at the other. That is weaker than a test.
 
 There is no `reconcile.py` contention: branch one does not touch that file at all. (Revision 2 justified this with an unverifiable claim about another session's work — N13. The real reason is simply that the writer lives in `orchestrator/protection.py`.)
 

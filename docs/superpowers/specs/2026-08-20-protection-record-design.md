@@ -3,12 +3,13 @@
 **Date** 2026-08-20 · **Branch** to be cut off `master` (`41a48dd` or later) · **ADRs**
 [0004](../../adr/0004-the-protection-record.md) (the model), [0003](../../adr/0003-reducing-a-stopped-position.md) (the amend path this enables)
 
-> ## ⚠️ Amended 2026-08-20 — read this before anything below
+> ## ⚠️ Amended — read this before anything below. Last updated 2026-08-21.
 >
 > Adversarial review ([findings](../reviews/2026-08-20-protection-record-review.md)) established
 > by execution that four things in this spec were wrong. The
-> [plan](../plans/2026-08-20-protection-record.md) is now **revision 4**; where the two disagree,
-> **the plan wins**. Three further reviews followed, and two more things below are wrong:
+> [plan](../plans/2026-08-20-protection-record.md) is now **revision 5, and is BUILT** (PR #34);
+> where the two disagree, **the plan wins, and the shipped code wins over both**. Six things below
+> are now wrong:
 >
 > - **There is no status column and no state machine.** The `live`/`closed` design in item 2 was
 >   itself withdrawn — its sweep raced the alert reader, permanently closed rows on one unreadable
@@ -17,6 +18,20 @@
 > - **There is no migration.** `state/db.py` now parses `_TABLES` from `schema.sql`, so a table
 >   added there reaches an existing database on the next `connect()`. This spec's headline
 >   finding was true at `41a48dd` and is false at `894e1b8`.
+> - **Change 5 (the record-layer reader) and Change 6 (the adoption script) were CUT.** So **the
+>   table ships write-only** — nothing in branch one reads a row. Deliberate, not an oversight.
+>   The adoption script's subject no longer exists: the NVDA stop's 40-share leg filled on
+>   2026-08-21 and the position now carries zero open orders.
+> - **`stop_price` is NULLABLE, not `REAL NOT NULL`** as Change 2 says. `trailing_stop` carries no
+>   stop price while `_covering_qty` counts it toward cover, so NOT NULL would silently drop an
+>   order the alert's own number includes.
+> - **The row id is DERIVED, not "fund-minted, always"** — `"<alpaca_order_id>@<observed_at>"`.
+>   No `id_factory` is threaded, so `assert_positions_protected`'s signature is untouched.
+> - **The DDL's canonical home is `specs/contracts.md` §2**, added 2026-08-21 after review found
+>   its absence a hard violation of `docs/agents/domain.md`. An earlier reading of the precedent
+>   was inverted: `events` and `costs` are status-free logs and both are in §2, and
+>   `strategy_specs`/`strategy_critiques` are in `specs/strategy-contracts.md` §2. Every table in
+>   `state/schema.sql` has a spec home.
 >
 > 1. **The writer is `orchestrator/protection.py`, not the reconcile pass.** Neither this spec nor
 >    ADR-0004 considered the module that already reads `open_orders()`. The reconcile placement

@@ -83,6 +83,13 @@ mixes an identifier with an enum token, so it can carry no CHECK and cannot be g
 being justified by contracts §2's vocabulary rule, which is about exactly that. It becomes
 `provenance_kind` (`observed` | `adopted` in branch one; `ticket` arrives with branch two, when the fund places an order and knows its own id) plus a nullable `provenance_ref`.
 
+**As shipped, there is no `provenance_ref` column** (corrected 2026-08-21, found by review). It was
+specified for a reference this branch has nothing to put in: the only kind written is `observed`,
+whose whole meaning is a stop the fund saw and **cannot** trace to a ticket. `client_order_id`
+carries the one reference that exists. The column belongs with branch two's `ticket` kind, which is
+the first origin that knows its own id — adding it now would ship a column that is NULL in every
+row, with no test able to give it a value.
+
 That split also fixes a hole the review found: there is **no resolution path** from a broker order
 back to a ticket, because `open_orders()` carries no `client_order_id` and a leg's id bears no
 relation to the ticket's anyway. Under the old single column every row branch one wrote would
@@ -154,8 +161,15 @@ Note what does **not** change: the writer is still not the PostToolUse recorder,
 below still hold. What changed is which non-recorder does it.
 
 `_evaluate` stays read-only — that constraint is about `_evaluate`, and
-`assert_positions_protected` already writes (it appends alert events). The row write goes
-alongside the existing `read_orders()` call, inside the try that already catches its failures.
+`assert_positions_protected` already writes (it appends alert events). ~~The row write goes
+alongside the existing `read_orders()` call, inside the try that already catches its failures.~~
+
+**Superseded 2026-08-21 — the write goes LAST, after the alerts, in its OWN try.** Inside the read
+try, a write failure is reported as `UNVERIFIED — could not read live orders`, which is a false
+statement about the broker: the read succeeded and the *write* failed. Those are different problems
+at 16:05 and the alert must name the right one. Placing it after the alert loop also means every
+finding is already durable before the log is touched, so a log failure can cost the day nothing.
+Bare, it would propagate through `daily.py`, emit zero alerts and skip `run_close`.
 
 Not the PostToolUse recorder, on evidence:
 
@@ -172,12 +186,13 @@ flattened as top-level orders, which is the path `protection.py` already reads.
 `AlpacaSource.open_orders` queries `QueryOrderStatus.OPEN`, and a held OTO child is measurably
 not returned by it (2026-08-19). No `held` state is needed.
 
-> **Carried debt.** `tests/fake_alpaca.py`'s `open_orders()` filters on
-> `("new", "accepted", "partially_filled", "held")` — it **includes held**, while claiming in its
-> docstring to match `AlpacaSource.open_orders`. Latent today (a held leg means no filled parent,
+> **Carried debt — PAID 2026-08-21, `432c6a7`.** `tests/fake_alpaca.py`'s `open_orders()` filtered
+> on `("new", "accepted", "partially_filled", "held")` — it **included held**, while claiming in its
+> docstring to match `AlpacaSource.open_orders`. Latent then (a held leg means no filled parent,
 > so no position exists to check) but active the moment reconcile writes rows: the offline suite
 > would prove a behavior production does not have. That is the 2026-08-17 defect exactly, named
-> in `test_live_smoke.py`'s own comment. **Fix the fake's filter in the same change.**
+> in `test_live_smoke.py`'s own comment. `held` is gone from the filter and the exclusion is pinned
+> by `test_open_orders_excludes_held_children_like_the_real_broker`.
 
 **The recorder writes on amend** — where the fund places the replacement itself and mints its
 id — which is branch two, not branch one.
@@ -234,11 +249,25 @@ Three constraints on adoption, from the sessions that own the pieces it touches:
 
 ## Branch one
 
-The table, the adoption script, `orchestrator/protection.py` logging what it reads, the fake's filter fixed, and
-`protection.py` reading the record layer. The existing NVDA stop is adopted as its first real
-row — safe, because NVDA is fully covered today, so `_evaluate` short-circuits at
+~~The table, the adoption script, `orchestrator/protection.py` logging what it reads, the fake's
+filter fixed, and `protection.py` reading the record layer. The existing NVDA stop is adopted as
+its first real row — safe, because NVDA is fully covered today, so `_evaluate` short-circuits at
 `covered >= held` and never reaches provenance. An adoption path with nothing adopted through it
-is untested code.
+is untested code.~~
+
+**Narrowed 2026-08-21 to what actually shipped.** Branch one is the table, the fake's filter fixed,
+a widened `open_orders`, and `orchestrator/protection.py` logging what it reads. Two things above
+were cut:
+
+- **The record-layer reader.** So **the table ships write-only** — nothing in branch one reads a
+  row. That is a deliberate sequencing decision, not an oversight: the record lands ahead of its
+  use, and branch two is where it is consumed. Do not "fix" it by inventing a consumer.
+- **The adoption script.** Its subject no longer exists. `manual-protective-stop-nvda-2026-08-20-40`
+  filled 40 @ 214.85 on 2026-08-21T14:24:35Z, the 80-share leg reads `replaced`, and NVDA now holds
+  40 shares with zero open orders. The reasoning above — that adoption is safe *because NVDA is
+  fully covered today* — is exactly the kind of claim that expires: it was true when written and
+  was false two days later. `'adopted'` therefore has no writer in this branch, and the CHECK
+  admits a value nothing produces.
 
 Amend — the pending state, the gate's second verb, the recorder's write path — is branch two,
 and is [ADR-0003](0003-reducing-a-stopped-position.md)'s subject.

@@ -106,3 +106,19 @@ def test_a_trailing_stop_is_logged_with_no_stop_price(fund_db, sim_clock):
                         now_iso=now) != []
     assert fund_db.execute(
         "SELECT stop_price FROM protection").fetchone()["stop_price"] is None
+
+
+def test_the_log_and_the_coverage_number_read_the_same_predicate(fund_db):
+    """Both axes of review found this independently. _covering_qty normalises
+    with .strip().lower(); the log compared raw, so ' Stop ' counted toward
+    cover and was silently absent from the log — the exact drift that moving
+    STOP_TYPES into one module was supposed to make impossible."""
+    now = "2026-08-20T20:05:00+00:00"
+    messy = _leg(type=" Stop ", side="SELL")
+
+    assert log_observed(fund_db, [messy], now_iso=now) != [], (
+        "an order the coverage number counts must reach the log")
+
+    from orchestrator.protection import _covering_qty
+    assert _covering_qty([messy], "NVDA", "sell") == 80, (
+        "guard: this order really does count toward cover")

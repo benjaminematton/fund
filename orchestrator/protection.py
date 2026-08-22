@@ -29,7 +29,7 @@ from typing import Callable
 
 from slackkit.outbox import append_event
 from state.protection import (CLOSING_SIDE, STOP_TYPES, log_observed,
-                              qty_of)
+                              normalized, qty_of)
 
 # One short wait before calling a position naked. Matches reconcile_orders'
 # poll_s default. Deliberately NOT max_wait_s (90s): this sits on the critical
@@ -64,14 +64,12 @@ def _covering_qty(orders: list, symbol: str, closing_side: str) -> int | None:
         # cover and then report "NO live protective order", which is a false
         # statement about an order we simply could not classify. Only a
         # readable, genuinely non-matching value is skipped.
-        side, order_type = o.get("side"), o.get("type")
-        if not isinstance(side, str) or not side.strip():
+        side, order_type = normalized(o.get("side")), normalized(o.get("type"))
+        if side is None or order_type is None:
             return None
-        if not isinstance(order_type, str) or not order_type.strip():
-            return None
-        if side.strip().lower() != closing_side:
+        if side != closing_side:
             continue
-        if order_type.strip().lower() not in STOP_TYPES:
+        if order_type not in STOP_TYPES:
             continue
         n = qty_of(o.get("qty"))
         if n is None:
@@ -163,12 +161,20 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
 
     Never raises on a BROKER or DATA problem — unreachable, unparseable,
     unclassifiable all become alerts, because the day must finish and the
-    finding must be recorded. A SQLite write failure DOES propagate, and
-    deliberately: SQLite is the source of truth (invariant 6), every stage
-    writes to it, and reconcile.py's own fail-closed path appends outside any
-    try for the same reason. Swallowing a failed write here would mean the
-    alert this module exists to raise was silently never recorded — the exact
-    failure it is built to prevent."""
+    finding must be recorded.
+
+    A failed write of an ALERT propagates, and deliberately: SQLite is the
+    source of truth (invariant 6), every stage writes to it, and reconcile.py's
+    own fail-closed path appends outside any try for the same reason.
+    Swallowing that would mean the alert this module exists to raise was
+    silently never recorded — the exact failure it is built to prevent.
+
+    A failed write of the protection LOG does NOT propagate. It becomes its
+    own alert and the day continues. The two are not the same write and must
+    not share a rule: by the time the log is written every alert is already
+    durable, so nothing is lost by carrying on, while raising there would
+    abort daily.py with zero alerts emitted and run_close skipped — losing
+    the findings to protect a record that is nobody's source of truth."""
     nap = sleep or (lambda _s: None)
 
     def alert(text: str) -> None:

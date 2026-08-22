@@ -32,6 +32,21 @@ CLOSING_SIDE = {"long": "sell"}
 _PROTECTIVE_SIDES = frozenset(CLOSING_SIDE.values())
 
 
+def normalized(value) -> str | None:
+    """A broker enum as a comparable lowercase string, or None if unreadable.
+
+    ONE normalisation rule, shared by the coverage number and the log. They
+    compared differently at first — `_covering_qty` stripped and lowered while
+    the log compared raw — so ' Stop ' counted toward cover and was silently
+    absent from the record. Two reviewers found it independently. Moving
+    STOP_TYPES into one module was supposed to make exactly that impossible,
+    and it did not, because the constant was shared and the comparison was
+    not."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower()
+
+
 def qty_of(value) -> int | None:
     """Whole-share count from a string or int; None if unreadable. Broker
     numerics arrive as strings. Fractional, negative, bool and unparseable all
@@ -83,9 +98,9 @@ def log_observed(conn: sqlite3.Connection, orders: list[dict], *,
     """
     written: list[str] = []
     for order in orders:
-        if order.get("type") not in STOP_TYPES:
+        if normalized(order.get("type")) not in STOP_TYPES:
             continue
-        if order.get("side") not in _PROTECTIVE_SIDES:
+        if normalized(order.get("side")) not in _PROTECTIVE_SIDES:
             continue
         alpaca_order_id = order.get("id")
         qty = qty_of(order.get("qty"))
