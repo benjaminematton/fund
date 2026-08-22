@@ -60,8 +60,12 @@ file should be read by exactly two skills at exactly two moments.
    from `get-aligned` Phase 1: join `git worktree list`, `~/.claude/sessions/*.json` on
    `cwd`, and `ListAgents`; re-check `ListAgents` immediately before broadcast). Diff each
    reply against that session's morning intent.
-2. **Close out what is done.** Sessions reporting zero bearing print a large `CLOSE ME`
-   banner so the human can close tabs by sight. **No session closes itself.**
+2. **Close out what is done.** Before any close-out, scan for **local branches that are
+   unpushed and unmerged** — the refined form (§2.4), not bare local-only. That is the
+   loss-on-close check, and on 2026-08-21 it was the only thing that would have caught
+   `bdac89b` and `docs/adr-stop-amend`, both living in worktrees. Sessions reporting zero
+   bearing then print a large `CLOSE ME` banner so the human can close tabs by sight.
+   **No session closes itself.**
 3. **Consolidate.** Name overlaps, name the survivor, record releases as explicitly as
    claims.
 4. **Tomorrow's todos.** Written to the dated standup file, which becomes the morning's
@@ -140,15 +144,20 @@ invariant in the repo.
 | decisions past horizon with a `resolutions` row | Phase 2 acceptance — reflection |
 | positions, open orders, **coverage per position** | `specs/design.md` §5 — the gate's stop contract |
 | droplet HEAD vs `origin/master`; last result of `fund-daily` and `fund-pnl` | deployment state — is the code under test the code running |
-| local branches unpushed **and** unmerged | fleet hygiene; the one dev-side check, kept because it is cheap and returns signal |
 
 **Dropped as incident-only:** "open PRs and unowned issues." It is a `gh` one-liner the
 skill can run directly, it answers no invariant, and it grows without bound.
 
-**The unpushed-and-unmerged check must be the refined form.** Local-only alone returns 18
-rows on this repo, nearly all merged branches whose remote was deleted — noise. Local-only
-**and** carrying commits not on master returns 2, both self-labelled
-`backup/pre-rebase-*`. Signal.
+**Moved, not dropped: local branches unpushed and unmerged.** It answers no invariant and
+is dev-side, so by the derivation rule it does not belong in a production health script.
+But it is the right question at close-out — *is anything lost if this chat closes?* — so
+it lives in `/eod-digest` step 2 instead. It caught two real losses on 2026-08-21
+(`bdac89b`, then `docs/adr-stop-amend`), both in worktrees, both invisible to every other
+check.
+
+**It must be the refined form.** Local-only alone returns 18 rows on this repo, nearly all
+merged branches whose remote was deleted — noise. Local-only **and** carrying commits not
+on master returns 2, both self-labelled `backup/pre-rebase-*`. Signal.
 
 ## 3. Data flow
 
