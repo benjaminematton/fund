@@ -1,4 +1,4 @@
-# Overseer bookends — morning standup and EOD digest, with a repo health check
+# Day bookends — morning standup and EOD digest, with a repo health descriptor
 
 Status: design, awaiting review (2026-08-21)
 
@@ -14,13 +14,10 @@ reorders it.
 
 ## 0. Why
 
-Two failures on 2026-08-21 motivate this, and both are measured, not hypothetical.
-
-**Thirteen sessions could not agree on production state.** Four quoted four different
-droplet SHAs. None had read the broker. The fund's own alert — *"NVDA 80 was ticketed with
-a stop at 215.0 but the broker covers only 40 of 80 shares"* — was raised at 13:38:02Z,
-projected to Slack the same second, and sat unactioned for eight hours while every session
-worked on branches.
+**Thirteen sessions could not agree on production state.** On 2026-08-21 four quoted four
+different droplet SHAs. None had read the broker. The fund's own alert — *"NVDA 80 was
+ticketed with a stop at 215.0 but the broker covers only 40 of 80 shares"* — was raised at
+13:38:02Z, projected to Slack the same second, and sat unactioned for eight hours.
 
 **Every wrong fact that day came from an agent re-deriving a check by hand.** A two-dot
 `git diff` read as a branch's own changes. A transcript mtime read as activity, when the
@@ -48,9 +45,14 @@ Prose instructions re-derived each morning reproduce exactly the failures above.
 |---|---|---|
 | `/eod-digest` skill | `~/.claude/skills/eod-digest/` | yes |
 | `morning-standup` — gains intents write + health step | `~/.claude/skills/morning-standup/` | yes |
-| `.claude/overseer.md` | each repo | per-repo |
+| `.claude/health.md` | each repo | per-repo |
 | `scripts/dev_status.py` + `make dev-status` | fund repo | fund-only |
 | `~/.claude/align/<repo>/standups/YYYY-MM-DD.md` | outside every repo | generic path |
+
+**Naming.** The descriptor is `.claude/health.md`, named for its subject, not its reader.
+"Overseer" is a role word already in circulation in handoff and coordination docs; a file
+named for a role invites every session doing role-adjacent reading to pull it in, and this
+file should be read by exactly two skills at exactly two moments.
 
 ### 2.1 `/eod-digest` — four steps
 
@@ -78,23 +80,23 @@ artifact**, not two independent skills.
 The file lives outside every repo, so no working tree is dirtied — the same rule
 `get-aligned` already follows for `map.md`.
 
-### 2.3 `.claude/overseer.md` — the per-repo descriptor
+### 2.3 `.claude/health.md` — the per-repo descriptor
 
 ```markdown
 ---
 health_command: make dev-status
 ---
 
-# What the overseer checks here
-...
+# What healthy means in this repo
+
+`make dev-status` runs `scripts/dev_status.py` — read-only, no mutation.
 
 ## Interpreting the output
-- `model_fallback_used` is a KNOWN FALSE POSITIVE — an SDK auxiliary Haiku call
-  on Sonnet-configured seats. Ignore unless the seat is Haiku-configured.
+- `model_fallback_used` is a KNOWN FALSE POSITIVE — an SDK auxiliary Haiku
+  call on Sonnet-configured seats. Ignore unless the seat is Haiku-configured.
 - `resolutions` empty is correct until a decision passes its 5-day horizon.
-- ...
 
-## Escalate to Benjamin, never act
+## Escalate, never act
 Broker mutations, droplet deploys, gate thresholds.
 ```
 
@@ -107,30 +109,41 @@ fires at severity 3 every day. With nowhere to write "this one is noise," a read
 to skip the scorecard within a week, and the next real severity-3 goes past.
 
 **Behaviour:** file present → run `health_command`, fold in output, interpret with the
-prose. File absent → skip the step silently. Other repos (EventPlanning) supply their own
-and get the same treatment.
+prose. File absent → skip the step silently. Other repos supply their own and get the same
+treatment.
 
 ### 2.4 `scripts/dev_status.py`
 
 Pure read. No LLM imports, no mutation, no wall-clock call — time via the injected `Clock`
-protocol (`CLAUDE.md`: no `datetime.now()` in business logic, which is what makes
-`sim-day` possible). Emits markdown to stdout. Exit code 0 always; failures are rendered
-as findings, never as a crash that hides the other checks.
+protocol. Emits markdown to stdout. Exit code 0 always; a failed check renders as a
+finding, never as a crash that hides the other checks.
 
-Checks, each traceable to a 2026-08-21 failure:
+**Derivation rule — read before adding a check.** Every check answers *"is a stated
+invariant or a phase acceptance criterion still true in production?"* Incidents are used
+to **validate** the list, never to source it. A check justified only by "this bit us once"
+is overfitting to one day; a check justified by an invariant keeps earning its place after
+the incident is forgotten. When those disagree, the invariant wins and the incident-only
+check is dropped.
 
-| Check | Motivating failure |
+Applying that rule to 2026-08-21's incidents: it keeps most of them, and it adds the
+paper-trading check, which no incident suggested and which guards the most important
+invariant in the repo.
+
+| Check | Derived from |
 |---|---|
-| droplet HEAD vs `origin/master`, commits behind | four sessions quoted four SHAs |
-| `fund-daily.service` last result + exit status | failed 09:38, unnoticed 8h |
-| `fund-pnl.service` last result | it runs `resolve_day`; nothing else watches it |
-| decisions past horizon with no `resolutions` row | first eligible 2026-08-24 |
-| `events` where `posted_at IS NULL` | a stalled outbox is a silently blind Slack |
-| positions, open orders, **coverage per position** | 40 NVDA shares uncovered |
-| `orders` row count vs broker fill count | DB held 1 row; broker had seen 3 |
-| local branches unpushed **and** unmerged | `bdac89b`, then `docs/adr-stop-amend` |
-| seat-run defects: `gate_error`, `pm_timeout`, missing-signal defaults, scorecard rows, `INCONCLUSIVE` grades, alert events | "no bugs from the running seated agents" |
-| open PRs, unowned issues | ordinary queue |
+| `ALPACA_PAPER_TRADE=true` on the droplet | invariant 1 — paper only |
+| exec seat is the only one with `trading`; non-exec deny rules intact | invariant 2 |
+| `gate_error` / `pm_timeout` / missing-signal defaults for the run | invariant 4 — default is HOLD |
+| every order's `client_order_id` equals its ticket id | invariant 5 — idempotency |
+| `events` where `posted_at IS NULL`; `orders` vs broker fills | invariant 6 — SQLite is truth, Slack is a projection |
+| all checkpoints `done`; journals written for participating seats | Phase 2 acceptance |
+| decisions past horizon with a `resolutions` row | Phase 2 acceptance — reflection |
+| positions, open orders, **coverage per position** | `specs/design.md` §5 — the gate's stop contract |
+| droplet HEAD vs `origin/master`; last result of `fund-daily` and `fund-pnl` | deployment state — is the code under test the code running |
+| local branches unpushed **and** unmerged | fleet hygiene; the one dev-side check, kept because it is cheap and returns signal |
+
+**Dropped as incident-only:** "open PRs and unowned issues." It is a `gh` one-liner the
+skill can run directly, it answers no invariant, and it grows without bound.
 
 **The unpushed-and-unmerged check must be the refined form.** Local-only alone returns 18
 rows on this repo, nearly all merged branches whose remote was deleted — noise. Local-only
@@ -158,7 +171,7 @@ Default is **report, never act** — the developer-tooling twin of invariant 4.
 | droplet unreachable | render "droplet: unreachable"; every other check still runs |
 | broker call fails | render the failure as a finding; never infer position state from the DB |
 | `health_command` missing or non-zero | render stderr; the session poll still proceeds |
-| no `.claude/overseer.md` | skip the health step silently |
+| no `.claude/health.md` | skip the health step silently |
 | no intents file for today | say so, and fall back to "what did you do" — never fabricate a baseline |
 | peer never replies | named silent in the digest; still receives the outcome |
 
@@ -167,10 +180,11 @@ Default is **report, never act** — the developer-tooling twin of invariant 4.
 `scripts/dev_status.py` runs in `make test` — offline, no network, no keys. Every reader
 (droplet, broker, DB) is injected, so the suite exercises it against fakes.
 
-Required cases, drawn from the failures above:
+Required cases:
 
 - Each check's negative control fails. **A test whose negative control also passes is not
   a test** — three instances of that on 2026-08-21, two caught by luck.
+- `ALPACA_PAPER_TRADE` absent or not `true` → finding. Present and true → silent.
 - Unpushed-and-unmerged: a merged local-only branch is **not** reported; an unmerged one is.
 - `resolutions` empty **before** any horizon → no finding. Empty **after** one passes →
   finding. Same DB state, opposite verdicts.
