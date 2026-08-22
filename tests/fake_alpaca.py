@@ -21,6 +21,14 @@ from __future__ import annotations
 
 import json
 
+# A GTC order carries a broker-set expiry ~90 days out. This is the live NVDA
+# stop's actual value (order 5abc139f-…, placed 2026-08-19), reused as the
+# fake's fixed expiry so offline tests exercise a real shape rather than an
+# invented one. FIXED, not computed: the fake has no clock, and a value derived
+# from wall time would break replay. ISO with a T separator, matching
+# orchestrator.clock.iso() and every other timestamp in the database.
+GTC_EXPIRES_AT = "2026-11-17T21:00:00+00:00"
+
 # The prompt-injection guard the real server attaches (captured 2026-07-12).
 # It is NOT order data and NOT a risk gate — it marks the output untrusted.
 _ALPACA_MCP_SECURITY = {
@@ -137,6 +145,11 @@ class FakeAlpaca:
                 "filled_avg_price": None,
                 "order_class": "",
                 "order_type": "stop",
+                # The leg's OWN stop price, taken from the request args. The
+                # leg's stop_loss_stop_price stays None because a stop order
+                # does not carry a nested stop-loss instruction — it IS one.
+                "stop_price": args["stop_loss_stop_price"],
+                "expires_at": GTC_EXPIRES_AT,
                 "stop_loss_stop_price": None,
                 "stop_loss_limit_price": None,
                 "take_profit_limit_price": None,
@@ -248,6 +261,9 @@ class FakeAlpaca:
         let a caller pass offline and see nothing in production, which is the
         2026-08-17 shape. A leg becomes visible when its parent fills."""
         return [{"symbol": o["symbol"], "side": o["side"], "qty": str(o["qty"]),
-                 "type": o.get("order_type", "market"), "status": o["status"]}
+                 "type": o.get("order_type", "market"), "status": o["status"],
+                 "id": o["id"], "client_order_id": o["client_order_id"],
+                 "stop_price": o.get("stop_price"),
+                 "expires_at": o.get("expires_at")}
                 for o in self.orders.values()
                 if o["status"] in ("new", "accepted", "partially_filled")]

@@ -10,6 +10,8 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 
+from orchestrator.clock import iso
+
 # Alpaca's free data plan excludes the most recent ~15 minutes of SIP data: a
 # bars request ending at "now" 403s with "subscription does not permit
 # querying recent SIP data" (measured 2026-08-14). Shifting the window back
@@ -133,9 +135,22 @@ class AlpacaSource:
             raise RuntimeError(
                 f"open-orders response hit the {_ORDER_PAGE_LIMIT}-row page"
                 " limit — cover cannot be computed from a truncated list")
+        # iso(), NOT _enum_str(). Order.expires_at is a datetime, and
+        # _enum_str would render it '2026-11-17 21:00:00+00:00' — a space
+        # separator, no T — which sorts and compares against nothing else in
+        # the database. This is the column the November expiry watch will read.
+        #
+        # Plain attribute access, not getattr with a default: alpaca-py 0.44's
+        # Order carries every one of these, and a silent None on a future
+        # rename would hide the failure instead of raising it.
         return [{"symbol": o.symbol, "side": _enum_str(o.side),
                  "qty": _enum_str(o.qty), "type": _enum_str(o.order_type),
-                 "status": _enum_str(o.status)}
+                 "status": _enum_str(o.status), "id": _enum_str(o.id),
+                 "client_order_id": o.client_order_id,
+                 "stop_price": (_enum_str(o.stop_price)
+                                if o.stop_price is not None else None),
+                 "expires_at": (iso(o.expires_at)
+                                if o.expires_at is not None else None)}
                 for o in orders]
 
     def market_clock(self) -> dict:

@@ -214,7 +214,14 @@ def test_open_orders_requests_open_status_and_flattens_legs():
     """nested=False (the default) is deliberate: an OTO's stop leg must come
     back as its OWN row, because the leg is the protective order the check is
     looking for. Grouped under the parent it would be invisible. Built from
-    the REAL enums for the same reason as the positions test above."""
+    the REAL enums for the same reason as the positions test above.
+
+    The four id/price/expiry keys were added when the port's contract widened
+    to carry what a protection row references. expires_at goes through iso(),
+    so a datetime comes back with a T separator rather than a space — the
+    shape every other timestamp in the database has."""
+    from datetime import datetime, timezone
+
     from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
 
     seen = {}
@@ -224,15 +231,43 @@ def test_open_orders_requests_open_status_and_flattens_legs():
             seen["nested"] = filter.nested
             seen["limit"] = filter.limit
             return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="80",
-                           order_type=OrderType.STOP, status=OrderStatus.NEW)]
+                           order_type=OrderType.STOP, status=OrderStatus.NEW,
+                           id="5abc139f-4817-4a34-aedd-f2ca28203c5c",
+                           client_order_id="manual-protective-stop-nvda",
+                           stop_price="215.0",
+                           expires_at=datetime(2026, 11, 17, 21, 0,
+                                               tzinfo=timezone.utc))]
     src = _bare_source()
     src._trading = Trading()
     assert src.open_orders() == [
         {"symbol": "NVDA", "side": "sell", "qty": "80",
-         "type": "stop", "status": "new"}]
+         "type": "stop", "status": "new",
+         "id": "5abc139f-4817-4a34-aedd-f2ca28203c5c",
+         "client_order_id": "manual-protective-stop-nvda",
+         "stop_price": "215.0",
+         "expires_at": "2026-11-17T21:00:00+00:00"}]
     assert "open" in seen["status"].lower()
     assert not seen["nested"]
     assert seen["limit"] == 500
+
+
+def test_open_orders_carries_none_for_an_order_with_no_stop_or_expiry():
+    """A trailing stop has no stop_price and a DAY order has no expires_at.
+    Both must come back as None rather than raising or being dropped — the log
+    records a trailing stop, and _covering_qty counts one toward cover."""
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
+
+    class Trading:
+        def get_orders(self, filter=None):
+            return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="80",
+                           order_type=OrderType.TRAILING_STOP,
+                           status=OrderStatus.NEW, id="alp-1",
+                           client_order_id="c1", stop_price=None,
+                           expires_at=None)]
+    src = _bare_source()
+    src._trading = Trading()
+    row = src.open_orders()[0]
+    assert row["stop_price"] is None and row["expires_at"] is None
 
 
 def test_open_orders_raises_rather_than_returning_a_truncated_page():

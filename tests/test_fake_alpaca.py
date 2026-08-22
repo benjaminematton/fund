@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from tests.fake_alpaca import FakeAlpaca
+from tests.fake_alpaca import GTC_EXPIRES_AT, FakeAlpaca
 
 MARKET = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" /
@@ -138,6 +138,21 @@ def test_open_orders_excludes_held_children_like_the_real_broker():
     assert broker.orders["t1-stop"]["status"] == "held", "setup: leg not held"
     assert [o for o in broker.open_orders() if o["type"] == "stop"] == [], (
         "the fake returns a held stop leg; the real broker does not")
+
+
+def test_open_orders_carries_the_fields_a_protection_row_needs():
+    """A row references the broker's UUID, stores the client id verbatim, and
+    records the stop price and the ~90-day GTC expiry."""
+    broker = FakeAlpaca({"NVDA": 180.0})
+    broker.place_order({"client_order_id": "t1", "symbol": "NVDA",
+                        "side": "buy", "qty": 80,
+                        "stop_loss_stop_price": "215.0"})
+    broker.tick()                       # fill the parent; the leg activates
+    leg = [o for o in broker.open_orders() if o["type"] == "stop"][0]
+    assert leg["id"], "no broker order id"
+    assert leg["client_order_id"] == "t1-stop"
+    assert leg["stop_price"] == "215.0"
+    assert leg["expires_at"] == GTC_EXPIRES_AT
 
 
 def test_never_fill_and_partial_modes():
