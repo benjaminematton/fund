@@ -126,6 +126,20 @@ def test_fill_during_cancel_mode_fills_in_the_race():
     assert o["filled_avg_price"] == "180.14"
 
 
+def test_open_orders_excludes_held_children_like_the_real_broker():
+    """AlpacaSource.open_orders queries QueryOrderStatus.OPEN, and a held OTO
+    child is NOT returned by it — measured 2026-08-19, cited in
+    tests/test_live_smoke.py. A fake that returns held legs lets a writer pass
+    offline and record nothing in production: the 2026-08-17 shape."""
+    broker = FakeAlpaca({"NVDA": 180.0})
+    broker.place_order({"client_order_id": "t1", "symbol": "NVDA",
+                        "side": "buy", "qty": 80,
+                        "stop_loss_stop_price": "215.0"})
+    assert broker.orders["t1-stop"]["status"] == "held", "setup: leg not held"
+    assert [o for o in broker.open_orders() if o["type"] == "stop"] == [], (
+        "the fake returns a held stop leg; the real broker does not")
+
+
 def test_never_fill_and_partial_modes():
     b = FakeAlpaca({"NVDA": 180.0}, mode="never_fill")
     b.place_order({"client_order_id": "c1", "symbol": "NVDA", "side": "buy", "qty": 5})

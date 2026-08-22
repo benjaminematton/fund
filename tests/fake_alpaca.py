@@ -239,9 +239,15 @@ class FakeAlpaca:
     def open_orders(self) -> list[dict]:
         """Every order still working, legs FLATTENED — matching
         AlpacaSource.open_orders (nested=False), which is what makes an OTO's
-        stop leg visible as the protective order it is."""
+        stop leg visible as the protective order it is.
+
+        'held' is EXCLUDED, because QueryOrderStatus.OPEN excludes it at the
+        real broker — measured 2026-08-19, cited in tests/test_live_smoke.py.
+        A held leg is protection that does not exist yet: the parent has not
+        filled, so there is no position to protect. Returning it here would
+        let a caller pass offline and see nothing in production, which is the
+        2026-08-17 shape. A leg becomes visible when its parent fills."""
         return [{"symbol": o["symbol"], "side": o["side"], "qty": str(o["qty"]),
                  "type": o.get("order_type", "market"), "status": o["status"]}
                 for o in self.orders.values()
-                if o["status"] in ("new", "accepted", "partially_filled",
-                                   "held")]
+                if o["status"] in ("new", "accepted", "partially_filled")]
