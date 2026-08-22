@@ -1,45 +1,78 @@
 # The Protection Record (branch one) Implementation Plan
 
-> # ⛔ DO NOT EXECUTE THIS PLAN WITHOUT READING THIS BOX
+> # ⛔ READ THIS BOX BEFORE EXECUTING
 >
-> **This document looks finished and is not validated.** It is 633 lines of TDD steps with a
-> per-step "Expected: PASS". None of that is evidence.
+> **Revision 5 — 2026-08-21. Scope cut 6 tasks → 4. Base current and re-measured. Task 1 built.**
 >
-> **Revisions 1, 2 and 3 were each run end-to-end by a fresh-context reviewer and each was found
-> NOT EXECUTABLE** — revision 1 wrong on design, 2 on mechanism, 3 on wiring and wording. The three
-> review records sit beside this file in `../reviews/`. **Revision 4 — this one — has been read by
-> nobody but its author.** The standing finding from review 3 is that every revision fixes the
-> previous critique by inverting it and does not check the new endpoint; revision 4 makes three such
-> changes and no one has checked them.
+> **Revisions 1–4 were each found NOT EXECUTABLE.** 1 wrong on design, 2 on mechanism, 3 on wiring
+> and wording — each by a fresh-context reviewer, records in `../reviews/`. **Revision 4 was found
+> non-executable too, by the session that executed it**, and it failed in precisely the way its own
+> warning predicted: review 3's standing finding is that every revision fixes the previous critique
+> by inverting it and never checks the new endpoint. Revision 4 applied its three inversions to the
+> **prose** and left the **tests** at revision 3:
 >
-> Written by the author, against the author's own work, because the failure mode is that this file
-> gives no warning while the reviews that condemn its ancestors are in a different directory.
+> - **`id_factory`** — declared absent in three places; then passed in fifteen test lines, with
+>   Task 4 Step 3 instructing "Ids from the injected `id_factory`". One test asserted
+>   `log_observed(...) == ["p1"]`, which is only true for a minted id. (Line numbers deliberately
+>   omitted: they were revision 4's, and this document has since moved. Read `432c6a7~1` for them.)
+> - **The query** — Interfaces declared `last_observed_before` with strictly-before semantics; every
+>   test called `observed_at_run`, a name defined nowhere, asserting this-run semantics.
+> - **Task 5** — preamble retitled "Why this reads the PAST, not this run" above a heading, two test
+>   names and two test bodies that all still read this run.
 >
-> **Two facts that were true when this was written and are not now:**
+> Four for four. **The lesson is not "review harder" — it is that a revision which edits rationale
+> without editing the tests underneath it has not been revised.** Check the tests, not the prose.
 >
-> 1. **The base moved under the claims — and this is worse than being behind, not better.** This
->    branch has since been rebased (twice, by something other than its author) and now sits level
->    with master. But **every line-number, file-shape and "still returns five keys" claim below was
->    verified against `894e1b8`**, and master advanced ~32 commits past that before the rebase
->    landed. Sitting level with master does not mean the claims were re-checked; it means they are
->    now stated against a tree nobody compared them to. Re-verify each one at the point of use.
->    Do not read "0 behind master" as "current."
-> 2. **Task 6's subject may no longer exist.** The task adopts the hand-placed NVDA stop by its
->    literal ids — `5abc139f-4817-4a34-aedd-f2ca28203c5c` / `manual-protective-stop-nvda-2026-08-19`,
->    80 shares @ 215. Session `f39047d8` **reports** it resized that stop 80→40 on 2026-08-21 with
->    Benjamin's go in its own window, leaving the old leg `pending_replace` until the venue reopens.
->    **I have not verified this and cannot** — it is a broker fact, the venue is closed, and it is
->    that session's region, not mine. Recording it as reported, not as established:
->    `~/.claude/align/fund/decisions.md:79` still lists the disposition as undecided and Benjamin is
->    its only writer. **Before running Task 6, read the live order from the broker.** If the resize
->    happened, the ids and the qty in Task 6 are wrong and the test asserts a stop that is gone.
+> ## What revision 5 changes
 >
-> Nothing here says the plan is wrong. It says the plan is **unverified**, and that the last three
-> times someone checked, it was.
+> **Tasks 5 and 6 are cut** (Benjamin, 2026-08-21, in-session). They are recorded under *Not in this
+> plan*. Two of the three contradictions above die with them — the query existed only to serve
+> Task 5 — leaving the `id_factory` fix, applied below.
+>
+> **Consequence, stated plainly because it is the honest cost of the cut: the table ships
+> WRITE-ONLY.** Task 5 was branch one's only reader. Nothing in this branch consumes a row.
+> The justification for the table is branch two; branch one lands the record ahead of its use.
+> Benjamin was told this and accepted it. Do not "fix" it by inventing a consumer.
+>
+> **Task 6's subject no longer exists — confirmed at the broker, not reported.** The task adopted
+> the hand-placed NVDA stop at 80 shares. `manual-protective-stop-nvda-2026-08-20-40` **filled 40
+> @ 214.85 at 2026-08-21T14:24:35Z**; the 80-share leg reads `replaced`, filled 0; NVDA is 40 shares
+> with **zero open orders** (verified independently by `fund-8b`). There is nothing to adopt.
+>
+> ## The base — level with master is not the same as verified against it
+>
+> **Keep this distinction even though the numbers below are now green.** The commit count stops
+> showing the gap the moment it reaches zero, so "0 behind master" is not evidence any claim was
+> re-checked. Revision 4 was verified against `894e1b8` and master then ran ~32 commits past it.
+>
+> **What was actually measured**, in the worktree at `a78e0c5` after rebasing onto `4420e38`:
+>
+> | Claim | Result |
+> |---|---|
+> | `state/db.py:12` regex is `CREATE TABLE IF NOT EXISTS (\w+)` | TRUE — the load-bearing one |
+> | `orchestrator/protection.py` is 421 lines | TRUE, exactly |
+> | `daily.py:490` / `:492` call both assertions | TRUE, exact lines |
+> | `source_alpaca.open_orders` returns five keys | TRUE |
+> | `state/` imports nothing from `orchestrator/` (review 1, H5) | TRUE |
+> | Suite at the base | 1133 passed, 1 skipped, 7 deselected |
+>
+> **Three line numbers had drifted and are corrected in place below**: `fake_alpaca.py` 212-220 →
+> **239-247**, `_promised` 48 → **49**, `source_alpaca` 114-138 → **115-139**. Those three are why
+> the distinction earns its place in this box: the branch was level with master and three claims
+> were still wrong.
+>
+> **Task 1 is committed** — `432c6a7`. Red asserted first, failed on the assertion rather than a
+> `TypeError`, then green. Suite **1134 passed, 1 skipped, 7 deselected**.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give the fund a record of what it has observed protecting each position, so protection stops being re-derived by join from order history.
+**Goal:** Give the fund a record of what it has observed protecting each position.
+
+**Revision 5 narrows this, and the original wording was aspirational for branch one.** It read
+"…so protection stops being re-derived by join from order history." That is branch two's goal.
+Branch one **writes the record and changes no existing derivation**: `_covering_qty` still reads the
+broker, `assert_positions_protected` still compares against `decisions.stop_price`, and no consumer
+is added or moved. The deliverable here is a populated, trustworthy log — nothing more.
 
 **Architecture:** One new SQLite table, `protection` — an **append-only observation log**, not a state machine. `orchestrator/protection.py` appends one row per protective order it sees, from the live-order list it already reads. Three layers stay separate: **intent** on the decision (unchanged), **record** in this log (new), **existence** at the broker (unchanged).
 
@@ -75,8 +108,12 @@
 >
 > Also fixed: **H4** (the write is now after the alert is computed, in its own try — it cannot
 > affect the day), **M1** (`stop_price` nullable, because `trailing_stop` has none and
-> `_STOP_TYPES` counts it), **M6** (`_CLOSING_SIDE` moves with `STOP_TYPES` and `_qty`), **M7**
-> (`provenance_kind` now has a consumer). **H3** is fixed in ADR-0004 and the spec, not here.
+> `_STOP_TYPES` counts it), **M6** (`_CLOSING_SIDE` moves with `STOP_TYPES` and `_qty`), ~~**M7**
+> (`provenance_kind` now has a consumer)~~. **H3** is fixed in ADR-0004 and the spec, not here.
+>
+> **M7 is struck by revision 5.** Cutting Task 6 removes the only writer of `'adopted'` and cutting
+> Task 5 removes every reader, so `provenance_kind` has **no consumer** in branch one after all.
+> The column stays — see *Not in this plan* — but do not cite M7 as a reason it earns its place.
 >
 > ## Revision 3 — a different shape, not another patch
 >
@@ -112,9 +149,19 @@
 - **Timestamps use `orchestrator.clock.iso()`.** Every other timestamp in the DB does.
 - **`make test` must pass before every commit.**
 
-## ⚠️ Gate before Task 2
+## The 🔏 `specs/contracts.md` question — resolved by assumption, reversible in one commit
 
-**The 🔏 `specs/contracts.md` ruling has not landed.** Task 2 writes the DDL. Tasks 1, 3, 5, 6 are unaffected. There is no §1 state machine to rule on any more — the log has no transitions.
+**The DDL goes in `state/schema.sql` only.** Benjamin did not rule this explicitly; it was carried
+as a stated assumption when he cleared the work, and it is cheap to reverse.
+
+The reasoning, which is precedent rather than argument: `contracts.md` §1 is state machines and §2
+is DDL. This table is an append-only log with no status column and no transitions, so it has no §1
+entry to make. `strategy_specs` and `strategy_critiques` landed with PR #21 registered in neither
+`TABLES` nor `STATUSES`, and `tests/test_state.py` asserts `TABLES <= names` — a **subset** — so the
+suite stays green. That precedent is someone else's merged work, not a case built for this table.
+
+**If it is ruled the other way**, the DDL is duplicated into §2 and something must keep the two
+copies honest — review 2's N8, never satisfactorily answered. One commit either way.
 
 There is no `reconcile.py` contention: branch one does not touch that file at all. (Revision 2 justified this with an unverifiable claim about another session's work — N13. The real reason is simply that the writer lives in `orchestrator/protection.py`.)
 
@@ -122,21 +169,23 @@ There is no `reconcile.py` contention: branch one does not touch that file at al
 
 | File | Responsibility | Task |
 |---|---|---|
-| `tests/fake_alpaca.py` | fake broker; `open_orders` must match the real contract | 1, 3 |
+| `tests/fake_alpaca.py` | fake broker; `open_orders` must match the real contract | 1 ✅, 3 |
 | `state/schema.sql` | the log — picked up on an existing database by `_TABLES` | 2 |
-| `specs/contracts.md` | §2 DDL — 🔏 | 2 |
 | `orchestrator/broker.py`, `market/source_alpaca.py` | the widened `open_orders` contract | 3 |
-| `state/protection.py` | **new** — `STOP_TYPES`, `_qty`, appends, the this-run query | 4 |
-| `orchestrator/protection.py`, `orchestrator/daily.py` | calls the writer; names the record in its alert | 4, 5 |
-| `scripts/adopt_protection.py` | **new** — hand-run adoption | 6 |
+| `state/protection.py` | **new** — `STOP_TYPES`, `CLOSING_SIDE`, `qty_of`, the append | 4 |
+| `orchestrator/protection.py`, `orchestrator/daily.py` | import the moved helpers; call the writer | 4 |
 
 ---
 
-### Task 1: The fake stops lying about `held`
+### Task 1: The fake stops lying about `held` — ✅ DONE, `432c6a7`
+
+**Built 2026-08-21.** Red asserted first and failed on the assertion, not a `TypeError`; then green.
+Suite **1134 passed, 1 skipped, 7 deselected** — one more than the 1133 baseline, and nothing else
+affected, so the plan's claim below held. The steps are kept as the record of what was done.
 
 `tests/fake_alpaca.py:open_orders()` includes `"held"`; `AlpacaSource.open_orders` queries `QueryOrderStatus.OPEN`, which measurably excludes held OTO children (2026-08-19, cited in `tests/test_live_smoke.py`). The fake's docstring claims to match.
 
-**Files:** Modify `tests/fake_alpaca.py:212-220` · Test `tests/test_fake_alpaca.py`
+**Files:** Modify `tests/fake_alpaca.py:239-247` (was 212-220 at the old base) · Test `tests/test_fake_alpaca.py`
 
 **Interfaces:** Consumes nothing. Produces a fake whose `open_orders()` excludes `held`.
 
@@ -190,14 +239,14 @@ git commit -m "fix: the fake broker hides held legs, exactly as the real one doe
 
 ### Task 2: The log
 
-**Gated on the 🔏 ruling.**
+**No longer gated.** The 🔏 question is resolved by assumption above — `schema.sql` only.
 
 `state/db.py` parses `_TABLES` from `schema.sql` and re-runs the script whenever a listed table
 is missing, so adding the table there is all that is required — an existing database gains it on
 the next `connect()`. **Revisions 1–3 built a migration for this; it is unnecessary on current
 master** (`b1d8c50`).
 
-**Files:** Modify `state/schema.sql`, `specs/contracts.md` · Test `tests/test_state.py`
+**Files:** Modify `state/schema.sql` · Test `tests/test_state.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -263,18 +312,15 @@ than a stop price, and `test_stop_limit_and_trailing_stop_both_count` pins that.
 column would make the log silently skip an order `_covering_qty` counts, under-reporting against
 the number in the same alert (review 3, M1).
 
-- [ ] **Step 4: Write the §2 DDL into `specs/contracts.md`** — 🔏, per the ruling. State
-explicitly that there is no §1 entry, and why: it is a log, like `events`.
-
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 4: Run the tests**
 
 Run: `pytest tests/test_state.py tests/test_migrations.py -v`
 Expected: PASS. `test_ddl_applies_cleanly_and_is_idempotent` covers the new table for free.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add state/schema.sql specs/contracts.md tests/test_state.py
+git add state/schema.sql tests/test_state.py
 git commit -m "feat: an append-only log of what the fund has seen protecting a position"
 ```
 
@@ -282,7 +328,7 @@ git commit -m "feat: an append-only log of what the fund has seen protecting a p
 
 ### Task 3: `open_orders()` carries the fields a row needs
 
-**Files:** Modify `orchestrator/broker.py`, `market/source_alpaca.py:114-138`, `tests/fake_alpaca.py` · Test `tests/test_source_alpaca_helpers.py`, `tests/test_fake_alpaca.py`
+**Files:** Modify `orchestrator/broker.py:26`, `market/source_alpaca.py:115-139` (was 114-138), `tests/fake_alpaca.py` · Test `tests/test_source_alpaca_helpers.py`, `tests/test_fake_alpaca.py`
 
 **Interfaces:** Consumes nothing (this task's test fills the parent, so it is independent of Task 1). Produces `open_orders()` dicts carrying `id`, `client_order_id`, `stop_price`, `expires_at`.
 
@@ -331,7 +377,7 @@ Plain attribute access, not `getattr` — alpaca-py 0.44's `Order` has the field
 
 - [ ] **Step 5: Implement in `tests/fake_alpaca.py`**
 
-`open_orders()` returns the same eight keys. Give the leg dict (`fake_alpaca.py:99-117`) `"stop_price": args["stop_loss_stop_price"]` — from the **request args**, not the leg's own null field — and an `"expires_at"` value, so `broker_expires_at` is exercised offline at all (review 2, N18).
+`open_orders()` returns the same eight keys. Give the leg dict (`fake_alpaca.py:127-143`, was 99-117) `"stop_price": args["stop_loss_stop_price"]` — from the **request args**, not the leg's own null field — and an `"expires_at"` value, so `broker_expires_at` is exercised offline at all (review 2, N18).
 
 - [ ] **Step 6: Widen the existing helper test — a contract change, not a weakened assertion**
 
@@ -366,10 +412,30 @@ git commit -m "feat: open_orders carries the ids, stop price and expiry a record
 **Interfaces:**
 - Consumes Task 2's table, Task 3's widened `open_orders()`.
 - Produces:
-  - `state.protection.STOP_TYPES = ("stop", "stop_limit", "trailing_stop")` and `state.protection.qty_of(value)` — **both live here**, and `orchestrator/protection.py` imports them back. Nothing in `state/` imports `orchestrator/` today (review 1, H5). Moving `_qty` too settles review 2's N16: there is one broker-side coercer, in one place.
-  - `state.protection.STOP_TYPES`, `state.protection.CLOSING_SIDE` and `state.protection.qty_of` — **all three** live here, and `orchestrator/protection.py` imports them back. Moving `_CLOSING_SIDE` too settles review 3's M6: one protective-order predicate, in one place, that cannot drift.
-  - `state.protection.log_observed(conn, orders, *, now_iso) -> list[str]` — appends one row per protective order; returns ids written. **No `id_factory`** — the id is `f"{alpaca_order_id}@{observed_at}"`.
-  - `state.protection.last_observed_before(conn, symbol, now_iso) -> list[dict]` — the most recent observation **strictly before** `now_iso`. This is what Task 5 reads.
+  - `state.protection.STOP_TYPES = ("stop", "stop_limit", "trailing_stop")`,
+    `state.protection.CLOSING_SIDE` and `state.protection.qty_of(value)` — **all three live here**,
+    and `orchestrator/protection.py` imports them back. Nothing in `state/` imports `orchestrator/`
+    today and this does not change that (review 1, H5 — re-verified 2026-08-21). Moving `_qty`
+    settles review 2's N16 (one broker-side coercer) and moving `_CLOSING_SIDE` settles review 3's
+    M6 (one protective-order predicate) — in one place each, unable to drift.
+  - `state.protection.log_observed(conn, orders, *, now_iso) -> list[str]` — appends one row per
+    protective order; returns the ids **actually inserted**. **No `id_factory`**: the id is
+    `f"{alpaca_order_id}@{observed_at}"`.
+
+> **Revision 5 — what changed in this task and why.** Revision 4 declared "No `id_factory`" here and
+> then passed `id_factory=` in every test below, with Step 3 instructing the opposite. The derived id
+> is the correct side: it is what Task 2's DDL already documents, it keeps
+> `assert_positions_protected`'s signature untouched (review 3, C1) and it avoids sharing
+> `ctx.id_factory` with tickets (review 3, L2). The `id_factory=` arguments are removed.
+>
+> **`last_observed_before` is gone with Task 5.** It had exactly one consumer and that task is cut,
+> so the function, the `observed_at_run` name its tests actually called, and the two tests pinning
+> its semantics are all deleted rather than reconciled. **This leaves the table with no reader in
+> branch one** — see the ⛔ box.
+>
+> **The return value is kept, and it is not redundant.** With a derived id the caller could
+> recompute what the ids *would* be, but not which rows `INSERT OR IGNORE` actually wrote. That
+> difference is the idempotence signal the second test asserts.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -383,8 +449,7 @@ def _leg(**kw):
 
 def test_a_protective_order_is_logged(fund_db, sim_clock):
     now = iso(sim_clock.now())
-    assert log_observed(fund_db, [_leg()], now_iso=now,
-                        id_factory=lambda: "p1") == ["p1"]
+    assert log_observed(fund_db, [_leg()], now_iso=now) == [f"alp-0002@{now}"]
     row = fund_db.execute("SELECT * FROM protection").fetchone()
     assert (row["symbol"], row["qty"], row["stop_price"]) == ("NVDA", 80, 215.0)
     assert row["alpaca_order_id"] == "alp-0002"
@@ -394,35 +459,41 @@ def test_a_protective_order_is_logged(fund_db, sim_clock):
     assert row["observed_at"] == now
 
 
+def test_the_id_is_derived_from_the_order_and_the_observation(fund_db, sim_clock):
+    """The id is a function of (alpaca_order_id, observed_at), not minted. That
+    is what keeps assert_positions_protected's signature untouched (review 3,
+    C1) and sim-day deterministic without sharing ctx.id_factory with tickets
+    (review 3, L2). Pinned so a later 'tidy-up' cannot reintroduce a factory."""
+    now = "2026-08-20T20:05:00+00:00"
+    log_observed(fund_db, [_leg()], now_iso=now)
+    assert fund_db.execute(
+        "SELECT id FROM protection").fetchone()["id"] == f"alp-0002@{now}"
+
+
 def test_the_same_run_logs_one_row_per_order(fund_db, sim_clock):
     """assert_positions_protected re-reads after its nap; the second call must
-    not double-log the same observation."""
+    not double-log the same observation. The empty return is the signal that
+    nothing was written — which a caller cannot derive from the ids alone."""
     now = iso(sim_clock.now())
-    log_observed(fund_db, [_leg()], now_iso=now, id_factory=lambda: "p1")
-    assert log_observed(fund_db, [_leg()], now_iso=now,
-                        id_factory=lambda: "p2") == []
+    log_observed(fund_db, [_leg()], now_iso=now)
+    assert log_observed(fund_db, [_leg()], now_iso=now) == []
     assert fund_db.execute("SELECT COUNT(*) c FROM protection").fetchone()["c"] == 1
 
 
 def test_a_later_run_logs_a_second_observation(fund_db, sim_clock):
     """This is a LOG. The same order seen on two days is two rows — that is
     what makes observed_at meaningful rather than decorative."""
-    log_observed(fund_db, [_leg()], now_iso="2026-08-20T20:05:00+00:00",
-                 id_factory=lambda: "p1")
-    log_observed(fund_db, [_leg()], now_iso="2026-08-21T20:05:00+00:00",
-                 id_factory=lambda: "p2")
+    log_observed(fund_db, [_leg()], now_iso="2026-08-20T20:05:00+00:00")
+    log_observed(fund_db, [_leg()], now_iso="2026-08-21T20:05:00+00:00")
     assert fund_db.execute("SELECT COUNT(*) c FROM protection").fetchone()["c"] == 2
 
 
 def test_an_order_that_vanished_leaves_the_log_alone(fund_db, sim_clock):
     """Nothing is ever closed or rewritten. A stop that dies simply stops
-    appearing in later runs, and this run's query returns nothing for it —
-    which is how staleness stays impossible to misread."""
-    log_observed(fund_db, [_leg()], now_iso="2026-08-20T20:05:00+00:00",
-                 id_factory=lambda: "p1")
-    later = "2026-08-21T20:05:00+00:00"
-    assert log_observed(fund_db, [], now_iso=later, id_factory=lambda: "p2") == []
-    assert observed_at_run(fund_db, "NVDA", later) == []
+    appearing in later runs; the earlier row stays exactly as written, because
+    a log records what was seen and never revises it."""
+    log_observed(fund_db, [_leg()], now_iso="2026-08-20T20:05:00+00:00")
+    assert log_observed(fund_db, [], now_iso="2026-08-21T20:05:00+00:00") == []
     assert fund_db.execute("SELECT COUNT(*) c FROM protection").fetchone()["c"] == 1
 
 
@@ -430,31 +501,40 @@ def test_a_non_protective_order_is_not_logged(fund_db, sim_clock):
     """A sell LIMIT is a take-profit: it caps the upside and leaves the
     downside exposed. Same predicate as STOP_TYPES."""
     assert log_observed(fund_db, [_leg(type="limit", stop_price=None)],
-                        now_iso=iso(sim_clock.now()),
-                        id_factory=lambda: "p1") == []
+                        now_iso=iso(sim_clock.now())) == []
+
+
+def test_a_buy_stop_is_not_logged(fund_db, sim_clock):
+    """CLOSING_SIDE, not just STOP_TYPES. A buy stop on a long position is an
+    entry, not protection; counting it would inflate cover against a position
+    it does nothing to protect."""
+    assert log_observed(fund_db, [_leg(side="buy")],
+                        now_iso=iso(sim_clock.now())) == []
 
 
 def test_an_unreadable_order_is_skipped_and_nothing_else_changes(fund_db, sim_clock):
     """Invariant 4. Skipping costs one observation; under revision 2's sweep it
     permanently closed a live row with no way back (review 2, N3). Seed a prior
-    row so that regression could be seen if it ever returned."""
-    log_observed(fund_db, [_leg()], now_iso="2026-08-20T20:05:00+00:00",
-                 id_factory=lambda: "p1")
+    row so that regression could be seen if it ever returned.
+
+    Note stop_price is NOT in this list — it is nullable, because trailing_stop
+    carries no stop price (review 3, M1)."""
+    log_observed(fund_db, [_leg()], now_iso="2026-08-20T20:05:00+00:00")
     later = "2026-08-21T20:05:00+00:00"
-    for bad in ({"qty": "eighty"}, {"qty": None}, {"stop_price": None},
-                {"id": None}):
-        assert log_observed(fund_db, [_leg(**bad)], now_iso=later,
-                            id_factory=lambda: "px") == []
+    for bad in ({"qty": "eighty"}, {"qty": None}, {"id": None}):
+        assert log_observed(fund_db, [_leg(**bad)], now_iso=later) == []
     assert fund_db.execute("SELECT COUNT(*) c FROM protection").fetchone()["c"] == 1
 
 
-def test_the_query_returns_this_run_only(fund_db, sim_clock):
-    """A consumer must never read an earlier run's row as a statement about
-    now. The query enforces it rather than trusting the caller."""
-    log_observed(fund_db, [_leg()], now_iso="2026-08-20T20:05:00+00:00",
-                 id_factory=lambda: "p1")
-    assert observed_at_run(fund_db, "NVDA", "2026-08-20T20:05:00+00:00") != []
-    assert observed_at_run(fund_db, "NVDA", "2026-08-21T20:05:00+00:00") == []
+def test_a_trailing_stop_is_logged_with_no_stop_price(fund_db, sim_clock):
+    """_STOP_TYPES counts trailing_stop and _covering_qty counts it toward
+    cover, so the log must too. A NOT NULL stop_price would silently skip an
+    order the alert's own number includes (review 3, M1)."""
+    now = iso(sim_clock.now())
+    assert log_observed(fund_db, [_leg(type="trailing_stop", stop_price=None)],
+                        now_iso=now) != []
+    assert fund_db.execute(
+        "SELECT stop_price FROM protection").fetchone()["stop_price"] is None
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -464,11 +544,11 @@ Expected: FAIL — `ModuleNotFoundError: state.protection`.
 
 - [ ] **Step 3: Write `state/protection.py`**
 
-Pure Python + SQLite. `log_observed` filters on `STOP_TYPES` and a closing side; coerces broker numerics with `qty_of` (moved here from `orchestrator/protection.py:_qty` — broker output, not adversarial agent input). Anything missing a readable qty, stop price or id is **skipped, never guessed** (invariant 4); skipping now costs exactly one observation and can corrupt nothing.
+Pure Python + SQLite. `log_observed` filters on `STOP_TYPES` and `CLOSING_SIDE`; coerces broker numerics with `qty_of` (moved here from `orchestrator/protection.py:_qty` — broker output, not adversarial agent input). Anything missing a readable qty or id is **skipped, never guessed** (invariant 4); skipping now costs exactly one observation and can corrupt nothing. **A missing `stop_price` is not a skip** — `trailing_stop` has none and `_covering_qty` counts it (review 3, M1).
 
-Every row is `provenance_kind='observed'`. Ids from the injected `id_factory`. `INSERT OR IGNORE` against `UNIQUE (alpaca_order_id, observed_at)` gives the re-read idempotence.
+Every row is `provenance_kind='observed'`. **The id is derived — `f"{alpaca_order_id}@{observed_at}"`, no factory.** `INSERT OR IGNORE` against `UNIQUE (alpaca_order_id, observed_at)` gives the re-read idempotence, and the return value reports what was actually inserted.
 
-Update `orchestrator/protection.py` to import `STOP_TYPES` and `qty_of` from here.
+Update `orchestrator/protection.py` to import `STOP_TYPES`, `CLOSING_SIDE` and `qty_of` from here, deleting its own `_STOP_TYPES` (`:39`), `_CLOSING_SIDE` (`:44`) and `_qty` (`:51`). **Verify the direction of the import**: `state/` must still import nothing from `orchestrator/` when this is done.
 
 - [ ] **Step 4: Run the tests**
 
@@ -481,7 +561,7 @@ Expected: PASS.
 
 **Place the write at the very end, after the alert loop, using the order list the final evaluation used.** That ordering resolves three findings at once:
 
-- Task 5 reads observations from *before* this run, so the alert never depends on this write — review 2's N1 and review 3's C2 have nothing left to corrupt.
+- No alert depends on this write — in revision 5 nothing reads the table at all, so review 2's N1 and review 3's C2 have nothing left to corrupt. (Revision 4 argued this from Task 5 reading the past; with Task 5 cut, the property holds for a simpler reason.)
 - The nap-and-re-read question disappears: only the final list is logged, so there is no stale-vs-fresh race to lose (review 3, C2).
 - A SQLite failure cannot cost an alert, because the alerts are already written.
 
@@ -501,160 +581,25 @@ git commit -m "feat: the fund logs what it sees protecting each position"
 
 ---
 
-### Task 5: the alert names this run's observation
-
-**Files:** Modify `orchestrator/protection.py:_evaluate` · Test `tests/test_protection.py`
-
-**Interfaces:** Consumes `state.protection.last_observed_before`. Produces alert text only.
-
-**Why this reads the PAST, not this run.** Review 3 established that reading this run's log makes the record layer informationally identical to the broker read `_evaluate` already holds — a restatement dressed as a comparison, with wording ("which the broker does not confirm") that is false in the same sentence that produces it.
-
-Reading the most recent observation **strictly before** this run is the opposite: *"the broker holds no protective order; the fund last saw 80 @ 215 on 2026-08-19"* is information the current read cannot produce, and the contrast is true. It is also the first thing a human needs at 16:05 — not what is there, which the alert already says, but **when it was last there**.
-
-**`_promised_stop`'s tri-state is untouched.** A price, `None` for a charter-sanctioned stopless buy, `_UNKNOWN` for no record at all. The log cannot express the `None` case, which is why intent stays on the decision.
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-def test_a_partial_cover_alert_names_this_run_s_observation(fund_db, sim_clock):
-    """The shortfall was reported against an entry-time promise with no
-    quantity that no later event updates. This names what the fund actually
-    saw, labelled as the fund's record — the broker stays the authority."""
-    now = iso(sim_clock.now())
-    _promised(fund_db, symbol="NVDA", stop_price=215.0)
-    log_observed(fund_db, [_leg(qty="40")], now_iso=now,
-                 id_factory=lambda: "p1")
-
-    alerts = _evaluate(fund_db, [{"symbol": "NVDA", "qty": "80",
-                                  "side": "long"}],
-                       [_leg(qty="40")], now_iso=now)
-    assert len(alerts) == 1
-    assert "40" in alerts[0]
-    assert "fund's record" in alerts[0], (
-        "record text must be labelled as belief, not read as fact")
-
-
-def test_no_observation_this_run_means_no_record_clause(fund_db, sim_clock):
-    """The total-shortfall case. Nothing was observed, so the alert must not
-    reach for an older row — the failure revision 2 shipped as dead code."""
-    now = iso(sim_clock.now())
-    _promised(fund_db, symbol="NVDA", stop_price=215.0)
-    log_observed(fund_db, [_leg()], now_iso="2026-08-19T20:05:00+00:00",
-                 id_factory=lambda: "p1")
-
-    alerts = _evaluate(fund_db, [{"symbol": "NVDA", "qty": "80",
-                                  "side": "long"}], [], now_iso=now)
-    assert "fund's record" not in alerts[0]
-```
-
-`_promised` already exists at `tests/test_protection.py:48` — do not write a new helper (review 2, N12).
-
-Note `_evaluate` gains `now_iso`. It has none today; it needs one to scope the query to this run, and the caller has it.
-
-- [ ] **Step 2: Run them and watch them fail**
-
-Run: `pytest tests/test_protection.py -v -k this_run`
-Expected: FAIL — `_evaluate()` takes no `now_iso`.
-
-- [ ] **Step 3: Append the observation, in the `promised is not None` branch only**
-
-Not the `_UNKNOWN` branch: that means the fund has no record of opening the position, and printing a belief about its protection there states something it has no standing to hold.
-
-Label it. `"… — the fund's record for this run: 40 @ 215 observed, which the broker does not confirm"` reads correctly at 16:05 to someone who was not in this conversation. Keep it to one clause; the sentence already carries an em-dash (review 2, Low). **`covered` stays broker-sourced** — this is text, never arithmetic.
-
-- [ ] **Step 4: Run the tests**
-
-Run: `pytest tests/test_protection.py -v`
-Expected: PASS, tri-state tests included. Those three — `test_a_position_that_was_never_promised_a_stop_is_silent`, `test_a_position_the_fund_has_no_record_of_alerts`, `test_a_promised_stop_that_is_gone_alerts` — already cover the spec's tri-state regression item; no new test is needed.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add orchestrator/protection.py tests/test_protection.py
-git commit -m "feat: a shortfall alert names what the fund saw this run"
-```
-
----
-
-### Task 6: The adoption script
-
-**Files:** Create `scripts/adopt_protection.py`, `tests/test_adopt_protection.py`
-
-**Interfaces:** Consumes `state.protection` helpers; writes its own row with `provenance_kind='adopted'`. Produces a hand-run entry point; nothing imports it.
-
-**Why this now works.** Revision 2 made `alpaca_order_id` UNIQUE and had the daily writer claim every order as `oto_leg`, so adoption's row could never be inserted — `IntegrityError` on the one order the script exists for (review 2, N2). In a log, an adoption is simply another observation, with a kind that says a human asserted its provenance.
-
-⚠️ **Do not run against the live NVDA stop until `fund-07`'s review concludes.** That order is under review for cancellation or resizing. The script touches the fund's record, never the order.
-
-- [ ] **Step 1: Write the failing tests**
-
-```python
-def _manual_stop_broker():
-    broker = FakeAlpaca({"NVDA": 180.0})
-    broker.orders["manual-protective-stop-nvda-2026-08-19"] = {
-        "id": "5abc139f-4817-4a34-aedd-f2ca28203c5c",
-        "client_order_id": "manual-protective-stop-nvda-2026-08-19",
-        "symbol": "NVDA", "side": "sell", "qty": 80, "status": "new",
-        "order_type": "stop", "stop_price": "215.0",
-        "expires_at": "2026-11-17T21:00:00+00:00", "filled_qty": 0,
-        "filled_avg_price": None, "order_class": "",
-        "stop_loss_stop_price": None, "stop_loss_limit_price": None,
-        "take_profit_limit_price": None}
-    return broker
-
-
-def test_adoption_records_an_observation_a_human_vouched_for(fund_db, sim_clock):
-    """The fund did not place this order and does not control it. observed_at
-    says when it was seen; provenance_kind says a human asserted where it came
-    from. The broker stays the authority on whether it still exists."""
-    now = iso(sim_clock.now())
-    adopt(fund_db, broker=_manual_stop_broker(), now_iso=now,
-          id_factory=lambda: "p1")
-
-    row = fund_db.execute(
-        "SELECT * FROM protection WHERE provenance_kind = 'adopted'").fetchone()
-    assert row["observed_at"] == now
-    assert row["alpaca_order_id"] == "5abc139f-4817-4a34-aedd-f2ca28203c5c"
-    assert row["client_order_id"] == "manual-protective-stop-nvda-2026-08-19"
-
-
-def test_adoption_twice_writes_one_row(fund_db, sim_clock):
-    now = iso(sim_clock.now())
-    broker = _manual_stop_broker()
-    adopt(fund_db, broker=broker, now_iso=now, id_factory=lambda: "p1")
-    adopt(fund_db, broker=broker, now_iso=now, id_factory=lambda: "p2")
-    assert fund_db.execute(
-        "SELECT COUNT(*) c FROM protection").fetchone()["c"] == 1
-```
-
-**The two ids go in two different columns.** `manual-protective-stop-nvda-2026-08-19` is the **client** id; `5abc139f-…` is the broker UUID (`PROGRESS.md:123-124`). Review 1's C1 was the reverse assertion, which could only be made green by making the fake disagree with Alpaca.
-
-- [ ] **Step 2: Run them and watch them fail**
-
-Run: `pytest tests/test_adopt_protection.py -v`
-Expected: FAIL — `ModuleNotFoundError`.
-
-- [ ] **Step 3: Write the script**
-
-Reads `broker.open_orders()`, writes rows with `provenance_kind='adopted'`, adopting **whatever protection exists when it runs** — never a hardcoded order id. Idempotence comes from `UNIQUE (alpaca_order_id, observed_at)` plus `INSERT OR IGNORE`, and is asserted in code rather than left to the constraint.
-
-Prints what it wrote and what it skipped. Hand-run against a live record; silence is the wrong default.
-
-- [ ] **Step 4: Run the tests**
-
-Run: `pytest tests/test_adopt_protection.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add scripts/adopt_protection.py tests/test_adopt_protection.py
-git commit -m "feat: adopt a protective order the fund did not place"
-```
-
 ---
 
 ## Not in this plan
+
+**Cut from this plan by Benjamin on 2026-08-21, having been written and reviewed:**
+
+- **The alert clause naming the observation (was Task 5).** The full text survives in git —
+  `git show 432c6a7~1:docs/superpowers/plans/2026-08-20-protection-record.md` — and it is worth
+  reading before rebuilding it, because it is where revision 4's inversion was left half-applied.
+  **It was branch one's only reader**, so cutting it is what makes the table write-only. Rebuild it
+  by deciding *first* whether it reads this run or the previous one; revisions 3, 4 and 5 each
+  answered that differently and the tests only ever matched revision 3.
+- **The adoption script (was Task 6).** Cut because its subject no longer exists at the broker, not
+  because adoption is wrong. `provenance_kind='adopted'` stays in the DDL's CHECK with **no writer
+  in this branch** — deliberately, since narrowing the vocabulary now and widening it in branch two
+  is a schema change for nothing. Note the consequence: only `'observed'` is ever written here, so
+  the CHECK is untested against real usage.
+
+**Deferred from the start:**
 
 - **The amend capability.** Branch two, ADR-0003.
 - **Any notion of a protective order being closed, cancelled, triggered or expired.** A log records what was seen; establishing why something stopped being seen needs order history. Branch two.
@@ -666,5 +611,14 @@ git commit -m "feat: adopt a protective order the fund did not place"
 `make test` is necessary and not sufficient — this runs unattended at 09:35 with nobody watching.
 
 - `make sim-day` — a full simulated day through the real gate and DB.
-- **Migration evidence no diff can show.** Copy the droplet database, run `apply()` against it, record before/after: table absent, then present, then `apply()` again returning `[]`. The suite proves the migration works on a database built by `schema.sql`, which is exactly the case the droplet is not.
+- **Droplet evidence no diff can show, and note the mechanism is NOT a migration.** Revision 4
+  removed the migration: `state/db.py` re-runs `schema.sql` whenever a table in `_TABLES` is
+  missing (`db.py:38-41`), and `state/migrations.py:apply()` runs afterwards for **columns**, which
+  this branch does not add. So the thing to evidence is the `_TABLES` path, not `apply()`: copy the
+  droplet database, open it with `connect()`, record before/after — table absent, then present —
+  then `connect()` again and confirm no second write. The suite exercises this on a database built
+  by `schema.sql`, which is exactly the case the droplet is not.
 - **One real day's log.** After the first live run, confirm the rows written match what the broker held — the only evidence that `observed_at` and the id columns are populated as intended against the real API rather than the fake.
+- **Nothing reads the table**, so there is no read path to verify and no alert whose text can be
+  checked. That is the cut's cost, and it means the first real evidence that the rows are *correct*
+  rather than merely present arrives with branch two's first consumer.

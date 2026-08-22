@@ -43,20 +43,31 @@ the `Order` model carries no lot id, and `avg_entry_price` proves Alpaca average
 one position. Per-lot would be a fiction nothing can confirm.
 
 **One row per protective order**, carrying symbol, qty, stop price, provenance, a
-`broker_expires_at` and an `observed_at`. No status — see below. Content is immutable once written — qty, price and ids never
-change; only status transitions.
+`broker_expires_at` and an `observed_at`. No status. **A row is immutable, full stop** — nothing in
+it ever changes, because there is no status column to transition. An earlier draft ended this
+sentence "…only status transitions," which described the design one revision before this one.
 
-**Identity and reference are separate columns.** The row's `id` is always fund-minted and is
-the fund's handle for that protection. `alpaca_order_id` is the broker's reference, which every
-order has including legs. The row id doubles as the order's `client_order_id` **only** when the
-fund itself places the order — which is the amend case and nothing else. This is what makes the
-three origins uniform instead of one-plus-exceptions:
+**Identity and reference are separate columns.** `alpaca_order_id` is the broker's reference, which
+every order has including legs. The row's `id` is the fund's handle for that protection.
+
+**Corrected 2026-08-21: the row id is DERIVED, not minted.** It is
+`f"{alpaca_order_id}@{observed_at}"` — the row's natural key. This ADR said "always fund-minted"
+because minting was the design when it was written; the plan's revision 4 replaced it, and the
+reason is worth keeping: deriving the id means `assert_positions_protected` needs no `id_factory`
+parameter, so its call sites are untouched, and sim-day and replay stay deterministic without
+sharing `ctx.id_factory` with tickets. "Fund-minted" and "derived" agree on the part that matters —
+the id is the fund's, computed by the fund, and is never the broker's string.
+
+The row id doubles as the order's `client_order_id` **only** when the fund itself places the order —
+the amend case, branch two, and nothing else. That case will need a minted id, since a derived one
+cannot exist before the order it names. This is what makes the three origins uniform instead of
+one-plus-exceptions:
 
 | origin | row id | `alpaca_order_id` | `client_order_id` | `provenance_kind` |
 |---|---|---|---|---|
-| amend replacement | fund-minted, used as the order's `client_order_id` | the new order's UUID | = row id | `ticket` |
-| OTO stop leg | fund-minted | the leg's UUID | **Alpaca-generated** — verified: `910638b1-…`, unrelated to ticket `a14aa36b-…` | `observed` |
-| adopted (hand-placed) | fund-minted | `5abc139f-…` | `manual-protective-stop-nvda-2026-08-19` | `adopted` |
+| amend replacement (branch two) | minted, used as the order's `client_order_id` | the new order's UUID | = row id | `ticket` |
+| OTO stop leg | derived — `<alpaca_order_id>@<observed_at>` | the leg's UUID | **Alpaca-generated** — verified: `910638b1-…`, unrelated to ticket `a14aa36b-…` | `observed` |
+| adopted (hand-placed) | derived, same rule | `5abc139f-…` | `manual-protective-stop-nvda-2026-08-19` | `adopted` |
 
 **Corrected 2026-08-20 on two counts, both found by review.**
 
@@ -85,7 +96,7 @@ an origin with the same confidence the ADR had just refused for `ticket`.
 a human-placed order. The id is stored verbatim because it is real broker data, not because the
 system reads meaning from its shape.
 
-A fund-minted id on an adopted row is a *record handle*, not fabricated provenance — which is
+A fund-computed id on an adopted row is a *record handle*, not fabricated provenance — which is
 what "record and reference, never invent" requires in practice. The fund never invents a
 decision or ticket for protection it did not authorize; `protection.py`'s `_UNKNOWN` sentinel is
 the existing precedent for representing something without inventing its origin.
