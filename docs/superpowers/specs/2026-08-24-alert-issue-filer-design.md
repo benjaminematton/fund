@@ -118,8 +118,9 @@ any `append_event(...)` call anywhere passes the literal `"alert"` as its `kind`
 
 ### 3.3 The codes
 
-Twenty, across the 25 emission sites — five `reconcile.py` sites share one code. Most promote a
-token already sitting at the front of the text.
+**Twenty-one codes are minted across the 25 emission sites; twenty of them file.** Five
+`reconcile.py` sites share one code, and `audit_failed` is minted but never files (see below). Most
+promote a token already sitting at the front of the text.
 
 | Site (on `4685579`) | Code | `ticker` |
 |---|---|---|
@@ -190,10 +191,13 @@ same way `audit_day.py` does it, importing `audit_day` rather than duplicating t
 3. Build labels: `alert:<code>`, plus `ticker:<SYM>` when `ticker` is present.
 4. `gh issue list --state open --label …` for that exact label set (`--label` repeated per label;
    `gh` requires an issue to carry **all** of them to match).
-5. If `clears` is set: comment on the matching open issue if there is one; otherwise do nothing.
-   Never file an issue to announce that something resolved.
-6. If an open issue matches: do nothing.
-7. Otherwise ensure each label exists, then `gh issue create`.
+5. Alerts are grouped by their label tuple, and a clearing alert never contributes text. If the
+   group has **only** clearing alerts: comment on the matching open issue if there is one, otherwise
+   do nothing at all. Never file an issue to announce that something resolved.
+6. If the group has non-clearing text and an open issue matches: do nothing.
+7. Otherwise ensure each label exists, then `gh issue create`. **A condition that both fired and
+   cleared inside the window still files** — the symptom clearing is not the defect being fixed
+   (§3.5), and the body records that it later cleared.
 
 **Labels must be created, not assumed.** `gh issue create --label` errors on a label the repo does
 not have, and all 8 currently-open issues carry zero labels — there is no scheme to inherit.
