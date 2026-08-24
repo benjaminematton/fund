@@ -243,6 +243,12 @@ git commit -m "feat: reconcile's alerts say which condition they are"
 
 Same rule as Task 2: assert on the existing test that already drives the path.
 
+> **The test→code tables below are a starting guess, not verified fact.** Task 2's equivalent table
+> had three wrong entries: two tests whose broker raises in the main poll loop never reach the code
+> path the table claimed, and one test fires two alerts rather than one. **Trace the actual control
+> flow, assert what really fires, and report every correction** — the site→code mapping by line is
+> authoritative, the which-test-hits-it mapping is not.
+
 **`tests/test_daily_stages.py`** — reuse the `_codes` helper shape from Task 2 (define it locally in
 this file too; the two files do not share a helper module):
 
@@ -372,7 +378,10 @@ git commit -m "feat: the stage alerts carry a code, and only positions carry a t
 
 - [ ] **Step 1: Write the failing test**
 
-Same rule again: assert on the existing tests that already drive each path.
+Same rule again: assert on the existing tests that already drive each path — and the same warning as
+Task 3: **the table below is a guess. Trace the control flow, assert what actually fires, report
+every correction.** The site→code mapping by line is authoritative; the which-test-hits-it mapping
+is not.
 
 **`tests/test_run_day.py`:**
 
