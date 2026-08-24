@@ -232,6 +232,15 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
             # no longer exists, using a stale list from before the nap.
             positions = list(broker.open_positions())
             if not positions:
+                # Returns WITHOUT logging, and that is deliberate — both
+                # review axes flagged it, so the reason belongs here.
+                # `seen_orders` still holds the PRE-nap read, and the position
+                # vanishing during the nap almost always means the stop just
+                # filled. Writing that list now would stamp `observed_at` with
+                # a time at which the fund had already stopped believing it:
+                # a row asserting protection existed at the moment it ceased
+                # to. An unwritten observation costs one row in an append-only
+                # log; a wrong one is the 2026-08-17 shape in miniature.
                 return 0
             seen_orders = read_orders()
             problems = _evaluate(conn, positions, seen_orders)
@@ -250,6 +259,14 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
     # The text says RECORD, not read. At 16:05 the difference is the whole
     # message — one means the fund cannot see the broker, the other means it
     # saw fine and could not write down what it saw.
+    # The return value — the ids actually inserted — is intentionally dropped
+    # here. Review flagged it as possible Speculative Generality; it is not,
+    # but only because of who else calls this. It is the sole way to observe
+    # that INSERT OR IGNORE wrote nothing, which is what pins the nap-re-read
+    # idempotence in tests/test_state_protection.py. There is nothing for THIS
+    # caller to do with it: the day's alerts are already decided and a count of
+    # rows written is not a finding. Removing the return would delete the only
+    # handle the idempotence test has.
     try:
         log_observed(conn, seen_orders, now_iso=now_iso)
     except Exception as e:
