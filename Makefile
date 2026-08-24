@@ -38,8 +38,10 @@ test: lint
 	$(PYTHON) -m pytest tests/
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
+# Alert-code lint: every alert carries a stable code (docs/agents/devops.md).
 lint: deps
 	$(PYTHON) scripts/check_purity.py
+	$(PYTHON) scripts/check_alert_codes.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,
 # real tool/gate/DB execution. No network, no API keys, no LLM cost.

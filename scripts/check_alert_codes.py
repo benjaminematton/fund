@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Alert-code lint (CI-enforced; see docs/agents/devops.md).
+
+Every kind='alert' row must carry a stable `code`, because that code is what
+scripts/file_alert_issues.py keys a GitHub issue on. A site that forgets one
+still alerts and still reaches Slack, and is silently invisible to the filer
+forever — absence reading as health, the failure shape this repo keeps hitting.
+
+Two checks:
+  1. No append_event(..., 'alert', ...) anywhere. Use append_alert().
+  2. Every alert-raising call passes a string-literal code matching
+     ^[a-z][a-z0-9_]*$. An f-string code is unbounded and would file an issue
+     per run.
+
+Zero dependencies. Exit 1 on any violation.
+
+**The pass-through rule.** scripts/run_day.py keeps a thin `_alert(conn, clock,
+code, text, **payload)` wrapper that logs and delegates, so its one
+`append_alert(conn, code, ...)` call forwards a *variable* by construction.
+Rather than exempt that file, the rule is general: a call sitting inside a
+function that declares its own `code` parameter is a forwarder and is skipped
+— and `_alert` itself is checked as an alert raiser, so its five call sites
+still owe a literal. Known edge, documented rather than hidden: a NEW wrapper
+named something else would have its own callers unchecked until its name is
+added to ALERT_FUNCS.
+"""
+from __future__ import annotations
+
+import ast
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGES = ["orchestrator", "agents", "scripts", "slackkit", "gate", "state",
+            "market", "evals"]
+CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+ALERT_FUNCS = ("append_alert", "_alert")
+
+
+def _callee(node: ast.Call) -> str | None:
+    fn = node.func
+    if isinstance(fn, ast.Attribute):
+        return fn.attr
+    return getattr(fn, "id", None)
+
+
+def _forwarded_calls(tree: ast.AST) -> set[int]:
+    """Calls inside a function that declares its own `code` parameter."""
+    forwarded: set[int] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = [a.arg for a in fn.args.args + fn.args.kwonlyargs]
+        if "code" not in params:
+            continue
+        for inner in ast.walk(fn):
+            if isinstance(inner, ast.Call):
+                forwarded.add(id(inner))
+    return forwarded
+
+
+def check_file(path: Path) -> list[str]:
+    errors: list[str] = []
+    tree = ast.parse(path.read_text(), filename=str(path))
+    forwarded = _forwarded_calls(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _callee(node)
+        if name == "append_event":
+            kind = node.args[1] if len(node.args) > 1 else None
+            if isinstance(kind, ast.Constant) and kind.value == "alert":
+                errors.append(
+                    f"{path}:{node.lineno}: append_event(..., 'alert', ...) —"
+                    " use append_alert() so the alert carries a code")
+        elif name in ALERT_FUNCS:
+            if id(node) in forwarded:
+                continue                   # a wrapper forwarding its own code
+            # append_alert(conn, code, text, ...)  -> args[1]
+            # _alert(conn, clock, code, text, ...) -> args[2]
+            pos = 1 if name == "append_alert" else 2
+            code = node.args[pos] if len(node.args) > pos else None
+            if not isinstance(code, ast.Constant) or not isinstance(code.value, str):
+                errors.append(
+                    f"{path}:{node.lineno}: {name} code must be a string"
+                    " literal, not an expression — a dynamic code files an"
+                    " issue per run")
+            elif not CODE_RE.match(code.value):
+                errors.append(
+                    f"{path}:{node.lineno}: alert code {code.value!r} is not a"
+                    " bare lower_snake identifier")
+    return errors
+
+
+def main() -> int:
+    errors: list[str] = []
+    checked = 0
+    for package in PACKAGES:
+        root = ROOT / package
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            checked += 1
+            errors.extend(check_file(path))
+    for e in errors:
+        print(e, file=sys.stderr)
+    if errors:
+        print(f"ALERT CODE LINT: {len(errors)} violation(s)", file=sys.stderr)
+        return 1
+    print(f"ALERT CODE LINT: clean ({checked} files across {len(PACKAGES)} packages)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
