@@ -23,7 +23,7 @@ from orchestrator.clock import Clock, et_hhmm, iso
 from orchestrator.protection import (assert_positions_accounted,
                                      assert_positions_protected)
 from orchestrator.reconcile import reconcile_orders
-from slackkit.outbox import append_event, drain
+from slackkit.outbox import append_alert, append_event, drain
 from state.critiques import insert_default_critiques
 from state.journal import append_entry
 from state.transition import try_transition
@@ -136,9 +136,10 @@ def _pre_gate_stage(ctx: StageCtx) -> list[str]:
         elif all(isinstance(r, Rejected) and r.reason == "gate_error" for r in results):
             if now is None:
                 now = iso(ctx.clock.now())
-            append_event(ctx.conn, "alert",
-                         {"text": f"gate_error {ticker} — dropped from"
-                                  " today's universe (malformed feed)"}, now)
+            append_alert(ctx.conn, "gate_error",
+                         f"gate_error {ticker} — dropped from"
+                         " today's universe (malformed feed)",
+                         now_iso=now, ticker=ticker)
     return active
 
 
@@ -213,8 +214,8 @@ def run_decision(ctx: StageCtx, active: list[str]) -> None:
         # skipped forever. Committing the alert first means the only
         # crash window left re-runs both (a harmless duplicate alert),
         # never loses the alert outright.
-        append_event(ctx.conn, "alert",
-                     {"text": f"pm_timeout {ticker} — defaulted to hold"}, now)
+        append_alert(ctx.conn, "pm_timeout",
+                     f"pm_timeout {ticker} — defaulted to hold", now_iso=now)
         ctx.conn.execute(
             # 'none' for the same reason as the defaulted signal above: a
             # pm_timeout hold is the orchestrator recording silence, not a
@@ -334,9 +335,9 @@ def _alert_unexecuted_tickets(ctx: StageCtx) -> None:
             "SELECT 1 FROM orders WHERE client_order_id = ?",
             (ticket["id"],)).fetchone()
         if placed is None:
-            append_event(ctx.conn, "alert",
-                         {"text": f"ticket {ticket['id'][:8]} open after exec"
-                                  " turn — no order"}, now)
+            append_alert(ctx.conn, "ticket_open_after_exec",
+                         f"ticket {ticket['id'][:8]} open after exec"
+                         " turn — no order", now_iso=now)
 
 
 def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> str:

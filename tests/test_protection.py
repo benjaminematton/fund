@@ -15,6 +15,11 @@ def _alerts(conn):
         "SELECT payload FROM events WHERE kind='alert' ORDER BY id").fetchall()]
 
 
+def _payloads(conn):
+    return [json.loads(r["payload"]) for r in conn.execute(
+        "SELECT payload FROM events WHERE kind='alert' ORDER BY id").fetchall()]
+
+
 class Broker:
     """A broker with an exact answer for both reads."""
     def __init__(self, positions=(), orders=()):
@@ -121,6 +126,9 @@ def test_a_promised_stop_that_is_gone_alerts(fund_db):
     assert n == 1
     assert "NVDA" in _alerts(fund_db)[0]
     assert "80" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "unprotected_position"
+    assert payload["ticker"] == "NVDA"
 
 
 def test_a_position_that_was_never_promised_a_stop_is_silent(fund_db):
@@ -190,6 +198,9 @@ def test_a_stop_for_fewer_shares_than_held_alerts(fund_db):
         now_iso=NOW)
     assert n == 1
     assert "only 30 of 80" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "unprotected_position"
+    assert payload["ticker"] == "NVDA"
 
 
 def test_stops_across_several_orders_sum(fund_db):
@@ -223,6 +234,9 @@ def test_a_covered_symbol_and_a_naked_one_alert_exactly_once(fund_db):
     assert n == 1
     assert "NVDA" in _alerts(fund_db)[0]
     assert "MSFT" not in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "unprotected_position"
+    assert payload["ticker"] == "NVDA"
 
 
 def test_a_buy_order_does_not_protect_a_long(fund_db):
@@ -347,6 +361,9 @@ def test_a_missing_broker_alerts(fund_db):
     exists to make impossible."""
     n = assert_positions_protected(fund_db, broker=None, now_iso=NOW)
     assert n == 1
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "unprotected_position"
+    assert "ticker" not in payload
 
 
 def test_it_never_raises_no_matter_how_broken_the_broker_is(fund_db):
@@ -480,6 +497,10 @@ def test_a_recorded_buy_the_broker_no_longer_holds_alerts(fund_db):
     text = _alerts(fund_db)[0]
     assert "NVDA" in text and "80" in text
     assert "0" in text
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "accounting_shortfall"
+    assert payload["ticker"] == "NVDA"
+    assert "clears" not in payload
 
 
 def test_a_partial_disappearance_names_the_shortfall(fund_db):
@@ -551,6 +572,9 @@ def test_no_broker_fails_closed(fund_db):
     n = assert_positions_accounted(fund_db, broker=None, now_iso=NOW)
     assert n == 1
     assert "UNVERIFIED" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "accounting_unverified"
+    assert "ticker" not in payload
 
 
 def test_a_position_that_is_merely_slow_to_appear_is_not_a_discrepancy(fund_db):
@@ -593,6 +617,21 @@ def test_a_discrepancy_that_clears_and_recurs_alerts_again(fund_db):
     texts = _alerts(fund_db)
     assert len(texts) == 3
     assert "closed" in texts[1]
+
+
+def test_the_accounting_clearing_alert_is_marked_clears(fund_db):
+    """assert_positions_accounted's clear path must be distinguishable, or
+    the filer reads a resolution as a new finding."""
+    _promised(fund_db)
+    assert assert_positions_accounted(
+        fund_db, broker=Broker([], []), now_iso=NOW) == 1
+    # the gap closes: the broker shows the shares again
+    assert assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "80")], []), now_iso=NOW) == 1
+    payload = _payloads(fund_db)[-1]
+    assert payload["code"] == "accounting_shortfall"
+    assert payload["clears"] is True
+    assert payload["accounting"]["cleared"] is True
 
 
 def test_a_standing_discrepancy_is_not_reported_as_cleared(fund_db):
