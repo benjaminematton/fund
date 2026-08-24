@@ -240,6 +240,10 @@ def test_a_raise_inside_the_day_alerts_slack_and_exits_nonzero(wired):
     assert "run_day_failed" in texts[0] and "OperationalError" in texts[0]
     assert conn.execute("SELECT COUNT(*) c FROM events WHERE kind = 'alert'"
                         " AND posted_at IS NOT NULL").fetchone()["c"] == 1
+    import json
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM events WHERE kind = 'alert'").fetchone()["payload"])
+    assert payload["code"] == "run_day_failed"
 
 
 def sqlite3_error():
@@ -322,6 +326,7 @@ def test_a_held_ticker_with_no_price_history_is_named_in_an_alert(wired):
         conn, clock, close_df, {"AAPL": 40, "NVDA": 5})
     payloads = _alert_payloads(conn)
     assert len(payloads) == 1
+    assert payloads[0]["code"] == "missing_price_history"
     assert payloads[0]["tickers"] == ["AAPL"]
     assert "AAPL" in payloads[0]["text"] and "NVDA" not in payloads[0]["text"]
     assert "sizing is looser" in payloads[0]["text"]
@@ -361,6 +366,7 @@ def test_a_held_ticker_missing_from_sectors_yaml_is_named_in_an_alert(wired):
         conn, clock, {"AAPL": 40, "NVDA": 5}, {"NVDA": "tech"})
     payloads = _alert_payloads(conn)
     assert len(payloads) == 1
+    assert payloads[0]["code"] == "unmapped_sector"
     assert payloads[0]["tickers"] == ["AAPL"]
     assert "AAPL" in payloads[0]["text"] and "sectors.yaml" in payloads[0]["text"]
 
@@ -370,6 +376,21 @@ def test_a_fully_mapped_book_raises_no_sector_alert(wired):
     run_day_script.alert_unmapped_sectors(
         conn, clock, {"AAPL": 40, "NVDA": 5}, {"NVDA": "tech", "AAPL": "tech"})
     assert _alert_payloads(conn) == []
+
+
+def test_the_audit_rollup_keeps_its_self_alert_marker(wired, monkeypatch):
+    """audit_day.SELF_ALERT_KEY is how BOTH audit_day and the filer avoid
+    double-counting the rollup. Migrating must not drop it."""
+    conn, slack, clock = wired
+    monkeypatch.setattr(run_day_script.audit_day, "audit",
+                        lambda *a, **k: ["forced failure"])
+
+    code = run_day_script.report_audit(conn, slack, "db", "2026-07-06", clock)
+
+    assert code == 1
+    payload = _alert_payloads(conn)[-1]
+    assert payload["code"] == "audit_failed"
+    assert payload[run_day_script.audit_day.SELF_ALERT_KEY] is True
 
 
 # --- single-instance guard (Fix 5) ------------------------------------------
@@ -520,6 +541,7 @@ def test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land(
     assert len(texts) == 1
     assert "analyst_turn_failed" in texts[0] and "TimeoutError" in texts[0]
     assert "default is HOLD" in texts[0]
+    assert _alert_payloads(conn)[0]["code"] == "seat_turn_failed"
 
     # ...and the stage that owns this turn still lands its own default: the
     # ticker gets neutral/0 "no report" instead of the day stopping.
@@ -532,6 +554,23 @@ def test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land(
                        ).fetchone()
     assert (row["direction"], row["confidence"], row["summary"]) == (
         "neutral", 0, "no report")
+
+
+def test_seat_turn_failure_uses_a_literal_code_not_the_seat_name(
+        wired, monkeypatch):
+    """The seat belongs in the TEXT. A code of f"{seat}_turn_failed" mints a
+    new code — and therefore a new issue — for every seat that ever fails."""
+    conn, _, clock = wired
+
+    async def _boom(*a, **k):
+        raise TimeoutError("session never connected")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _boom)
+    _turn(conn, clock, seat="analyst")()
+
+    payload = _alert_payloads(conn)[-1]
+    assert payload["code"] == "seat_turn_failed"
+    assert payload["text"].startswith("analyst_turn_failed —")
 
 
 def test_an_exec_tool_call_violation_is_alerted_after_the_cost_is_recorded(
@@ -552,6 +591,7 @@ def test_an_exec_tool_call_violation_is_alerted_after_the_cost_is_recorded(
     assert len(texts) == 1 and "exec_turn_violation" in texts[0]
     assert "zero tool calls" in texts[0]
     assert conn.execute("SELECT COUNT(*) c FROM costs").fetchone()["c"] == 1
+    assert _alert_payloads(conn)[0]["code"] == "exec_turn_violation"
 
 
 def test_an_off_mandate_tool_call_is_alerted(wired, monkeypatch):
