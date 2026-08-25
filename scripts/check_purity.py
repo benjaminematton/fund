@@ -6,13 +6,20 @@ Checks over the no-LLM business-logic packages listed in PURE_PACKAGES:
   1. Forbidden imports: LLM/SDK/Slack code (claude_agent_sdk, anthropic,
      slack_bolt, slack_sdk), anything from agents/, and `slackkit.real`.
      Matching is dotted-prefix, not root-module: `slackkit.real.helpers` is
-     forbidden, `slackkit.realtime` and `slackkit.outbox` are not.
+     forbidden, `slackkit.realtime` and `slackkit.outbox` are not. Relative
+     imports are resolved against the containing package, because every
+     intra-package import in slackkit/ is written relative — a rule that only
+     understood absolute spellings would guard the form nobody writes.
+     A forbidden module reached by attribute (`import slackkit` then
+     `slackkit.real.RealSlack()`) is the same violation and reported as one.
   2. No dynamic imports: importlib.import_module() and __import__(). A pure
      package has to stay statically analyzable, and the argument may be
      computed ("claude" + "_agent_sdk"), so the call itself is the violation.
-  3. No wall clock: datetime.now()/utcnow()/today(), date.today(), and the
-     time module's clock and sleep functions — time is an injected Clock
-     (design.md §4 Testability).
+  3. No wall clock: datetime.now()/utcnow()/today(), date.today(),
+     pandas.Timestamp.now()/today(), asyncio.sleep(), and the time module's
+     sleep, counters and clock readers. time.strftime/asctime/ctime read the
+     clock only in their no-argument form; given a value to render they are
+     pure formatters and are left alone (see ARITY_PURE_FROM).
   4. slackkit/__init__.py stays import-free, so `import slackkit` executes
      nothing (slackkit/real.py:1-3). That file is NOT on its own sufficient to
      keep slack_sdk out of linted code — it never stops `from slackkit.real
@@ -28,11 +35,12 @@ not only calls:
   * `_sleep = time.sleep`, `{"ts": datetime.utcnow}` and `getattr(time,
     "sleep")` are caught without ever being called — capturing the callable is
     the same banned dependency as calling it.
-  * A parameter or local named `time`/`datetime` shadows the module and is
-    left alone, which is what keeps the injected `self._clock.now()` green.
+  * The injected `self._clock.now()` stays green because `self` resolves to
+    nothing, not because of any shadowing rule. A name that resolves to no
+    import is not a match, and that is the whole mechanism.
 
-Zero dependencies. Exit 1 on any violation. Directories that don't exist yet
-(e.g. gate/ before Phase 2) are skipped — add code, inherit the check.
+Zero dependencies. Exit 1 on any violation. A package directory that does not
+exist is skipped, so a package can be added to the list before it is written.
 """
 
 from __future__ import annotations
@@ -58,18 +66,44 @@ FORBIDDEN_REFS = {
     "datetime.date.today",
     "time.sleep", "time.time", "time.time_ns", "time.monotonic",
     "time.monotonic_ns", "time.perf_counter", "time.perf_counter_ns",
-    "time.process_time", "time.localtime", "time.gmtime",
+    "time.process_time", "time.process_time_ns", "time.thread_time",
+    "time.thread_time_ns", "time.clock_gettime", "time.clock_gettime_ns",
+    "time.localtime", "time.gmtime",
     "asyncio.sleep",
+    "pandas.Timestamp.now", "pandas.Timestamp.today", "pandas.Timestamp.utcnow",
 }
+# Names that read the wall clock ONLY when called with too few arguments to
+# render: `time.ctime()` is now, `time.ctime(secs)` is a formatter. The value
+# is the argument count at which the call becomes pure. Bare references to
+# these are deliberately not flagged — the spelling alone does not say which
+# form is meant.
+ARITY_PURE_FROM = {"time.strftime": 2, "time.asctime": 1, "time.ctime": 1}
 # Fully-qualified names that import at runtime, defeating this lint entirely.
 DYNAMIC_IMPORT_REFS = {"importlib.import_module", "importlib.__import__",
                        "builtins.__import__", "__import__"}
 
-# Nodes that open a new binding scope. Comprehensions are included: their
-# targets are invisible outside them, so folding one into the parent would let
-# `[None for time in ()]` silence a whole module.
+# Nodes that open a new binding scope.
 _SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
                 ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+# Scopes where a rebinding does NOT hide the import from a use site, so a
+# collision is reportable. See the discriminator on _scan_scope.
+_COLLIDING_SCOPES = (ast.Module, ast.ClassDef)
+
+
+def _watched_bases() -> set[str]:
+    """Every dotted name a forbidden reference hangs off: `datetime`,
+    `datetime.datetime`, `time`, `pandas.Timestamp`, ... Used to decide whether
+    a rebinding could reach anything forbidden, and to resolve a name that a
+    star import could have supplied from anywhere."""
+    bases: set[str] = set()
+    for ref in FORBIDDEN_REFS | DYNAMIC_IMPORT_REFS | set(ARITY_PURE_FROM):
+        parts = ref.split(".")
+        for i in range(1, len(parts)):
+            bases.add(".".join(parts[:i]))
+    return bases
+
+
+WATCHED_BASES = _watched_bases()
 
 
 def _forbidden_import(name: str) -> str | None:
@@ -85,6 +119,18 @@ def _forbidden_import(name: str) -> str | None:
         if name == entry or name.startswith(entry + "."):
             return entry
     return None
+
+
+def _reaches_forbidden(target: str) -> bool:
+    """Could a name bound to `target` reach something this lint forbids?
+
+    This is an ANCESTOR test, not a descendant one, and the difference is the
+    whole rule. `from datetime import UTC` binds UTC -> `datetime.UTC`, which
+    is *under* the watched root `datetime` but is the base of nothing — asking
+    "does it resolve under a watched root?" reddens it, asking "is it the base
+    of a forbidden pattern?" does not.
+    """
+    return bool(_forbidden_import(target)) or target in WATCHED_BASES
 
 
 def _dotted(node: ast.AST) -> str | None:
@@ -112,8 +158,14 @@ def _candidates(dotted: str, bindings: dict[str, str | None],
     """Fully-qualified names `dotted` could refer to in this scope.
 
     A name present in `bindings` with value None is bound to something
-    unresolvable (a parameter, a local, a relative import) — it resolves to
-    nothing and must NOT fall through to the star-import guess.
+    unresolvable (a parameter, a local, an unresolved relative import) — it
+    resolves to nothing and must NOT fall through to a star-import guess.
+
+    Under a star import the head could have been re-exported from anywhere, so
+    two guesses are added: the star module itself, and any watched base whose
+    last segment matches the head. The second is what catches laundering —
+    `from state.helpers import *` followed by `datetime.now()` — without
+    following imports across modules, which stays out of scope (issue #69).
     """
     head, _, rest = dotted.partition(".")
     if head in bindings:
@@ -121,13 +173,34 @@ def _candidates(dotted: str, bindings: dict[str, str | None],
         if base is None:
             return []
         return [f"{base}.{rest}" if rest else base]
-    return [f"{module}.{dotted}" for module in stars]
+    if not stars:
+        return []
+    out = [f"{module}.{dotted}" for module in stars]
+    for base in WATCHED_BASES:
+        if base.rsplit(".", 1)[-1] == head:
+            out.append(f"{base}.{rest}" if rest else base)
+    return out
 
 
-def _import_bindings(node: ast.Import | ast.ImportFrom) -> dict[str, str | None]:
+def _resolve_relative(node: ast.ImportFrom, package: tuple[str, ...]) -> str | None:
+    """`from .real import X` inside slackkit/ -> "slackkit.real".
+
+    Without this, the only spelling the slackkit.real ban would catch is the
+    absolute one, which no file in slackkit/ uses.
+    """
+    if node.level == 0:
+        return node.module
+    if node.level > len(package):
+        return None
+    base = package[:len(package) - node.level + 1]
+    return ".".join([*base, *([node.module] if node.module else [])])
+
+
+def _import_bindings(node: ast.Import | ast.ImportFrom,
+                     package: tuple[str, ...]) -> dict[str, str | None]:
     """{local name: fully-qualified target}. None means "bound to something
-    unresolvable" — a relative import — which must clear an inherited binding
-    of that name rather than leave it standing."""
+    unresolvable", which must clear an inherited binding of that name rather
+    than leave it standing."""
     out: dict[str, str | None] = {}
     if isinstance(node, ast.Import):
         for alias in node.names:
@@ -136,16 +209,19 @@ def _import_bindings(node: ast.Import | ast.ImportFrom) -> dict[str, str | None]
             else:
                 root = alias.name.split(".")[0]
                 out[root] = root
-    elif node.level:  # `from .x import y` — not a resolvable absolute path
-        for alias in node.names:
-            out[alias.asname or alias.name] = None
-    else:
-        module = node.module or ""
-        for alias in node.names:
-            if alias.name == "*":
-                continue  # binds names, but not the literal name "*"
-            name = alias.asname or alias.name
-            out[name] = f"{module}.{alias.name}" if module else alias.name
+        return out
+    module = _resolve_relative(node, package)
+    for alias in node.names:
+        if alias.name == "*":
+            # No observable behaviour: "*" is not an identifier, so it can
+            # never come back out of _dotted or _bound_names, and no test can
+            # pin this branch. Differential-tested across 46 real files and 56
+            # snippets with zero diffs. It is kept because the next reader of
+            # _import_bindings would otherwise have to re-derive that, and
+            # deleted it would read as an oversight rather than a decision.
+            continue
+        name = alias.asname or alias.name
+        out[name] = f"{module}.{alias.name}" if module else None
     return out
 
 
@@ -168,17 +244,87 @@ def _bound_names(node: ast.AST) -> set[str]:
     return set()
 
 
-def _scope_nodes(node: ast.AST):
-    """Descendants of `node` belonging to its own scope. Nested scopes are
-    yielded but not descended into; they are scanned separately."""
+def _outer_exprs(node: ast.AST):
+    """Sub-expressions of a scope node that Python evaluates in the ENCLOSING
+    scope, before the new scope's bindings exist. Scanning these inside the
+    child is how `def stamp(datetime=datetime)` — which really does return the
+    wall clock — reads as clean."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = node.args
+        yield from getattr(node, "decorator_list", [])
+        yield from args.defaults
+        yield from [d for d in args.kw_defaults if d is not None]
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs,
+                    args.vararg, args.kwarg]:
+            if arg is not None and arg.annotation is not None:
+                yield arg.annotation
+        if getattr(node, "returns", None) is not None:
+            yield node.returns
+    elif isinstance(node, ast.ClassDef):
+        yield from node.decorator_list
+        yield from node.bases
+        yield from [kw.value for kw in node.keywords]
+    elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        if node.generators:
+            yield node.generators[0].iter
+
+
+def _inner_children(node: ast.AST) -> list[ast.AST]:
+    """Children of a scope node evaluated INSIDE its own scope."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = node.args
+        params = [a for a in [*args.posonlyargs, *args.args, *args.kwonlyargs,
+                              args.vararg, args.kwarg] if a is not None]
+        body = node.body if isinstance(node.body, list) else [node.body]
+        return [*params, *body]
+    if isinstance(node, ast.ClassDef):
+        return list(node.body)
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        parts: list[ast.AST] = ([node.key, node.value]
+                                if isinstance(node, ast.DictComp) else [node.elt])
+        for index, gen in enumerate(node.generators):
+            parts.append(gen.target)
+            if index:  # only the OUTERMOST iterable is evaluated outside
+                parts.append(gen.iter)
+            parts.extend(gen.ifs)
+        return parts
+    return list(ast.iter_child_nodes(node))
+
+
+def _walk_in_scope(node: ast.AST):
+    yield node
+    if isinstance(node, ast.arg):
+        return  # its annotation belongs to the enclosing scope
+    if isinstance(node, _SCOPE_NODES):
+        for expr in _outer_exprs(node):
+            yield from _walk_in_scope(expr)
+        return
     for child in ast.iter_child_nodes(node):
-        yield child
-        if not isinstance(child, _SCOPE_NODES):
-            yield from _scope_nodes(child)
+        yield from _walk_in_scope(child)
+
+
+def _scope_nodes(node: ast.AST):
+    for child in _inner_children(node):
+        yield from _walk_in_scope(child)
+
+
+def _param_defaults(node: ast.AST):
+    """(parameter, default expression) pairs. The default is evaluated in the
+    enclosing scope, so the parameter really holds whatever it resolves to."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return
+    args = node.args
+    positional = [*args.posonlyargs, *args.args]
+    if args.defaults:
+        yield from zip(positional[len(positional) - len(args.defaults):], args.defaults)
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        if default is not None:
+            yield arg, default
 
 
 def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
-                inherited_stars: list[str], path: Path, errors: list[str]) -> None:
+                inherited_stars: list[str], path: Path, errors: list[str],
+                package: tuple[str, ...]) -> None:
     own = list(_scope_nodes(node))
     bindings = dict(inherited)
     stars = list(inherited_stars)
@@ -186,10 +332,12 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
     imported: dict[str, str | None] = {}
     for child in own:
         if isinstance(child, ast.ImportFrom) and any(a.name == "*" for a in child.names):
-            if child.level == 0 and child.module:
-                stars.append(child.module)
+            module = _resolve_relative(child, package)
+            if module:
+                stars.append(module)
         if isinstance(child, (ast.Import, ast.ImportFrom)):
-            imported.update(_import_bindings(child))
+            imported.update(_import_bindings(child, package))
+    bindings.update(imported)
 
     rebound: dict[str, int] = {}
     for child in own:
@@ -198,31 +346,42 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
         for name in _bound_names(child):
             rebound.setdefault(name, getattr(child, "lineno", 0))
 
-    bindings.update(imported)
-
-    # An import binding rebound in the SAME scope is incoherent code, and
-    # popping the name instead would make `import time` + `if False: time =
-    # None` a silent, condition-independent off switch for the whole scope. So
-    # it is a loud error, not a shadow.
+    # THE DISCRIMINATOR: can the rebinding make a use site resolve to the
+    # import? Not "is it rare" and not "is it suspicious" — reachability.
     #
-    # Deliberately does not fire on a rebinding in a NESTED scope: a
-    # function-local assignment makes the name local for that whole body, so a
-    # use there resolves to the local object or raises UnboundLocalError —
-    # never silently to the stdlib module. That exemption is not a hole in the
-    # collision rule. Where the local object is itself a forbidden binding, the
-    # reference check below catches it as a callable capture instead, which is
-    # the family it belongs to: `_s = time.sleep`, or `dt = datetime` followed
-    # by `dt.datetime.now()`, are both flagged there.
+    #   module scope ....... YES. Rebind and use share one namespace, and a use
+    #                        above the rebind reaches the real module.
+    #   class body ......... YES. LOAD_NAME falls back to the global, so
+    #                        `a = time.time()` above `time = None` is real.
+    #   enclosing-scope
+    #     positions ........ YES, handled by _outer_exprs: defaults,
+    #                        decorators, annotations, base lists and a
+    #                        comprehension's outermost iterable are evaluated
+    #                        before the new scope's bindings exist.
+    #   function body ...... NO. Binding a name ANYWHERE in a function makes it
+    #                        local for the whole body, so a use before the
+    #                        binding raises UnboundLocalError rather than
+    #                        reaching the module. Parameters, `except ... as`
+    #                        and `match`/`case` captures are alike here.
+    #   comprehension ...... NO. Python 3 scopes the target; it does not leak.
     #
-    # What neither rule reaches is a capture whose source is not statically
-    # resolvable — `datetime = some_free_name`, or a clock handed in as a
-    # parameter. That is the ordinary limit of resolving names without running
-    # the program, not a decision taken here; do not read it as a ruling.
+    # Narrowed to bindings that can reach something forbidden. It previously
+    # fired on any import/rebind pair, which reddened `try: import numpy /
+    # except ImportError: numpy = None` and four other ordinary defensive
+    # shapes, while the message claimed the rebinding "disables the purity
+    # check" — false for all five. If this ever over-fires again the remedy is
+    # a narrow exemption for the specific shape, never a weaker rule.
+    collides = isinstance(node, _COLLIDING_SCOPES)
     for name, lineno in sorted(rebound.items(), key=lambda item: item[1]):
-        if name in imported:
-            errors.append(f"{path}:{lineno}: '{name}' is imported and rebound in "
-                          f"the same scope — an import binding may not be "
-                          f"reassigned; it disables the purity check silently")
+        target = bindings.get(name)
+        if collides:
+            # LOAD_NAME still reaches the import here, so the binding stands.
+            if target is not None and _reaches_forbidden(target):
+                errors.append(f"{path}:{lineno}: '{name}' is imported and rebound "
+                              f"where the import stays reachable ({target}) — a use "
+                              f"above the rebinding still resolves to it")
+            elif name not in bindings:
+                bindings[name] = None
         else:
             bindings[name] = None
 
@@ -238,7 +397,23 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
             if len(hits) == 1:
                 bindings[targets[0].id] = hits[0]
 
+    # A default is evaluated outside, so the parameter holds what it resolved
+    # to there — `def stamp(datetime=datetime)` really does read the clock.
+    for arg, default in _param_defaults(node):
+        dotted = _dotted(default)
+        hits = _candidates(dotted, inherited, inherited_stars) if dotted else []
+        if len(hits) == 1:
+            bindings[arg.arg] = hits[0]
+
     for child in own:
+        if isinstance(child, ast.Call):
+            dotted = _dotted(child.func)
+            for target in _candidates(dotted, bindings, stars) if dotted else []:
+                if target in ARITY_PURE_FROM and (
+                        len(child.args) + len(child.keywords) < ARITY_PURE_FROM[target]):
+                    errors.append(f"{path}:{child.lineno}: wall-clock/sleep reference "
+                                  f"'{dotted}()' resolves to {target}() with no value "
+                                  f"to render, which reads the clock — inject Clock")
         if isinstance(child, (ast.Name, ast.Attribute)) and not isinstance(child.ctx, ast.Load):
             continue
         if not isinstance(child, (ast.Name, ast.Attribute, ast.Call)):
@@ -253,6 +428,9 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
             elif target in DYNAMIC_IMPORT_REFS:
                 errors.append(f"{path}:{child.lineno}: dynamic import '{dotted}' — "
                               f"a pure package must be statically analyzable")
+            elif _forbidden_import(target):
+                errors.append(f"{path}:{child.lineno}: forbidden import reached by "
+                              f"attribute — '{dotted}' resolves to {target}")
 
     # Class scope is not visible inside methods (`class Row: date = None` does
     # not shadow a module-level `from datetime import date` for `Row.stamp`),
@@ -261,10 +439,12 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
     child_stars = inherited_stars if isinstance(node, ast.ClassDef) else stars
     for child in own:
         if isinstance(child, _SCOPE_NODES):
-            _scan_scope(child, child_bindings, child_stars, path, errors)
+            _scan_scope(child, child_bindings, child_stars, path, errors, package)
 
 
-def check_file(path: Path) -> list[str]:
+def check_file(path: Path, package: tuple[str, ...] = ()) -> list[str]:
+    """`package` is the dotted package the file sits in, used to resolve
+    relative imports. Empty means "unknown", which leaves them unresolved."""
     errors: list[str] = []
     tree = ast.parse(path.read_text(), filename=str(path))
     for node in ast.walk(tree):
@@ -272,8 +452,10 @@ def check_file(path: Path) -> list[str]:
             for alias in node.names:
                 if _forbidden_import(alias.name):
                     errors.append(f"{path}:{node.lineno}: forbidden import '{alias.name}'")
-        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            module = node.module or ""
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolve_relative(node, package)
+            if not module:
+                continue
             if _forbidden_import(module):
                 errors.append(f"{path}:{node.lineno}: forbidden import 'from {module}'")
             else:
@@ -281,7 +463,7 @@ def check_file(path: Path) -> list[str]:
                     if alias.name != "*" and _forbidden_import(f"{module}.{alias.name}"):
                         errors.append(f"{path}:{node.lineno}: forbidden import "
                                       f"'from {module} import {alias.name}'")
-    _scan_scope(tree, {"__import__": "__import__"}, [], path, errors)
+    _scan_scope(tree, {"__import__": "__import__"}, [], path, errors, package)
     return errors
 
 
@@ -309,10 +491,11 @@ def main() -> int:
         if not pkg_dir.is_dir():
             continue
         for py in sorted(pkg_dir.rglob("*.py")):
-            if py.relative_to(ROOT).as_posix() in EXCLUDED_FILES:
+            relative = py.relative_to(ROOT)
+            if relative.as_posix() in EXCLUDED_FILES:
                 continue
             checked += 1
-            errors.extend(check_file(py))
+            errors.extend(check_file(py, relative.parts[:-1]))
     errors.extend(check_slackkit_init(ROOT))
     if errors:
         print(f"PURITY LINT: {len(errors)} violation(s) in {checked} file(s):")
