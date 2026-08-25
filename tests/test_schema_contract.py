@@ -1,0 +1,377 @@
+"""Contract test: `state/schema.sql` must agree with the canonical spec DDL.
+
+`specs/contracts.md` §2 and `specs/strategy-contracts.md` §2 are declared
+canonical; `state/schema.sql` is the DDL that actually runs. Nothing else
+compares them, so a column added to one side alone drifts silently.
+
+Both sides are PARSED, never restated: a column list typed out here would be
+a third source of truth. The comparison is structural (names, types, NOT
+NULL, DEFAULT, CHECK, UNIQUE, PRIMARY KEY, REFERENCES), not textual, so
+reformatting, `--` comments and `CREATE TABLE IF NOT EXISTS` are all
+invisible to it. `PRAGMA table_info()` is not usable here: it does not expose
+CHECK constraints, which is exactly where the allowed-value lists live.
+
+Anything the parser cannot account for raises rather than being skipped — a
+comparator that silently extracts nothing is a green test that checks
+nothing.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCHEMA = ROOT / "state" / "schema.sql"
+# (spec file, §2 heading). The heading is followed by prose in at least one of
+# them, so the DDL is located as "the sql fence inside §2", not "the next line".
+SPEC_SECTIONS = (
+    (ROOT / "specs" / "contracts.md", "## 2. SQLite DDL"),
+    (ROOT / "specs" / "strategy-contracts.md", "## 2. DDL"),
+)
+
+# Spec §2 tables that deliberately have no `state/schema.sql` home. Reason per
+# table is recorded in issue #50; it is not restated here. A table listed here
+# is not compared, so removing it from the list is what binds it.
+NO_SCHEMA_HOME = frozenset({
+    "strategies", "trial_registry", "holdout_evaluations", "sleeves",
+    "shadow_fills",
+})
+
+# Everything that can follow the type in a column definition.
+_COLUMN_CONSTRAINTS = frozenset({
+    "CONSTRAINT", "PRIMARY", "NOT", "NULL", "UNIQUE", "CHECK", "DEFAULT",
+    "COLLATE", "REFERENCES", "GENERATED", "AS",
+})
+_PUNCT = "(),;"
+
+
+# --------------------------------------------------------------------------
+# parsing
+
+
+def _tokenize(sql: str) -> list[str]:
+    """SQL text -> tokens. Drops `--` comments, keeps string literals whole."""
+    toks: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch.isspace():
+            i += 1
+        elif sql.startswith("--", i):
+            nl = sql.find("\n", i)
+            i = n if nl < 0 else nl + 1
+        elif ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if sql.startswith("''", j):
+                        j += 2
+                        continue
+                    break
+                j += 1
+            if j >= n:
+                raise ValueError(f"unterminated string literal at offset {i}")
+            toks.append(sql[i:j + 1])
+            i = j + 1
+        elif ch in _PUNCT:
+            toks.append(ch)
+            i += 1
+        elif ch.isalnum() or ch in "_.":
+            j = i
+            while j < n and (sql[j].isalnum() or sql[j] in "_."):
+                j += 1
+            toks.append(sql[i:j])
+            i = j
+        else:  # operator run: <=, >=, <>, =, *, ...
+            j = i
+            while j < n and not (sql[j].isspace() or sql[j] in _PUNCT
+                                 or sql[j] == "'" or sql[j].isalnum()
+                                 or sql[j] in "_."):
+                j += 1
+            toks.append(sql[i:j])
+            i = j
+    return toks
+
+
+def _close(toks: list[str], open_at: int) -> int:
+    """Index of the `)` matching the `(` at `open_at`."""
+    depth = 0
+    for i in range(open_at, len(toks)):
+        if toks[i] == "(":
+            depth += 1
+        elif toks[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise ValueError("unbalanced parentheses in DDL")
+
+
+def _split_top(toks: list[str], sep: str) -> list[list[str]]:
+    """Split on `sep` at paren depth 0, dropping empty parts."""
+    parts, cur, depth = [], [], 0
+    for t in toks:
+        if t == "(":
+            depth += 1
+        elif t == ")":
+            depth -= 1
+        if t == sep and depth == 0:
+            parts.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    parts.append(cur)
+    return [p for p in parts if p]
+
+
+def _norm(toks: list[str]) -> str:
+    """Canonical text for an expression: identifiers and keywords are
+    case-insensitive in SQLite, string literals are not."""
+    return " ".join(t if t.startswith("'") else t.upper() for t in toks)
+
+
+@dataclass(frozen=True)
+class Column:
+    name: str
+    type: str
+    not_null: bool
+    primary_key: bool
+    unique: bool
+    default: str | None
+    checks: tuple[str, ...]
+    references: str | None
+
+
+@dataclass(frozen=True)
+class Table:
+    name: str
+    columns: tuple[Column, ...]
+    constraints: tuple[str, ...]
+
+
+def _parse_column(table: str, toks: list[str]) -> Column:
+    name = toks[0]
+    where = f"{table}.{name}"
+    i, type_toks = 1, []
+    while i < len(toks) and toks[i].upper() not in _COLUMN_CONSTRAINTS:
+        if toks[i] == "(":
+            end = _close(toks, i)
+            type_toks += toks[i:end + 1]
+            i = end + 1
+        else:
+            type_toks.append(toks[i])
+            i += 1
+
+    not_null = primary_key = unique = False
+    default: str | None = None
+    references: str | None = None
+    checks: list[str] = []
+
+    def nxt(k: int) -> str:
+        if k >= len(toks):
+            raise ValueError(f"{where}: definition ends mid-constraint")
+        return toks[k]
+
+    while i < len(toks):
+        kw = toks[i].upper()
+        if kw == "NOT" and nxt(i + 1).upper() == "NULL":
+            not_null, i = True, i + 2
+        elif kw == "NULL":
+            i += 1
+        elif kw == "PRIMARY" and nxt(i + 1).upper() == "KEY":
+            primary_key, i = True, i + 2
+            while i < len(toks) and toks[i].upper() in {"ASC", "DESC",
+                                                        "AUTOINCREMENT"}:
+                i += 1
+        elif kw == "UNIQUE":
+            unique, i = True, i + 1
+        elif kw == "CHECK":
+            if nxt(i + 1) != "(":
+                raise ValueError(f"{where}: CHECK without a parenthesized expr")
+            end = _close(toks, i + 1)
+            checks.append(_norm(toks[i + 2:end]))
+            i = end + 1
+        elif kw == "DEFAULT":
+            if nxt(i + 1) == "(":
+                end = _close(toks, i + 1)
+                default = _norm(toks[i + 1:end + 1])
+                i = end + 1
+            elif nxt(i + 1) in {"+", "-"}:
+                default = _norm(toks[i + 1:i + 3])
+                i += 3
+            else:
+                default = _norm([toks[i + 1]])
+                i += 2
+        elif kw == "REFERENCES":
+            ref = [nxt(i + 1)]
+            i += 2
+            if i < len(toks) and toks[i] == "(":
+                end = _close(toks, i)
+                ref += toks[i:end + 1]
+                i = end + 1
+            references = _norm(ref)
+        else:
+            raise ValueError(
+                f"{where}: unparsed token {toks[i]!r} in column definition"
+                " — extend the parser rather than letting it skip a"
+                " constraint")
+
+    return Column(name=name.lower(), type=_norm(type_toks), not_null=not_null,
+                  primary_key=primary_key, unique=unique, default=default,
+                  checks=tuple(sorted(checks)), references=references)
+
+
+def _is_table_constraint(item: list[str]) -> bool:
+    """A table constraint, as opposed to a column named e.g. `check`."""
+    head = [t.upper() for t in item[:2]]
+    return (head[0] == "CONSTRAINT"
+            or head[:2] in (["PRIMARY", "KEY"], ["FOREIGN", "KEY"])
+            or (head[0] in ("UNIQUE", "CHECK") and len(item) > 1
+                and item[1] == "("))
+
+
+def _parse_tables(sql: str) -> dict[str, Table]:
+    """Every CREATE TABLE in `sql`, keyed by table name. Other statements
+    (CREATE INDEX, ...) are ignored."""
+    tables: dict[str, Table] = {}
+    for stmt in _split_top(_tokenize(sql), ";"):
+        if len(stmt) < 4 or [t.upper() for t in stmt[:2]] != ["CREATE", "TABLE"]:
+            continue
+        i = 2
+        if [t.upper() for t in stmt[i:i + 3]] == ["IF", "NOT", "EXISTS"]:
+            i += 3
+        name = stmt[i].lower()
+        if stmt[i + 1] != "(":
+            raise ValueError(f"{name}: CREATE TABLE without a column list")
+        body = stmt[i + 2:_close(stmt, i + 1)]
+
+        columns, constraints = [], []
+        for item in _split_top(body, ","):
+            if _is_table_constraint(item):
+                constraints.append(_norm(item))
+            else:
+                columns.append(_parse_column(name, item))
+        if name in tables:
+            raise ValueError(f"{name}: declared twice in the same source")
+        tables[name] = Table(name, tuple(columns), tuple(sorted(constraints)))
+    return tables
+
+
+def _section_sql(path: Path, heading: str) -> str:
+    """The one ```sql fence inside `path`'s `heading` section."""
+    lines = path.read_text().splitlines()
+    try:
+        start = lines.index(heading) + 1
+    except ValueError:
+        raise ValueError(f"{path.name}: heading {heading!r} not found") from None
+    end = next((i for i in range(start, len(lines))
+                if re.match(r"^##(?!#)\s", lines[i])), len(lines))
+
+    fences = []
+    i = start
+    while i < end:
+        if lines[i].strip() == "```sql":
+            close = next((j for j in range(i + 1, end)
+                          if lines[j].strip() == "```"), None)
+            if close is None:
+                raise ValueError(f"{path.name}: unclosed sql fence in {heading!r}")
+            fences.append("\n".join(lines[i + 1:close]))
+            i = close
+        i += 1
+    if len(fences) != 1:
+        raise ValueError(
+            f"{path.name}: expected 1 sql fence in {heading!r}, found"
+            f" {len(fences)}")
+    return fences[0]
+
+
+# --------------------------------------------------------------------------
+# the contract
+
+SCHEMA_TABLES = _parse_tables(SCHEMA.read_text())
+SPEC_TABLES: dict[str, Table] = {}
+SPEC_SOURCE: dict[str, str] = {}
+for _path, _heading in SPEC_SECTIONS:
+    for _name, _table in _parse_tables(_section_sql(_path, _heading)).items():
+        if _name in SPEC_TABLES:
+            raise ValueError(f"{_name}: declared in two spec files")
+        SPEC_TABLES[_name] = _table
+        SPEC_SOURCE[_name] = f"{_path.parent.name}/{_path.name} §2"
+
+BOUND = sorted(set(SPEC_TABLES) - NO_SCHEMA_HOME)
+
+
+def _diff(name: str) -> list[str]:
+    spec, got = SPEC_TABLES[name], SCHEMA_TABLES[name]
+    src = SPEC_SOURCE[name]
+    out: list[str] = []
+
+    spec_cols = {c.name: c for c in spec.columns}
+    got_cols = {c.name: c for c in got.columns}
+    for missing in sorted(set(spec_cols) - set(got_cols)):
+        out.append(f"{name}.{missing}: in {src}, absent from schema.sql")
+    for extra in sorted(set(got_cols) - set(spec_cols)):
+        out.append(f"{name}.{extra}: in schema.sql, absent from {src}")
+    if set(spec_cols) == set(got_cols) and list(spec_cols) != list(got_cols):
+        out.append(f"{name}: column order differs — {src}"
+                   f" {list(spec_cols)}, schema.sql {list(got_cols)}")
+
+    for col in (c for c in spec.columns if c.name in got_cols):
+        mine = got_cols[col.name]
+        for field in ("type", "not_null", "primary_key", "unique", "default",
+                      "checks", "references"):
+            want, have = getattr(col, field), getattr(mine, field)
+            if want != have:
+                out.append(f"{name}.{col.name}: {field} — {src} {want!r},"
+                           f" schema.sql {have!r}")
+
+    for c in sorted(set(spec.constraints) - set(got.constraints)):
+        out.append(f"{name}: table constraint in {src}, absent from"
+                   f" schema.sql — {c}")
+    for c in sorted(set(got.constraints) - set(spec.constraints)):
+        out.append(f"{name}: table constraint in schema.sql, absent from"
+                   f" {src} — {c}")
+    return out
+
+
+def test_parsers_found_the_ddl():
+    """A comparator that extracts nothing would pass every other test."""
+    assert SCHEMA_TABLES, "no CREATE TABLE parsed from state/schema.sql"
+    assert BOUND, "no CREATE TABLE parsed from the spec §2 sections"
+    for src, tables in (("state/schema.sql", SCHEMA_TABLES),
+                        ("spec §2", SPEC_TABLES)):
+        empty = [t for t, tbl in tables.items() if not tbl.columns]
+        assert not empty, f"{src}: parsed no columns for {empty}"
+
+
+def test_every_spec_table_is_declared_in_schema():
+    missing = [t for t in BOUND if t not in SCHEMA_TABLES]
+    assert not missing, (
+        "declared in a canonical spec §2 but absent from state/schema.sql: "
+        + ", ".join(f"{t} ({SPEC_SOURCE[t]})" for t in missing)
+        + " — add it to schema.sql, or to NO_SCHEMA_HOME with a reason in"
+          " issue #50")
+
+
+def test_allowlisted_tables_still_have_no_schema_home():
+    """Keeps NO_SCHEMA_HOME honest in both directions."""
+    landed = sorted(NO_SCHEMA_HOME & set(SCHEMA_TABLES))
+    assert not landed, (f"{landed} now exist in state/schema.sql — remove them"
+                        " from NO_SCHEMA_HOME so they are compared")
+    unknown = sorted(NO_SCHEMA_HOME - set(SPEC_TABLES))
+    assert not unknown, (f"{unknown} are in NO_SCHEMA_HOME but no longer"
+                         " declared in any spec §2 — drop the stale entries")
+
+
+@pytest.mark.parametrize("table", BOUND)
+def test_schema_matches_spec(table):
+    """state/schema.sql and the canonical spec §2 declare the same structure."""
+    if table not in SCHEMA_TABLES:
+        pytest.skip("covered by test_every_spec_table_is_declared_in_schema")
+    problems = _diff(table)
+    assert not problems, (f"{table}: state/schema.sql has drifted from"
+                          f" {SPEC_SOURCE[table]}\n  "
+                          + "\n  ".join(problems))
