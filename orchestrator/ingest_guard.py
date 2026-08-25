@@ -5,9 +5,9 @@ scripts/run_day.py reads the account ONCE, at the top of the day, and every
 gate input for every ticker is computed from that one payload. A positions
 list that comes back EMPTY therefore does not fail — it sizes. held_qty 0, so
 no sell is possible; position_count 0; an empty correlation book, which
-market/features.py:81-83 correctly scores at the most permissive 1.10x tier;
-sector book value 0. The day trades UP, on a book it cannot see, and the
-holdings it does have cannot be exited.
+avg_corr_vs_book (market/features.py:81-83) correctly scores at the most
+permissive 1.10x tier; sector book value 0. The day trades UP, on a book it
+cannot see, and the holdings it does have cannot be exited.
 
 The 1.85x mis-sizing issue #39 reports is from a WHAT-IF run against a
 recorded account, not an observed production incident. The defect is real and
@@ -20,9 +20,10 @@ protection alerts and lets the day finish, this refuses the day (invariant 4).
 
 WHAT THIS CATCHES, AND WHAT IT DOES NOT
 ---------------------------------------
-market/source_alpaca.py:161-162 makes TWO independent API calls against ONE
-broker backend, and the account's long_market_value is derived from the same
-position store the positions list is read from. So this catches a fault
+AlpacaSource.account_state (market/source_alpaca.py:161-162) makes TWO
+independent API calls against ONE broker backend, and the account's
+long_market_value is derived from the same position store the positions list
+is read from. So this catches a fault
 BETWEEN the two reads — transport, serialization, a dropped or truncated
 response — because that is the class where they disagree.
 
@@ -33,8 +34,9 @@ Those return a self-consistent positions=[] + long_market_value=0, this reads
 "genuinely flat", and the day trades. That class is issue #64 ("The fund never
 verifies it is talking to the account it thinks it is") and belongs in the
 daily preconditions pass, not here — identity needs one field against one
-pinned value and no tolerance. orchestrator/preconditions.py:46 pins account
-SETTINGS, not identity, so a fresh paper account passes it today.
+pinned value and no tolerance. assert_account_config_unchanged
+(orchestrator/preconditions.py:46) pins account SETTINGS, not identity, so a
+fresh paper account passes it today.
 
 The fund's own records WOULD catch that class, and they are still only the
 tie-breaker below. That is deliberate, and the reason is one line of SQL:
@@ -57,9 +59,13 @@ no longer holds.
 
 The arming condition is therefore permanently true and structurally
 unclearable. The fund is one optional-field outage away from a total halt at
-all times, and stays halted for the duration of that outage. (Issue #39
-reports exactly this state on the production book: one NVDA buy row, all
-time, against a broker showing 40 after the stop fired.)
+all times, and stays halted for the duration of that outage.
+
+Measured, not inferred: on backups-from-vm/fund-2026-08-24.sqlite the `orders`
+table holds ONE row for all time — NVDA buy 80, filled, filled_qty 80 — so
+recorded_holdings returns {NVDA: 80}, while a direct broker read the same week
+showed 40 after the stop fired. The branch is armed on the production book as
+of that date, and nothing in the schema can disarm it.
 
 The halt ITSELF is clearable — restore long_market_value and the next run
 proceeds — and that is the real difference from the records-first design
@@ -81,10 +87,10 @@ Not caught here either: a PARTIAL payload (some positions listed, some
 dropped) — issue #63. Detecting one needs a tolerance, a tolerance is a
 threshold, and invariant 3 makes thresholds human-commit decisions.
 
-Deliberately NOT here: any per-symbol comparison. protection.py:356-361
-settled that direction — the broker is the authority on what is held, the
-fund's records on what the fund DID — and reversing it would halt the fund on
-every hand-placed intervention its alerts ask for.
+Deliberately NOT here: any per-symbol comparison. assert_positions_accounted
+(protection.py:356-361) settled that direction — the broker is the authority
+on what is held, the fund's records on what the fund DID — and reversing it
+would halt the fund on every hand-placed intervention its alerts ask for.
 
 WHY A REFUSED DAY IS ABSENT FROM THE AUDIT, AND WHY THAT IS NOT #39 AGAIN
 -------------------------------------------------------------------------
@@ -119,9 +125,10 @@ from typing import Callable
 from orchestrator.protection import recorded_holdings
 from slackkit.outbox import append_alert
 
-# One short wait before refusing a day, matching orchestrator/protection.py:35
-# and for the same reason — see account_snapshot. Deliberately a local
-# constant: this sits at a different point in the day and may diverge.
+# One short wait before refusing a day, matching _RETRY_S
+# (orchestrator/protection.py:35) and for the same reason — see
+# account_snapshot. Deliberately a local constant: this sits at a different
+# point in the day and may diverge.
 _RETRY_S = 3.0
 
 
@@ -150,9 +157,11 @@ def payload_fault(account: dict, recorded: dict[str, int]) -> str | None:
     The broker's own long_market_value settles it for the class this module
     catches — see the module docstring for the class it does not. The fund's
     records cannot lead here: an OTO stop leg has no `orders` row by
-    construction (protection.py:351), so a fund stopped out overnight has
-    non-empty records and an honestly empty book — the state
-    tests/test_protection.py:530 pins as alert-once-and-keep-trading. And
+    construction (assert_positions_accounted's docstring, protection.py:351),
+    so a fund stopped out overnight has non-empty records and an honestly
+    empty book — the state pinned as alert-once-and-keep-trading by
+    test_a_recorded_buy_the_broker_no_longer_holds_alerts
+    (tests/test_protection.py:530). And
     recorded_holdings has no date filter (protection.py:290-291), so halting
     on records alone would halt that day and every day after it, until a human
     edits the orders table. A fund that never trades again is not the safe
@@ -214,10 +223,11 @@ def account_snapshot(conn: sqlite3.Connection, *, source, now_iso: str,
     the case where the broker answers, plausibly, and is wrong needs this
     module.
 
-    One nap and one re-read before refusing, for the reason protection.py:413
-    naps: a buy that just filled is recorded before the broker lists the
-    position. A FIRST run of the day has placed no orders and cannot hit that
-    race; a RESUMED run reads the account again after the execution stage
+    One nap and one re-read before refusing, for the reason
+    assert_positions_accounted (protection.py:413) naps: a buy that just
+    filled is recorded before the broker lists the position. A FIRST run of
+    the day has placed no orders and cannot hit that race; a RESUMED run
+    reads the account again after the execution stage
     already filled something, and it can. Three seconds is a cheap price for
     not killing a trading day over a settle lag, and it is only ever paid on
     the path that is about to refuse.

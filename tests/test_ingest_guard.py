@@ -28,7 +28,8 @@ def test_a_populated_payload_is_trusted():
 
 
 def test_a_per_symbol_disagreement_is_not_a_fault_here():
-    """The direction orchestrator/protection.py:356-361 already settled: the
+    """The direction assert_positions_accounted
+    (orchestrator/protection.py:356-361) already settled: the
     broker is the authority on what is held, and this lane does not reverse
     it. Records say 80, the broker shows 40 — assert_positions_accounted
     alerts once at the close and the day trades. Halting here would stop the
@@ -41,15 +42,18 @@ def test_a_per_symbol_disagreement_is_not_a_fault_here():
 def test_the_genuinely_empty_first_day_is_trusted():
     """The fund has never traded. No records, and the broker says it carries
     no long value. market/features.py's empty-book 1.10x tier is the CORRECT
-    answer here (tests/test_features.py:335) and must keep being reached."""
+    answer here (test_an_empty_book_sizes_at_the_permissive_tier,
+    tests/test_features.py:335) and must keep being reached."""
     assert payload_fault(_account({}, 0.0), {}) is None
 
 
 def test_a_flat_broker_is_trusted_even_when_the_records_disagree():
     """The false positive that a records-only detector would ship. An OTO stop
-    leg has no `orders` row by construction (protection.py:351), so a fund
+    leg has no `orders` row by construction (assert_positions_accounted's
+    docstring, protection.py:351), so a fund
     stopped out overnight has non-empty records and an honestly empty book —
-    the state tests/test_protection.py:530 pins as alert-once-and-keep-
+    the state test_a_recorded_buy_the_broker_no_longer_holds_alerts
+    (tests/test_protection.py:530) pins as alert-once-and-keep-
     trading. Halting on it would halt every day after it too, because the
     condition is permanent until a human reconciles."""
     assert payload_fault(_account({}, 0.0), {"NVDA": 80}) is None
