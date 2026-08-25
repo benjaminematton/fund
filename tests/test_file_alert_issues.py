@@ -178,3 +178,79 @@ def test_a_changing_order_id_does_not_file_a_new_issue_each_day(db):
     filings, _ = _load().plan_filings(db, "2026-08-20", FakeTracker())
     assert [f.action for f in filings] == ["create"]
     assert filings[0].labels == ("alert:ticket_open_after_exec",)
+
+
+class RecordingRun:
+    """Stands in for subprocess.run. Records argv, answers from a script."""
+    def __init__(self, replies=None):
+        self.calls, self.replies = [], replies or {}
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        key = " ".join(argv[:3])
+        out = self.replies.get(key, "[]")
+        class R: returncode, stdout, stderr = 0, out, ""
+        return R()
+
+
+def test_dry_run_performs_no_mutation(db, db_path, capsys):
+    """Seeded with an alert that WOULD file — otherwise 'no mutating calls'
+    passes vacuously and proves nothing."""
+    _alert(db, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    db.close()
+    run = RecordingRun()
+    rc = _load().main([str(db_path), "--since", "2026-08-24"], run=run)
+    assert rc == 0
+    assert "would file" in capsys.readouterr().out      # it had work to skip
+    mutating = [c for c in run.calls
+                if "create" in c or "comment" in c or "label" in c]
+    assert mutating == []          # asserted, not assumed
+
+
+def test_apply_creates_the_label_before_the_issue(db, db_path):
+    _alert(db, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    db.close()
+    mod = _load()
+    run = RecordingRun()
+    mod.main([str(db_path), "--since", "2026-08-24", "--apply"], run=run)
+    joined = [" ".join(c) for c in run.calls]
+    label_at = next(i for i, c in enumerate(joined) if "label create" in c)
+    issue_at = next(i for i, c in enumerate(joined) if "issue create" in c)
+    assert label_at < issue_at
+
+
+def test_gh_failure_is_reported_and_never_retried(db, db_path, capsys):
+    """A retry with a fresh id is how one condition becomes two issues."""
+    class FailingRun(RecordingRun):
+        # Only `gh issue create` fails. `returncode = 0 if "list" in argv
+        # else 1` (as first drafted) fails `label create` too, so the apply
+        # path never even reaches `issue create` — the "1 create attempt"
+        # assertion below would be unreachable (0 == 1), proving nothing
+        # about retries. Failing only the actual create call is what this
+        # test's name is about.
+        def __call__(self, argv, **kw):
+            self.calls.append(argv)
+            class R:
+                returncode = 1 if ("issue" in argv and "create" in argv) else 0
+                stdout, stderr = "[]", "gh: HTTP 403"
+            return R()
+
+    _alert(db, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    db.close()
+    run = FailingRun()
+    rc = _load().main([str(db_path), "--since", "2026-08-24", "--apply"], run=run)
+    assert rc != 0
+    assert "FAILED" in capsys.readouterr().err
+    creates = [c for c in run.calls if "create" in c and "issue" in c]
+    assert len(creates) == 1          # reported once, never retried
+
+
+def test_an_unreadable_db_exits_non_zero_having_filed_nothing(tmp_path, capsys):
+    run = RecordingRun()
+    rc = _load().main([str(tmp_path / "nope.sqlite"), "--since", "2026-08-24",
+                       "--apply"], run=run)
+    assert rc != 0
+    assert run.calls == []

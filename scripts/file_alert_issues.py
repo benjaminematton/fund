@@ -15,6 +15,7 @@ alerts the software already raised and asks the tracker what is already open.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 import sys
@@ -108,3 +109,102 @@ def plan_filings(conn, since: str, tracker, db_path: str = "") -> tuple[list[Fil
         filings.append(Filing(action, labels, g["code"], g["ticker"], title,
                               body, existing))
     return filings, malformed
+
+
+class GhTracker:
+    """The tracker, over the `gh` CLI (docs/agents/issue-tracker.md)."""
+
+    def __init__(self, repo: str, run=None):
+        import subprocess
+        self._run = run or subprocess.run
+        self.repo = repo
+
+    def _gh(self, *args: str) -> str:
+        r = self._run(["gh", *args, "--repo", self.repo],
+                      capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"gh {' '.join(args)} failed: {r.stderr.strip()}")
+        return r.stdout
+
+    def open_issue(self, labels):
+        argv = ["issue", "list", "--state", "open", "--json", "number"]
+        for label in labels:
+            argv += ["--label", label]
+        found = json.loads(self._gh(*argv) or "[]")
+        return found[0]["number"] if found else None
+
+    def ensure_label(self, label: str) -> None:
+        self._gh("label", "create", label, "--force")
+
+    def create_issue(self, title, body, labels) -> None:
+        argv = ["issue", "create", "--title", title, "--body", body]
+        for label in labels:
+            argv += ["--label", label]
+        self._gh(*argv)
+
+    def comment_issue(self, number: int, body: str) -> None:
+        self._gh("issue", "comment", str(number), "--body", body)
+
+
+def main(argv: list[str] | None = None, run=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("db")
+    ap.add_argument("--since", required=True, help="ET calendar date YYYY-MM-DD")
+    ap.add_argument("--repo", default="benjaminematton/fund")
+    ap.add_argument("--apply", action="store_true",
+                    help="actually file; without it this is a dry run")
+    args = ap.parse_args(argv)
+
+    # sqlite3.connect CREATES a missing file rather than raising, so an
+    # unreadable DB surfaces as "no such table: events" on the first query,
+    # not on connect. Both are caught below and both file nothing.
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+    tracker = GhTracker(args.repo, run=run)
+    try:
+        filings, malformed = plan_filings(conn, args.since, tracker, args.db)
+    except RuntimeError as e:
+        print(f"tracker unavailable: {e}", file=sys.stderr)
+        return 1
+    except sqlite3.Error as e:
+        print(f"cannot read {args.db}: {e}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+    for m in malformed:
+        print(f"MALFORMED (not filed): {m}", file=sys.stderr)
+
+    failed = 0
+    for f in filings:
+        if f.action == "skip":
+            print(f"already tracked as #{f.issue}: {' '.join(f.labels)}")
+            continue
+        verb = "filing" if args.apply else "would file"
+        if f.action == "comment":
+            print(f"{verb} a comment on #{f.issue}: cleared {f.code}")
+        else:
+            print(f"{verb}: {f.title}  [{' '.join(f.labels)}]")
+        if not args.apply:
+            continue
+        try:
+            if f.action == "comment":
+                tracker.comment_issue(f.issue, f.body)
+            else:
+                for label in f.labels:
+                    tracker.ensure_label(label)
+                tracker.create_issue(f.title, f.body, f.labels)
+        except RuntimeError as e:
+            # Reported, never retried: a retry with a fresh id is how you get
+            # two issues for one condition.
+            print(f"FAILED {f.action} for {' '.join(f.labels)}: {e}",
+                  file=sys.stderr)
+            failed += 1
+
+    if not filings and not malformed:
+        print(f"no alerts needing an issue since {args.since}")
+    return 1 if (failed or malformed) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
