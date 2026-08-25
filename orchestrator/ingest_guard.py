@@ -163,3 +163,50 @@ def payload_fault(account: dict, recorded: dict[str, int]) -> str | None:
             f" {holdings} — whether the book is empty or the payload was lost"
             " cannot be established, so no stage ran and nothing traded"
             " (invariant 4)")
+
+
+def account_snapshot(conn: sqlite3.Connection, *, source, now_iso: str,
+                     sleep: Callable[[float], None] | None = None
+                     ) -> dict | None:
+    """The account the day may trade on, or None — the positions payload could
+    not be trusted, an alert is appended, and no stage may run.
+
+    None rather than a raise. The caller has to drain the outbox before it
+    exits, and a raise would land in scripts/run_day.py's guarded(), which
+    records every failure under the single code `run_day_failed` — the code
+    scripts/file_alert_issues.py keys its GitHub issue on. A lost positions
+    payload has its own operator response and deserves its own code.
+
+    A broker read that RAISES is deliberately not caught: guarded() already
+    turns it into an alert, a drain and exit 1, which is the same HOLD. Only
+    the case where the broker answers, plausibly, and is wrong needs this
+    module.
+
+    One nap and one re-read before refusing, for the reason protection.py:405
+    naps: a buy that just filled is recorded before the broker lists the
+    position. A FIRST run of the day has placed no orders and cannot hit that
+    race; a RESUMED run reads the account again after the execution stage
+    already filled something, and it can. Three seconds is a cheap price for
+    not killing a trading day over a settle lag, and it is only ever paid on
+    the path that is about to refuse.
+
+    The re-read replaces the whole account, and the FRESH one is what the day
+    is sized from. Validating a fresh payload and sizing on the stale one
+    would be this same bug wearing a guard.
+    """
+    nap = sleep or (lambda _s: None)
+    recorded = recorded_holdings(conn)
+
+    account = source.account_state()
+    fault = payload_fault(account, recorded)
+    if fault is None:
+        return account
+
+    nap(_RETRY_S)
+    account = source.account_state()
+    fault = payload_fault(account, recorded)
+    if fault is None:
+        return account
+
+    append_alert(conn, "positions_payload_lost", fault, now_iso=now_iso)
+    return None
