@@ -346,10 +346,14 @@ def _alert_unexecuted_tickets(ctx: StageCtx) -> None:
 def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> str:
     """Trader stage. Zero open tickets -> no turn at all (no LLM spend on a
     hold day); the stage still drains and still checkpoints done."""
-    now = iso(ctx.clock.now())
-    expire_open_tickets(ctx.conn, now)   # clock-injected expiry (acceptance §0)
-
     def body() -> None:
+        # INSIDE the body (issue #40). run_stage skips the body entirely on a
+        # resumed day whose execution checkpoint is already 'done'; with expiry
+        # outside it, that resume still ran — finalizing the ticket AND its
+        # decision to 'expired' while every repair path was skipped. There is
+        # no legal edge out of 'expired', so a real fill sitting at the broker
+        # was locked out of the books permanently.
+        expire_open_tickets(ctx.conn, iso(ctx.clock.now()))   # clock-injected (acceptance §0)
         if run_trader_turn is not None and open_tickets(ctx.conn, iso(ctx.clock.now())):
             run_trader_turn()
         _alert_unexecuted_tickets(ctx)

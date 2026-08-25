@@ -808,3 +808,25 @@ def test_execution_alerts_when_the_turn_overran_the_tickets_ttl(fund_db, sim_clo
     assert _alert_texts(fund_db) == [
         f"ticket {TID[:8]} open after exec turn — no order"]
     assert _codes(fund_db) == ["ticket_open_after_exec"]
+
+
+def test_a_resumed_execution_stage_does_not_expire_the_ticket(fund_db, sim_clock):
+    """Issue #40. A day re-fired after the execution checkpoint reached 'done'
+    skips the body — so every repair path in it is skipped too. With expiry
+    sitting OUTSIDE the body it ran anyway, finalizing ticket AND decision to
+    'expired' on a resume that did no work. There is no legal edge out of
+    'expired', so a real fill sitting at the broker was locked out of the books
+    permanently. Expiry belongs to the stage, not to the resume."""
+    tid = _open_ticket(fund_db, sim_clock)
+    fund_db.execute("UPDATE decisions SET status='approved' WHERE ticker='NVDA'")
+    fund_db.commit()
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    assert run_execution(ctx, lambda: None) == "done"   # checkpoint -> done
+    sim_clock.advance(minutes=46)                       # past the ticket's TTL
+    assert run_execution(ctx, lambda: None) == "done"   # body skipped on resume
+    assert fund_db.execute("SELECT status FROM tickets WHERE id=?",
+                           (tid,)).fetchone()["status"] == "open"
+    assert fund_db.execute(
+        "SELECT status FROM decisions WHERE ticker='NVDA'"
+    ).fetchone()["status"] == "approved"
+    assert len(_alert_texts(fund_db)) == 1
