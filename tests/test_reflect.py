@@ -155,3 +155,83 @@ def test_store_reflection_puts_the_facts_before_the_interpretation(resolved):
         (decision_id,)).fetchone()["reflection"]
     assert stored.startswith(frame)
     assert stored.endswith("Half-size cost ~1pp but was correct process.")
+
+
+def test_a_second_store_leaves_the_first_reflection_untouched(resolved):
+    """The stage body is re-run from the top on crash-resume, so a decision
+    already reflected on is reached again. Writing unconditionally would
+    replace a real reflection with whatever the re-run produced; first write
+    wins instead. The guard saves the text, not the turn — the seat has already
+    answered by the time `prose` exists."""
+    conn, decision_id = resolved
+    frame = reflection_frame(conn, decision_id)
+    store_reflection(conn, decision_id, frame, prose="Correct process.")
+    store_reflection(conn, decision_id, frame, prose="Different second take.")
+
+    stored = conn.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (decision_id,)).fetchone()["reflection"]
+    assert stored.endswith("Correct process.")
+    assert "Different second take." not in stored
+
+
+def test_a_frame_only_first_write_locks_out_the_seats_prose(resolved):
+    """Pinning the shape the guard demands of its callers: frame and prose go
+    in together, one call per decision. Storing the frame ahead of the turn and
+    the prose after it would leave the row permanently factual-only, so no
+    caller may split the two halves across separate writes."""
+    conn, decision_id = resolved
+    frame = reflection_frame(conn, decision_id)
+    store_reflection(conn, decision_id, frame)
+    store_reflection(conn, decision_id, frame, prose="Arrives too late.")
+
+    stored = conn.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (decision_id,)).fetchone()["reflection"]
+    assert stored == frame
+
+
+def test_a_reflection_committed_on_another_connection_is_not_clobbered(
+        resolved, tmp_path):
+    """The guard is on the column, not on a memory of what this process did.
+    Many sessions work this DB at once, so the write that has to be stopped is
+    one this connection never saw — hence a genuinely separate connect() to the
+    same file rather than a second UPDATE on the fixture's own."""
+    conn, decision_id = resolved
+    other = connect(tmp_path / "fund.sqlite")
+    other.execute("UPDATE resolutions SET reflection = 'from another session'"
+                  " WHERE decision_id = ?", (decision_id,))
+    other.commit()
+
+    assert not store_reflection(conn, decision_id,
+                                reflection_frame(conn, decision_id),
+                                prose="Would have overwritten it.")
+    stored = conn.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (decision_id,)).fetchone()["reflection"]
+    assert stored == "from another session"
+
+
+def test_store_reflection_reports_whether_this_call_wrote_the_row(resolved):
+    """The caller cannot see the guard fire otherwise: both outcomes leave a
+    populated row, and only the return value separates "I reflected on this"
+    from "someone already had"."""
+    conn, decision_id = resolved
+    frame = reflection_frame(conn, decision_id)
+
+    assert store_reflection(conn, decision_id, frame, prose="First.") is True
+    assert store_reflection(conn, decision_id, frame, prose="Second.") is False
+
+
+def test_a_decision_with_no_resolution_row_is_reported_as_unwritten(resolved):
+    """Zero rows updated used to mean only this. Never a silent success: a
+    decision resolve.py has not graded yet gets no reflection and must not be
+    logged as though it did, or it leaves the audit trail without ever
+    appearing to fail (CLAUDE.md: never swallow)."""
+    conn, decision_id = resolved
+    frame = reflection_frame(conn, decision_id)
+    conn.execute("DELETE FROM resolutions")
+    conn.commit()
+
+    assert store_reflection(conn, decision_id, frame, prose="Nowhere to go.") \
+        is False

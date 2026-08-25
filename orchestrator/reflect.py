@@ -95,7 +95,7 @@ def reflection_frame(conn, decision_id: int) -> str | None:
 
 
 def store_reflection(conn, decision_id: int, frame: str,
-                     prose: str = "") -> None:
+                     prose: str = "") -> bool:
     """Write frame + the seat's interpretation into `resolutions.reflection`.
 
     Stored together, facts first, so a later reader sees the numbers beside the
@@ -103,8 +103,39 @@ def store_reflection(conn, decision_id: int, frame: str,
     property achieved by storage rather than by asking the model to comply. A
     seat that writes nothing still leaves the frame: a silent turn produces a
     record, not a blank.
+
+    First write wins: the row is claimed only while `reflection` IS NULL, so a
+    repeat call for the same decision leaves the stored text alone. The stage
+    that drives this re-runs its whole body from the top on crash-resume, and
+    without the guard a crash partway through replaces considered reflections
+    with the re-run's. The guard is on the column, not on a memory of what this
+    process did, so a write from another session is stopped the same way.
+
+    What the guard does NOT do is save the money. `prose` is a parameter: the
+    seat has already been asked and the turn already paid for by the time this
+    function is reached, and all a blocked write saves is the overwrite. A
+    stage that calls the seat inside its loop therefore pays for all fifty
+    decisions again on resume and discards forty of the answers here. Skipping
+    that cost is the CALLER's job and must happen BEFORE the turn: select the
+    decisions whose `reflection` IS NULL and reflect only on those.
+
+    Returns True when this call wrote the row. False has two meanings and
+    neither is an error worth raising on: a reflection is already stored (the
+    ordinary resumed-stage path), or `decision_id` has no `resolutions` row at
+    all — resolve.py has not run, and that decision is absent from the audit
+    trail this module exists to guarantee. A caller must not log "reflected" on
+    a False; it tells the two apart by the frame it already holds, since
+    reflection_frame returns None on exactly the same missing row — a real
+    frame plus a False is the already-reflected case.
+
+    A consequence worth stating, and why both halves must keep going in
+    together: a caller that stored the frame before the turn and the prose
+    after it would find the second write blocked and the row factual-only
+    forever. One call per decision.
     """
     text = f"{frame}\n\n{prose}".rstrip() if prose else frame
-    conn.execute("UPDATE resolutions SET reflection = ? WHERE decision_id = ?",
-                 (text, decision_id))
+    wrote = conn.execute("UPDATE resolutions SET reflection = ?"
+                         " WHERE decision_id = ? AND reflection IS NULL",
+                         (text, decision_id)).rowcount == 1
     conn.commit()
+    return wrote
