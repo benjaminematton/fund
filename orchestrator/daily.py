@@ -23,7 +23,7 @@ from gate.tickets import (create_ticket, expire_open_tickets, open_tickets,
 from orchestrator.clock import Clock, et_hhmm, iso
 from orchestrator.protection import (assert_positions_accounted,
                                      assert_positions_protected)
-from orchestrator.reconcile import reconcile_orders
+from orchestrator.reconcile import reconcile_stage
 from slackkit.outbox import append_alert, append_event, drain
 from state.critiques import insert_default_critiques
 from state.journal import append_entry
@@ -481,8 +481,8 @@ def run_day(ctx: StageCtx, *, execution_turn: Callable[[], None] | None = None,
     run_execution(ctx, execution_turn if execution_turn is not None
                   else ctx.run_turn.get("execution"))
     run_stage(ctx, "reconciliation",
-              lambda: reconcile_orders(ctx.conn, clock=ctx.clock, broker=broker,
-                                       sleep=sleep or (lambda _s: None)))
+              lambda: reconcile_stage(ctx.conn, clock=ctx.clock, broker=broker,
+                                      sleep=sleep or (lambda _s: None)))
     # NOT a stage: an assertion must re-check on a resumed day, never be
     # skipped as 'done'. Drained explicitly because a resumed day can find
     # close already 'done', and run_stage returns before draining — which
