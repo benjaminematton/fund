@@ -77,9 +77,13 @@ sequence into the map issue's child order and its `blocked_by` edges, which are 
 ### Phase 0 — Board
 
 **Finding the map issue.** It is the issue labelled `wayfinder:map` — the convention already written in
-`docs/agents/issue-tracker.md`, reused rather than duplicated with a second one of our own. Exactly one
-match is required: zero matches or several both mean the board cannot be read deterministically, and
-both degrade to human-named lanes rather than to a guess.
+`docs/agents/issue-tracker.md`, reused rather than duplicated with a second one of our own. Zero matches
+and several matches are not the same failure. Several means the board convention is in use and
+something is broken — a duplicate map — worth raising to the human. Zero needs one more check first:
+`gh label list`, for a `wayfinder:*` label anywhere in the repo. None at all means the repo has simply
+never adopted the convention — say so once, plainly, never as a daily question (below). A
+`wayfinder:*` label that exists with no open issue wearing it is the real ambiguity: the board cannot be
+read deterministically, and degrades to human-named lanes rather than to a guess.
 
 ```bash
 gh issue list --state open --label wayfinder:map --json number,title,body
@@ -111,9 +115,21 @@ assigned on a guess about what it touches.
 
 Read a plan file only when a candidate lane names one, and only as the how.
 
-**Degradation is mandatory.** This skill runs in repos with no map issue. When no map issue exists:
-say so in one line, skip the frontier query, and ask the human to name the lanes. Never invent a
-priority order from an unordered issue list; never read a plan checkbox as state.
+**Degradation is mandatory, and it has two shapes.** A repo with no `wayfinder:*` label at all is not on
+the convention: say so in one line and stop there — never ask the human to name lanes for it, today or
+on any later morning, since there is no board to have an opinion about. A repo that uses the convention
+but currently shows zero-with-label or several map-issue matches: say so in one line, skip the frontier
+query, and ask the human to name the lanes. **That ask does not block the run, and the run does not
+invent lanes to fill the gap.** It reports the board, states plainly that lanes are unnamed and why, and
+continues through Phase 1's roster and Phase 3's digest exactly as written. The run ends having asked;
+an answer that never arrives is a reported state, not a failure. Never invent a priority order from an
+unordered issue list; never read a plan checkbox as state.
+
+**Neither shape of degradation is "no work."** A repo with open issues always has work to report,
+whether or not a map issue exists. Both shapes above still list the open issues, name the ones nobody is
+assigned to, and lead with anything the repo's own labels mark as high severity, ahead of everything
+else. A morning is "quiet" only when there are no open issues and no live sessions (§6) — a repo that is
+off the board convention, or between maps, can still be loud.
 
 **No confirmation gate.** The candidate lanes go straight into the poll. Priority was decided when the
 map issue's children were ordered; re-asking every morning re-asks a settled question. The human's
@@ -137,11 +153,16 @@ and `fundablePlayground/` share a string prefix with the repo root without being
 `cwd.startswith(repo_root)` would wrongly sweep their sessions into the roster.
 
 Each surviving row carries `name`, `sessionId`, `cwd`, `kind`, `startedAt` — **including the calling
-session**, which is identified by matching its own `sessionId` and then **excluded from the poll**
-(this seat does not poll itself). This replaces the previous three-source join
-(`git worktree list` ∪ `~/.claude/sessions/*.json` ∪ `ListAgents`) with a two-source union
-(`claude agents --json` ∪ `git worktree list --porcelain`) and retires the "you are the one
-`ListAgents` omits" heuristic — self-identification is now positive rather than by elimination.
+session**. Self-identification is a set difference between the two listings this phase already needs:
+`claude agents --json` includes the calling session, and the `ListAgents` tool excludes it, so the
+caller's row is whichever row the former reports that the latter does not. That row is **excluded from
+the poll** (this seat does not poll itself). This is why both listings are called, not one: the old
+rule, "you are the one `ListAgents` omits," is unreliable taken alone — it cannot distinguish "absent
+because it is me" from "absent because the listing was partial" — and diffing against `claude agents
+--json`, a listing known to contain everyone, is what makes the identification exact. The roster itself
+replaces the previous three-source join (`git worktree list` ∪ `~/.claude/sessions/*.json` ∪
+`ListAgents`) with a two-source union (`claude agents --json` ∪ `git worktree list --porcelain`);
+`ListAgents` stays in play only for this self-identification check.
 
 Filter to sessions active since the window start (newest file in
 `~/.claude/align/<repo-basename>/standups/`, else the last 24 hours), by transcript mtime at
@@ -287,8 +308,9 @@ human. Its sibling table row changes from *"Nothing happens afterwards"* to *"En
 | Situation | Behavior |
 |---|---|
 | No sessions, board has work | Skip the poll entirely. Report the lanes, say "open N". This is now the normal empty-roster path, not a degenerate one |
-| No sessions, no board | Say so, write nothing, stop |
-| No map issue in this repo | Say so in one line, fall back to human-named lanes, reconcile normally |
+| No sessions, no open issues at all | Say so, write nothing, stop. The only "quiet" run: no work and no one active |
+| No map issue in this repo, or several | Say so in one line, fall back to human-named lanes, continue without blocking, reconcile normally. Still report open issues; never call this quiet |
+| No `wayfinder:*` label in this repo at all | Say so once, in one line — not a daily question. Still report open issues |
 | Fewer chats opened than asked | Bind what appeared, name the unbound lanes, wait |
 | Capacity yes but region collides | Flag → `/get-aligned`. No assignment |
 | Fleet grew mid-run | Re-check the roster immediately before dispatch; state coverage |
