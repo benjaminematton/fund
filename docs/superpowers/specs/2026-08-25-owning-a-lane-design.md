@@ -89,9 +89,15 @@ lane, and the plan path (or the package slug `/split-the-plan` assigns) for a pl
 
 ## 6. Where the work is described
 
-**The issue.** Body for what the lane is and what done means; comments for anything learned since. It
-is durable, readable without asking anyone, survives the seat dying, and `morning-standup` already
-reads issues.
+**The issue — body and thread.** The body says what the lane is and what done means; the thread is
+where that gets corrected. It is durable, readable without asking anyone, survives the seat dying, and
+`morning-standup` already reads issues.
+
+**Reading the thread is a rule, not a courtesy.** Measured during testing: on a lane whose body pointed
+at tightening an assertion, a peer had already established in the comments that the assertion was fine
+and the real fix was a different test. Every seat that worked from the body alone — two without the
+skill, one with it — implemented the wrong change. It was the only variable that separated a correct
+outcome from a confident wrong one, so the skill states it outright and lists it as a red flag.
 
 A plan file is written only when the lane is big enough to need one, and the issue links to it. The
 plan is the *how*; the issue stays the *what*.
