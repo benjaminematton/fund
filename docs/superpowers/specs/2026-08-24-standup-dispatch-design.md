@@ -113,8 +113,8 @@ as much a guess).
 — and keep those open children that are:
 
 - **unblocked** — `blocked_by == 0`
-- **unclaimed** — no row in `map.md` whose `sessionId` appears in the unfiltered `claude agents --json`
-  listing, the same listing Phase 6's release check uses. Liveness, not row status — and not
+- **unclaimed** — no row for this lane in `map.md` whose `sessionId` appears in the unfiltered `claude
+  agents --json` listing, the same listing Phase 6's release check uses. Liveness, not row status — and not
   `get-aligned`'s own `live/parked/held/prospective` vocabulary for that file. This skill reads only
   rows in a shape it can interpret; a row written by `get-aligned` or `split-the-plan` is left alone,
   never reinterpreted.
@@ -257,8 +257,8 @@ Each candidate lane resolves to exactly one of:
 
 - **covered** — a live session answered capacity yes **naming this lane**, and its stated region does
   not collide
-- **needs a chat** — nobody free for this lane, or the only session that answered yes names a region
-  that collides
+- **needs a chat** — nobody free for this lane, or every session that answered yes for this lane names
+  a region that collides
 
 A candidate lane becomes a **lane** once it resolves to either state above — every phase from here on
 says "lane," never "candidate."
@@ -286,7 +286,9 @@ List what each will own. No prompts to paste, no session ids to copy. **This ask
 run — the same non-blocking rule Phase 0 gives its own ask.** Read the roster again, using Phase 1's
 exact-path-or-containment-under-`path + "/"` rule, never a bare prefix test, and take every session with
 `startedAt > T`. **If fewer appear than asked, or none do before the run ends**, bind what exists,
-record the remaining lanes as unbound with the reason, and wait no further: Phase 6 writes the digest
+record the remaining lanes as unbound with the reason — an unbound lane is recorded in the digest and
+the human report only, and gets no `map.md` row, because it has no owning `sessionId` to key on — and
+wait no further: Phase 6 writes the digest
 and broadcasts regardless of whether confirmation ever arrived — a run always produces its digest.
 
 **Standup provisions nothing.** A new chat is an overseer seat, and an overseer does not edit files —
@@ -362,7 +364,7 @@ human. Its sibling table row changes from *"Nothing happens afterwards"* to *"En
 | No sessions, no open issues at all | Say so, write nothing, stop. The only "quiet" run: no work and no one active |
 | No map issue in this repo, or several | Say so in one line, fall back to human-named lanes, continue without blocking, reconcile normally. Still report open issues; never call this quiet |
 | No `wayfinder:*` label in this repo at all | Say so once, flatly — not a daily question. Report open issues, ranked critical/high/medium/low as Phase 0 defines (unlabelled last), and let the human name today's lanes from them if they want to |
-| Fewer chats opened than asked | Bind what appeared, name the unbound lanes, wait |
+| Fewer chats opened than asked | Bind what appeared, name the unbound lanes, the run does not block |
 | Capacity yes but region collides | Flag → `/get-aligned`. No assignment |
 | Fleet grew mid-run | Re-check the roster immediately before dispatch; state coverage |
 | Peer never answers | Named silent; still receives the digest; its lanes are treated as needing a chat |
