@@ -277,7 +277,15 @@ class _DeadDataSource:
 
     def account_state(self) -> dict:
         return {"equity": 100000.0, "cash": 30000.0, "positions": {},
-                "position_count": 0, "daily_pnl_pct": 0.0}
+                "position_count": 0, "daily_pnl_pct": 0.0,
+                # Explicitly flat, not merely silent. Without this key
+                # orchestrator/ingest_guard.py reads the field as UNREADABLE
+                # and falls through to the fund's own order records, which
+                # this fixture's DB happens to have none of — so the day
+                # would run by accident, and would start halting the moment
+                # anyone gave the `wired` fixture an `orders` row. This
+                # fixture must fail at close_frame, not before it.
+                "long_market_value": 0.0}
 
     def close_frame(self, universe, end=None):
         raise ConnectionError("alpaca data api unreachable")
@@ -630,7 +638,16 @@ class _QuietSource:
 
     def account_state(self) -> dict:
         return {"equity": 100000.0, "cash": 0.0, "positions": {},
-                "prices": {}, "daily_pnl_pct": 0.0}
+                "prices": {}, "daily_pnl_pct": 0.0,
+                # Explicitly flat, not merely silent. Without this key
+                # orchestrator/ingest_guard.py reads the field as UNREADABLE
+                # and falls through to the fund's own order records, which
+                # this fixture's DB happens to have none of — so the day
+                # would run by accident, and would start halting the moment
+                # anyone gave the `wired` fixture an `orders` row. Zero cash
+                # and zero long market value is the state this docstring
+                # already claims.
+                "long_market_value": 0.0}
 
     def close_frame(self, universe, end=None):
         import pandas as pd
@@ -729,6 +746,117 @@ def test_a_zero_ticker_day_writes_no_decisions_and_costs_nothing(
     for table in ("signals", "decisions", "tickets", "costs", "orders"):
         assert conn.execute(f"SELECT COUNT(*) c FROM {table}"
                             ).fetchone()["c"] == 0, table
+
+
+# --- the positions payload the whole day is sized from (issue #39) ----------
+
+class _LostPayloadSource(_QuietSource):
+    """The broker answers, plausibly, and is wrong: it reports long market
+    value and lists no positions. Everything else about the day is fine, which
+    is the point — nothing downstream would notice.
+
+    Keeps _QuietSource's zero cash on purpose. It is not what this test is
+    about, and a funded account would make every ticker active, open three
+    seat turns, and bury the assertion under seat_turn_failed noise."""
+
+    def account_state(self) -> dict:
+        return {"equity": 100000.0, "cash": 0.0, "last_equity": 100000.0,
+                "long_market_value": 8594.0, "positions": {}, "prices": {},
+                "daily_pnl_pct": 0.0}
+
+
+class _FlatSource(_QuietSource):
+    """The fund's genuinely-empty first day, said explicitly: no positions AND
+    the broker's own long market value is zero. Identical to _QuietSource
+    post-change; kept as its own name so the test that reads it says what it
+    is testing."""
+
+    def account_state(self) -> dict:
+        return {"equity": 100000.0, "cash": 0.0, "last_equity": 100000.0,
+                "long_market_value": 0.0, "positions": {}, "prices": {},
+                "daily_pnl_pct": 0.0}
+
+
+def _filled_buy_row(conn, symbol="NVDA", qty=80,
+                    tid="a3f90000-0000-4000-8000-000000000001",
+                    submitted_at="2026-07-02T19:59:00+00:00"):
+    """A filled buy and the ticket behind it — the fund's own record that it
+    holds something. Returns the ticket id, so a caller can tell the row it
+    seeded apart from one the day minted."""
+    cur = conn.execute(
+        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+        " invalidation, stop_price, status, created_at) VALUES"
+        " (?, ?, 'buy', ?, 't', 'i', NULL, 'executed', ?)",
+        (submitted_at[:10], symbol, qty, submitted_at))
+    conn.execute(
+        "INSERT INTO tickets (id, decision_id, ticker, side, max_qty,"
+        " stop_price, expires_at, status, created_at)"
+        " VALUES (?, ?, ?, 'buy', ?, NULL, ?, 'consumed', ?)",
+        (tid, cur.lastrowid, symbol, qty, submitted_at, submitted_at))
+    conn.execute(
+        "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
+        " filled_qty, submitted_at) VALUES (?, ?, 'buy', ?, 'filled', ?, ?)",
+        (tid, symbol, qty, qty, submitted_at))
+    conn.commit()
+    return tid
+
+
+def test_a_lost_positions_payload_holds_the_whole_day(wired, tmp_path,
+                                                      monkeypatch):
+    """Issue #39 case (a). The fund's records hold filled positions, the broker
+    returns none, and the account is not flat. Nothing may be sized from that
+    payload: no checkpoint, no seat turn, no ticket — and #risk must be told
+    under a code the alert filer can key an issue on."""
+    conn, slack, clock = wired
+    seeded = _filled_buy_row(conn)
+
+    async def _no_llm(*a, **k):
+        raise AssertionError("a held day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _LostPayloadSource(), "2026-07-06",
+        str(tmp_path / "fund.sqlite"),
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    assert code == 1
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM checkpoints").fetchone()["c"] == 0
+    # Not a count of zero: orders.client_order_id REFERENCES tickets(id), so
+    # the seeded fill above CANNOT exist without a ticket row. Naming the
+    # seeded id is the stronger claim anyway — the day minted nothing of its
+    # own, and a ticket from any other source would fail this too.
+    assert [r["id"] for r in conn.execute("SELECT id FROM tickets")] == [seeded]
+    payloads = _alert_payloads(conn)
+    assert [p["code"] for p in payloads] == ["positions_payload_lost"]
+    assert any("long market value" in t for t in _risk_texts(slack))
+
+
+def test_a_genuinely_empty_first_day_still_trades(wired, tmp_path, monkeypatch):
+    """Issue #39 case (b), and the constraint the whole design bends around.
+    A flat broker and an empty book are the fund's normal first day: every
+    stage must still run, and market/features.py's 1.10x empty-book tier
+    (tests/test_features.py:335) must still be reachable."""
+    conn, slack, clock = wired
+
+    async def _no_llm(*a, **k):
+        raise AssertionError("a zero-ticker day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _FlatSource(), "2026-07-06",
+        str(tmp_path / "fund.sqlite"),
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    assert code == 0
+    assert [p["code"] for p in _alert_payloads(conn)
+            if p["code"] == "positions_payload_lost"] == []
+    assert {r["stage"]: r["status"] for r in conn.execute(
+        "SELECT stage, status FROM checkpoints WHERE run_date = '2026-07-06'")
+    } == {s: "done" for s in ("pre_gate", "research", "decision", "gate",
+                              "execution", "reconciliation", "close")}
 
 
 def test_the_open_ticket_count_reaches_check_tool_calls(wired, monkeypatch):
