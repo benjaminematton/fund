@@ -386,7 +386,13 @@ every repo; in one with no map issue it degrades per §4 Phase 0.
 **B. The `fund` board migration** — one-time, in the `fund` repo:
 
 - create the phase map issue
-- make the 8 open issues its sub-issues, in the order they should be worked
+- make the open issues its sub-issues, in the order they should be worked. **Read the live count from
+  `gh issue list`, never from this document** — it said "the 8 open issues" and was stale inside a day,
+  the 2026-08-25 audit having filed #38–#46 and taken it to 17. A count written into a spec is a
+  measurement with an expiry date on it
+- **not every open issue belongs on the board.** Map order *is* the priority decision, so a map with
+  seventeen children in an invented order is worse than one with five in a real one. Board what is
+  genuinely next and leave the rest in the backlog until it matters
 - add `blocked_by` edges where a real dependency exists
 - mark shipped plans dead with a status header rather than ticking 359 boxes
 - one line in `docs/agents/issue-tracker.md`: claims key on `sessionId` in `map.md`, not on the GitHub
