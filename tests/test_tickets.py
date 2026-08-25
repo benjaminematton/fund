@@ -8,16 +8,20 @@ NOW = "2026-07-06T15:30:00+00:00"        # 11:30 ET on the golden day
 EXPIRY = "2026-07-06T16:00:00+00:00"     # ticket expiry
 LATER = "2026-07-06T16:00:01+00:00"      # 1s past expiry
 TID = "a3f90000-0000-4000-8000-000000000001"
+TID2 = "a3f90000-0000-4000-8000-000000000002"
 
 
-def _seed(conn, *, stop_price=None, expires=EXPIRY, max_qty=67, tid=TID):
+def _seed(conn, *, stop_price=None, expires=EXPIRY, max_qty=67, tid=TID,
+          ticker="NVDA", run_date="2026-07-06"):
+    # decisions is UNIQUE(run_date, ticker), so a second ticket on the same
+    # ticker is by definition a different day's decision.
     cur = conn.execute(
         "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
         " invalidation, stop_price, status, created_at) VALUES"
-        " ('2026-07-06', 'NVDA', 'buy', 80, 't', 'i', ?, 'approved', ?)",
-        (stop_price, NOW))
+        " (?, ?, 'buy', 80, 't', 'i', ?, 'approved', ?)",
+        (run_date, ticker, stop_price, NOW))
     conn.commit()
-    create_ticket(conn, id=tid, decision_id=cur.lastrowid, ticker="NVDA",
+    create_ticket(conn, id=tid, decision_id=cur.lastrowid, ticker=ticker,
                   side="buy", max_qty=max_qty, stop_price=stop_price,
                   expires_at_iso=expires, now_iso=NOW)
     return cur.lastrowid
@@ -331,11 +335,11 @@ def test_order_class_is_denied_before_time_in_force(fund_db):
 
 # ---- open_tickets_without_orders: "did this ticket produce an order?" ----
 
-def _place(conn, tid=TID):
+def _place(conn, tid=TID, symbol="NVDA"):
     conn.execute(
         "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
-        " submitted_at) VALUES (?, 'NVDA', 'buy', 67, 'submitted', ?)",
-        (tid, NOW))
+        " submitted_at) VALUES (?, ?, 'buy', 67, 'submitted', ?)",
+        (tid, symbol, NOW))
     conn.commit()
 
 
@@ -372,3 +376,35 @@ def test_a_past_ttl_ticket_is_still_returned_where_open_tickets_is_empty(fund_db
     _seed(fund_db)
     assert open_tickets(fund_db, LATER) == []
     assert [t["id"] for t in open_tickets_without_orders(fund_db)] == [TID]
+
+
+def test_only_the_ticket_with_no_order_of_its_own_is_returned(fund_db):
+    """Two live tickets, one order. Every other test here holds a single
+    ticker, which cannot tell a per-ticket answer from a per-symbol one."""
+    _seed(fund_db)                              # NVDA, order placed
+    _place(fund_db)
+    _seed(fund_db, ticker="AMD", tid=TID2)      # AMD, nothing placed
+    assert [t["id"] for t in open_tickets_without_orders(fund_db)] == [TID2]
+
+
+def test_a_ticket_is_not_suppressed_by_another_tickets_same_symbol_order(fund_db):
+    """The join key is the ticket ID, not the symbol (invariant 5:
+    orders.client_order_id IS the ticket id). Yesterday's NVDA order is keyed
+    by yesterday's ticket and says nothing about whether today's NVDA ticket
+    was placed. Correlating on o.symbol = t.ticker instead still passes every
+    single-ticker test in this file while silently deleting today's ticket
+    from the answer — the exact suppression issue #40 exists to surface."""
+    _seed(fund_db, run_date="2026-07-03")       # yesterday's ticket...
+    _place(fund_db)                             # ...and its NVDA order row
+    fund_db.execute("UPDATE tickets SET status='consumed' WHERE id=?", (TID,))
+    fund_db.commit()
+    _seed(fund_db, tid=TID2)                    # today's NVDA ticket, no order
+    assert [t["id"] for t in open_tickets_without_orders(fund_db)] == [TID2]
+
+
+def test_the_predicate_returns_only_the_repair_fields(fund_db):
+    """Narrow on purpose: the ticket a repair pass would re-place, and what
+    that ticket authorizes. No field here is without a reader."""
+    _seed(fund_db)
+    assert sorted(open_tickets_without_orders(fund_db)[0]) == [
+        "id", "max_qty", "side", "ticker"]

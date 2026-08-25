@@ -51,16 +51,25 @@ def open_tickets_without_orders(conn: sqlite3.Connection) -> list[dict]:
 
     Deliberately CLOCK-FREE, unlike open_tickets. That function answers "what
     may the trader still act on?", where filtering out a time-expired ticket is
-    exactly right, and tests/test_tickets.py:46 pins it. Borrowing it to answer
-    "what did the turn fail to place?" is issue #40's TTL hole: a turn that
-    overruns the 45-minute TTL leaves a ticket that is still status='open' —
-    expire_open_tickets runs at the START of the execution body, before the
-    overrun — and the filter deletes precisely that row from the answer, so no
-    alert fires and nothing repairs it. The question "did this ticket produce
-    an order?" has no clock in it, and this signature makes that structural.
+    exactly right, and test_open_tickets_excludes_expired_even_before_sweep
+    pins it. Borrowing it to answer "what did the turn fail to place?" is issue
+    #40's TTL hole: a turn that overruns the 45-minute TTL leaves a ticket that
+    is still status='open' — expire_open_tickets runs at the START of the
+    execution body, before the overrun — and the filter deletes precisely that
+    row from the answer, so no alert fires and nothing repairs it. The question
+    "did this ticket produce an order?" has no clock in it, and this signature
+    makes that structural.
+
+    The join is on the ID, never on the symbol: yesterday's NVDA order row is
+    keyed by yesterday's ticket and says nothing about today's NVDA ticket.
+    Pinned by test_a_ticket_is_not_suppressed_by_another_tickets_same_symbol_order.
+
+    Four columns, because those are what a repair pass can act on — the ticket
+    it re-places and what that ticket authorizes. decision_id, stop_price, and
+    expires_at have no reader; speculative surface is forbidden.
     """
     rows = conn.execute(
-        "SELECT id, decision_id, ticker, side, max_qty, stop_price, expires_at"
+        "SELECT id, ticker, side, max_qty"
         " FROM tickets t WHERE t.status = 'open'"
         " AND NOT EXISTS (SELECT 1 FROM orders o"
         " WHERE o.client_order_id = t.id)"
