@@ -1,7 +1,8 @@
 import pytest
 
 from gate.tickets import (create_ticket, expire_open_tickets, get_ticket,
-                          open_tickets, validate_order)
+                          open_tickets, open_tickets_without_orders,
+                          validate_order)
 
 NOW = "2026-07-06T15:30:00+00:00"        # 11:30 ET on the golden day
 EXPIRY = "2026-07-06T16:00:00+00:00"     # ticket expiry
@@ -326,3 +327,48 @@ def test_order_class_is_denied_before_time_in_force(fund_db):
         time_in_force="day"), NOW)
     assert not ok
     assert "oto" in reason
+
+
+# ---- open_tickets_without_orders: "did this ticket produce an order?" ----
+
+def _place(conn, tid=TID):
+    conn.execute(
+        "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
+        " submitted_at) VALUES (?, 'NVDA', 'buy', 67, 'submitted', ?)",
+        (tid, NOW))
+    conn.commit()
+
+
+def test_an_open_ticket_with_no_order_is_returned(fund_db):
+    _seed(fund_db)
+    assert [t["id"] for t in open_tickets_without_orders(fund_db)] == [TID]
+
+
+def test_a_ticket_with_an_order_row_is_excluded(fund_db):
+    """invariant 5: orders.client_order_id IS the ticket id, so the existence
+    of that row is the whole answer to "did the turn place it?"."""
+    _seed(fund_db)
+    _place(fund_db)
+    assert open_tickets_without_orders(fund_db) == []
+
+
+@pytest.mark.parametrize("status", ["consumed", "expired"])
+def test_a_ticket_that_is_no_longer_open_is_excluded(fund_db, status):
+    """Only status='open' is a ticket the turn still owed an order for; a
+    consumed or already-swept one is settled business."""
+    _seed(fund_db)
+    fund_db.execute("UPDATE tickets SET status=? WHERE id=?", (status, TID))
+    fund_db.commit()
+    assert open_tickets_without_orders(fund_db) == []
+
+
+def test_a_past_ttl_ticket_is_still_returned_where_open_tickets_is_empty(fund_db):
+    """The point of the function (issue #40). open_tickets filters on the
+    clock — correct for "what may the trader still act on?", pinned above at
+    test_open_tickets_excludes_expired_even_before_sweep. But a turn that
+    overruns the TTL leaves a ticket still status='open' with no order, and
+    that filter deletes exactly that row from the answer. This question has no
+    clock in it, so the signature has no clock in it either."""
+    _seed(fund_db)
+    assert open_tickets(fund_db, LATER) == []
+    assert [t["id"] for t in open_tickets_without_orders(fund_db)] == [TID]

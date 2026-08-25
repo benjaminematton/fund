@@ -44,6 +44,30 @@ def open_tickets(conn: sqlite3.Connection, now_iso: str) -> list[dict]:
     return [dict(r) for r in rows if not _expired(r["expires_at"], now_iso)]
 
 
+def open_tickets_without_orders(conn: sqlite3.Connection) -> list[dict]:
+    """Tickets the gate approved that are STILL status='open' and have no
+    order row keyed by them (invariant 5: orders.client_order_id IS the ticket
+    id).
+
+    Deliberately CLOCK-FREE, unlike open_tickets. That function answers "what
+    may the trader still act on?", where filtering out a time-expired ticket is
+    exactly right, and tests/test_tickets.py:46 pins it. Borrowing it to answer
+    "what did the turn fail to place?" is issue #40's TTL hole: a turn that
+    overruns the 45-minute TTL leaves a ticket that is still status='open' —
+    expire_open_tickets runs at the START of the execution body, before the
+    overrun — and the filter deletes precisely that row from the answer, so no
+    alert fires and nothing repairs it. The question "did this ticket produce
+    an order?" has no clock in it, and this signature makes that structural.
+    """
+    rows = conn.execute(
+        "SELECT id, decision_id, ticker, side, max_qty, stop_price, expires_at"
+        " FROM tickets t WHERE t.status = 'open'"
+        " AND NOT EXISTS (SELECT 1 FROM orders o"
+        " WHERE o.client_order_id = t.id)"
+        " ORDER BY t.created_at").fetchall()
+    return [dict(r) for r in rows]
+
+
 def expire_open_tickets(conn: sqlite3.Connection, now_iso: str) -> list[str]:
     """Gate expiry, clock-injected (acceptance §0). Ticket open->expired and
     its decision approved->expired (contracts §1)."""
