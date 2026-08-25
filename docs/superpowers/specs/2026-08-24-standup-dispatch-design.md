@@ -105,13 +105,27 @@ Frontier query: for each open child, check its own blockers —
 gh api repos/{owner}/{repo}/issues/<child> --jq '.issue_dependencies_summary.blocked_by'
 ```
 
-— and keep those open children whose own `blocked_by` is `0` and that are not already claimed in
-`map.md`, in map order. These are the **candidate lanes**.
+`blocked_by` comes back `null` on an issue with no dependency data recorded at all, not on one with zero
+blockers — treat `null` as dependency data unavailable and report it as such (`null == 0` is false, so
+reading `null` as unblocked silently drops the child from the board, and reading it as blocked is just
+as much a guess).
+
+— and keep those open children that are:
+
+- **unblocked** — `blocked_by == 0`
+- **unclaimed** — no row in `map.md` whose `sessionId` appears in the unfiltered `claude agents --json`
+  listing, the same listing Phase 6's release check uses. Liveness, not row status — and not
+  `get-aligned`'s own `live/parked/held/prospective` vocabulary for that file. This skill reads only
+  rows in a shape it can interpret; a row written by `get-aligned` or `split-the-plan` is left alone,
+  never reinterpreted.
+- **region-declared** — see below; a lane with no declared region is excluded here, not carried forward
+
+in map order. These are the **candidate lanes**.
 
 **Each candidate lane carries a region**, read from its issue body — Phase 4's collision check compares
 that region against what each session says it owns, so a lane without one cannot be reconciled. An
-issue that names no region produces a lane flagged *region undeclared*: it is reported, and it is never
-assigned on a guess about what it touches.
+issue that names no region is never a candidate lane: it is excluded from what Phase 2 polls on, not
+merely deprioritized. It is not dropped from the run — Phase 3 still surfaces it as a flag.
 
 Read a plan file only when a candidate lane names one, and only as the how.
 
@@ -131,11 +145,15 @@ plan checkbox as state.
 **Neither shape of degradation is "no work," and neither forecloses naming lanes.** A repo with open
 issues always has work to report, whether or not a map issue exists, and whether or not it has ever
 adopted the convention. Both shapes list the open issues, name the ones nobody is assigned to, and rank
-them by the repo's own severity tiers in their own order, most severe first, with unlabelled issues last —
-a label that is a status rather than a severity does not enter the ranking, and an issue marked resolved
-or refuted is not surfaced as work at all. Let the human name today's lanes from that list if they choose
-to — non-blocking, same rule as above: silence continues the
-run with lanes reported unnamed, never invented. A morning is "quiet" only when there are no open issues
+them by label, matched case-insensitively against this fixed sequence, most severe first: **critical,
+high, medium, low**. Issues carrying none of those four come last, in issue-number order — a label that
+is a status rather than a severity does not enter the ranking, and an issue marked resolved or refuted
+is not surfaced as work at all. **If no label in the repo matches any of the four tiers, there is no
+severity ordering available:** present the issues in issue-number order and say in one line that no
+severity labels were found, rather than deriving an order from titles, age, or anything else. Let the
+human name today's lanes from that list if they choose to — non-blocking, same rule as above: silence
+continues the run with lanes reported unnamed, never invented. A morning is "quiet" only when there are
+no open issues
 and no live sessions (§6) — a repo that is off the board convention, or between maps, can still be loud.
 
 **No confirmation gate.** The candidate lanes go straight into the poll. Priority was decided when the
@@ -160,10 +178,14 @@ and `fundablePlayground/` share a string prefix with the repo root without being
 `cwd.startswith(repo_root)` would wrongly sweep their sessions into the roster.
 
 Each surviving row carries `name`, `sessionId`, `cwd`, `kind`, `startedAt` — **including the calling
-session**. Self-identification is a set difference between the two listings this phase already needs:
-`claude agents --json` includes the calling session, and the `ListAgents` tool excludes it, so the
-caller's row is whichever row the former reports that the latter does not. That row is **excluded from
-the poll** (this seat does not poll itself). This is why both listings are called, not one: the old
+session**. Self-identification is a set difference between the two listings this phase already needs,
+**computed over the rows already filtered to this repo**: `claude agents --json` includes the calling
+session, and the `ListAgents` tool excludes it, so the caller's row is whichever row the former reports
+that the latter does not. **Exactly one row must survive that difference.** Zero or more than one means
+self-identification failed — a listing was partial, or the repo filter under-selected — and the run
+stops rather than poll a set that might include the caller or drop a real peer. Exactly one row: that
+row is **excluded from the poll** (this seat does not poll itself). This is why both listings are
+called, not one: the old
 rule, "you are the one `ListAgents` omits," is unreliable taken alone — it cannot distinguish "absent
 because it is me" from "absent because the listing was partial" — and diffing against `claude agents
 --json`, a listing known to contain everyone, is what makes the identification exact. The roster itself
@@ -171,8 +193,9 @@ replaces the previous three-source join (`git worktree list` ∪ `~/.claude/sess
 `ListAgents`) with a two-source union (`claude agents --json` ∪ `git worktree list --porcelain`);
 `ListAgents` stays in play only for this self-identification check.
 
-Filter to sessions active since the window start (newest file in
-`~/.claude/align/<repo-basename>/standups/`, else the last 24 hours), by transcript mtime at
+Filter to sessions active since the window start — the **mtime** of the newest-by-filename file in
+`~/.claude/align/<repo-basename>/standups/` (filenames are `YYYY-MM-DD.md`, so newest-by-filename is a
+plain lexicographic max), else the last 24 hours if no file exists yet — by transcript mtime at
 `~/.claude/projects/<escaped-cwd>/<sessionId>.jsonl`, where `<escaped-cwd>` is the cwd with every `/`
 and `.` turned into `-`.
 
@@ -194,14 +217,19 @@ two more — six fields in total:
   "nothing" is a complete answer. This is the field Phase 4's collision check compares each lane's
   region against.
 
-Deadline: subscribe with `SendMessage`'s `notify_when_idle` rather than `Bash(run_in_background: true):
-sleep 300`. It is one-shot, costs no tokens in the watched session, and expires after 12 hours.
+**No candidate lanes today?** The poll still goes out, with the other five fields — the capacity field
+and its inlined lane list are omitted from the send entirely, never sent empty.
+
+Deadline: the poll's own `SendMessage` call carries `notify_when_idle` — one send per peer, not the poll
+followed by a second subscribe call — rather than `Bash(run_in_background: true): sleep 300`. It is
+one-shot, costs no tokens in the watched session, and expires after 12 hours.
 
 **An idle notice is not a reply.** It fires when the watched session next finishes a turn — and fires
 immediately if that session is already idle, which can happen before it has read the poll at all. The
-notice bounds the wait; the six fields are what count. Collection ends on a full house, or when every
-subscribed session has both notified and had a turn since the poll landed. A session that notifies
-without answering is silent, and is treated as silent.
+notice bounds the wait; the six fields are what count. Collection ends on a full house, on a **2-hour
+wall-clock cap** from when the poll went out, or when every subscribed session has both notified and had
+a turn since the poll landed — whichever comes first. A session that notifies without answering, or
+never notifies before the cap, is silent, and is treated as silent.
 
 ### Phase 3 — Digest
 
@@ -227,8 +255,10 @@ that was already running and a chat opened this morning take a lane on exactly t
 
 Each candidate lane resolves to exactly one of:
 
-- **covered** — a live session answered capacity yes and its stated region does not collide
-- **needs a chat** — nobody free, or the only candidate's region collides
+- **covered** — a live session answered capacity yes **naming this lane**, and its stated region does
+  not collide
+- **needs a chat** — nobody free for this lane, or the only session that answered yes names a region
+  that collides
 
 A candidate lane becomes a **lane** once it resolves to either state above — every phase from here on
 says "lane," never "candidate."
@@ -237,19 +267,27 @@ says "lane," never "candidate."
 (`parse_config` and its callers; the retry block in `send()`). One file routinely has three owners, so
 filename matching produces false conflicts and hides real ones.
 
-A capacity yes whose region collides is a flag, not an assignment: → `/get-aligned`.
+A capacity yes whose region collides is a flag, not an assignment: → `/get-aligned`. A capacity yes that
+names no lane, or names a lane a session already covers, is a flag of a different kind — no region
+collision to reconcile, just an answer this phase cannot bind — so it goes to the human, not to
+`/get-aligned`.
 
-Never bind two lanes to one session to make the numbers work.
+Never bind two lanes to one session to make the numbers work, and never bind a lane to a session that
+did not name it.
 
 ### Phase 5 — Dispatch
 
-Record `T = now` (epoch ms). Tell the human:
+Record `T = now` (epoch ms). **N is the count of lanes Phase 4 resolved to `needs a chat`; N = 0 means
+skip this message entirely** — there is no chat to open. Otherwise tell the human:
 
 > Open **N** chats in this repo. Nothing else — I'll take it from there.
 
-List what each will own. No prompts to paste, no session ids to copy. When they confirm, take every
-session with `startedAt > T` whose cwd is at or under the repo. If fewer appear than asked, bind what
-exists, name the unbound lanes, and wait.
+List what each will own. No prompts to paste, no session ids to copy. **This ask does not block the
+run — the same non-blocking rule Phase 0 gives its own ask.** Read the roster again, using Phase 1's
+exact-path-or-containment-under-`path + "/"` rule, never a bare prefix test, and take every session with
+`startedAt > T`. **If fewer appear than asked, or none do before the run ends**, bind what exists,
+record the remaining lanes as unbound with the reason, and wait no further: Phase 6 writes the digest
+and broadcasts regardless of whether confirmation ever arrived — a run always produces its digest.
 
 **Standup provisions nothing.** A new chat is an overseer seat, and an overseer does not edit files —
 it reconciles, fans out, and reviews. It sits in the repo root. Isolation belongs one level down, to
@@ -265,7 +303,9 @@ by a seat that owns a lane.
 lanes are treated as needing a chat only where no live session claims that region. Replacing a silent
 session's head is a decision for the human, never an inference from a missing reply.
 
-Then brief each bound session as an **overseer**, not an implementer:
+Then brief each bound session as an **overseer**, not an implementer — a `covered` session gets this
+same briefing, not a lighter one: Phase 4 already holds that a session already running and a chat opened
+this morning take a lane on identical terms.
 
 - the lane: issue number, title, and the region it covers
 - **that it owns the lane, and owns how the lane gets done** — `subagent-driven-development` for a lane
@@ -282,23 +322,27 @@ Then brief each bound session as an **overseer**, not an implementer:
 - Digest → `~/.claude/align/<repo-basename>/standups/YYYY-MM-DD.md`
 - Lane rows → `~/.claude/align/<repo-basename>/map.md`, the same file `get-aligned` and
   `split-the-plan` use. One ownership map per repo, or those two route around work this skill just
-  assigned. Update rows keyed on `sessionId`; never rewrite the file wholesale; stamp which skill
-  touched it last.
+  assigned. A lane row states, at minimum: the lane (issue number or human-named lane), its region, the
+  owning `sessionId`, its status, and which skill wrote it. Update rows keyed on `sessionId`; never
+  rewrite the file wholesale; stamp which skill touched it last. This skill reads only rows in a shape
+  it can interpret; a row written by `get-aligned` or `split-the-plan`, in that skill's own shape, is
+  left alone rather than guessed at.
 
 **Claim release.** Before writing new rows, check existing ones: a row whose `sessionId` is no longer
 live, or whose issue is closed, is released and struck. The measured failure in this class of system is
 not races over work — it is agents finishing and never letting go of the slot. Liveness is checked
-against the full, unfiltered `claude agents --json` listing — never against the Phase 1 roster, which
-was already filtered to sessions active since the last standup. That window governs who gets polled; it
-never governs who still exists. Release is checked observationally (is the session live, is the issue
-closed), never by asking.
+against the full, unfiltered `claude agents --json` listing — the same listing Phase 0 checks
+`unclaimed` against — never against the Phase 1 roster, which was already filtered to sessions active
+since the last standup. That window governs who gets polled; it never governs who still exists. Release
+is checked observationally (is the session live, is the issue closed), never by asking.
 
 **Broadcast, once.** Send the digest to every rostered peer, including the silent ones — that is the
 part that makes it a standup. Give each copy a personalized tail naming what concerns them, never what
 they should do next: who is blocked on them, who shares their region, and which lane they now own, if
-any. A tail is a relevance filter, not an instruction slot — a peer cannot assign work to a peer,
-including by naming a lane "theirs by authorship." Unowned work goes to the human as a flag and stays
-unowned until they say otherwise.
+any. For a `covered` session, that last line **confirms** the briefing it already got in Phase 5 rather
+than announcing something new. A tail is a relevance filter, not an instruction slot — a peer cannot
+assign work to a peer, including by naming a lane "theirs by authorship." Unowned work goes to the human
+as a flag and stays unowned until they say otherwise.
 
 Report to the human last, leading with the unclaimed lanes and the flags — those are the parts needing
 a decision. This is the single broadcast and the single report for the run; Phase 3 does neither.
@@ -317,7 +361,7 @@ human. Its sibling table row changes from *"Nothing happens afterwards"* to *"En
 | No sessions, board has work | Skip the poll entirely. Report the lanes, say "open N". This is now the normal empty-roster path, not a degenerate one |
 | No sessions, no open issues at all | Say so, write nothing, stop. The only "quiet" run: no work and no one active |
 | No map issue in this repo, or several | Say so in one line, fall back to human-named lanes, continue without blocking, reconcile normally. Still report open issues; never call this quiet |
-| No `wayfinder:*` label in this repo at all | Say so once, flatly — not a daily question. Report open issues, criticals first, and let the human name today's lanes from them if they want to |
+| No `wayfinder:*` label in this repo at all | Say so once, flatly — not a daily question. Report open issues, ranked critical/high/medium/low as Phase 0 defines (unlabelled last), and let the human name today's lanes from them if they want to |
 | Fewer chats opened than asked | Bind what appeared, name the unbound lanes, wait |
 | Capacity yes but region collides | Flag → `/get-aligned`. No assignment |
 | Fleet grew mid-run | Re-check the roster immediately before dispatch; state coverage |
