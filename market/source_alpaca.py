@@ -167,6 +167,29 @@ class AlpacaSource:
             # the percentage to recover the denominator would report a figure
             # derived from a different pair of numbers than the gate's.
             "last_equity": _safe_float(a.last_equity),
+            # The discriminator orchestrator/ingest_guard.py reads: an EMPTY
+            # positions list is ambiguous (a flat account and a dropped
+            # payload look identical), and this is the broker's own answer to
+            # which one it is. It works as a discriminator only because
+            # get_account() and get_all_positions() above are TWO INDEPENDENT
+            # API calls — this is a cross-call check, not a consistency check
+            # within one response, which could never disagree with itself.
+            #
+            # Excludes short_market_value, which is correct only while the
+            # fund is long-only (specs/design.md:21, protection.py:42-45) and
+            # becomes wrong the day shorting lands: a short book would report
+            # a non-zero market value with a legitimately empty LONG list.
+            #
+            # Plain attribute, not getattr(a, ..., None) — see the type pin in
+            # tests. Two different failures, and only one of them is loud: an
+            # alpaca-py RENAME raises AttributeError here, which guarded()
+            # turns into an alert and exit 1 (HOLD), and the offline pin test
+            # catches it before deploy. Alpaca dropping the field FROM THE
+            # WIRE is silent: alpaca-py 0.44.0 declares it `str | None`
+            # defaulting to None, so it arrives as None -> NaN -> the records
+            # tie-breaker in ingest_guard. Safe, but quiet; getattr with a
+            # default would make the loud case quiet too, for no gain.
+            "long_market_value": _safe_float(a.long_market_value),
             "daily_pnl_pct": _pnl_pct(a.equity, a.last_equity),
             "positions": {p.symbol: int(float(p.qty)) for p in pos},
             "prices": {p.symbol: float(p.current_price) for p in pos},
