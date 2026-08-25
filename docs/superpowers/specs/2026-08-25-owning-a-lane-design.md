@@ -67,6 +67,12 @@ Two rules bound this so the chain does not become a debating society:
 - **An escalation names the decision, not the discomfort.** State the fork and the option you would
   take absent an answer, so the answer can be one line.
 
+**The address must be resolvable by the seat that has to use it.** Measured during testing: a subagent
+one level below the lane owner tried to escalate and got `No agent named 'general-purpose' is
+reachable`, with `ListAgents` unavailable to it. So the briefing carries the overseer's **session
+name**, not a role word, and the chain is only one hop deep — a lane owner's own subagents escalate to
+*it*, never past it. An overseer that cannot be named is an overseer that gets guessed around.
+
 ## 5. What a lane is, and where it comes from
 
 A lane is **what one overseer can own end to end**. Granularity follows from that:
