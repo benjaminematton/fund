@@ -176,7 +176,7 @@ class AlpacaSource:
             # within one response, which could never disagree with itself.
             #
             # Excludes short_market_value, which is correct only while the
-            # fund is long-only (specs/design.md:21, protection.py:42-45) and
+            # fund is long-only (specs/design.md:21, protection.py:41-44) and
             # becomes wrong the day shorting lands: a short book would report
             # a non-zero market value with a legitimately empty LONG list.
             #

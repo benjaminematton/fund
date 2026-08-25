@@ -28,7 +28,7 @@ def test_a_populated_payload_is_trusted():
 
 
 def test_a_per_symbol_disagreement_is_not_a_fault_here():
-    """The direction orchestrator/protection.py:352-357 already settled: the
+    """The direction orchestrator/protection.py:356-361 already settled: the
     broker is the authority on what is held, and this lane does not reverse
     it. Records say 80, the broker shows 40 — assert_positions_accounted
     alerts once at the close and the day trades. Halting here would stop the
@@ -47,7 +47,7 @@ def test_the_genuinely_empty_first_day_is_trusted():
 
 def test_a_flat_broker_is_trusted_even_when_the_records_disagree():
     """The false positive that a records-only detector would ship. An OTO stop
-    leg has no `orders` row by construction (protection.py:347), so a fund
+    leg has no `orders` row by construction (protection.py:351), so a fund
     stopped out overnight has non-empty records and an honestly empty book —
     the state tests/test_protection.py:530 pins as alert-once-and-keep-
     trading. Halting on it would halt every day after it too, because the

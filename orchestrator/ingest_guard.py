@@ -5,7 +5,7 @@ scripts/run_day.py reads the account ONCE, at the top of the day, and every
 gate input for every ticker is computed from that one payload. A positions
 list that comes back EMPTY therefore does not fail — it sizes. held_qty 0, so
 no sell is possible; position_count 0; an empty correlation book, which
-market/features.py:83 correctly scores at the most permissive 1.10x tier;
+market/features.py:81-83 correctly scores at the most permissive 1.10x tier;
 sector book value 0. The day trades UP, on a book it cannot see, and the
 holdings it does have cannot be exited.
 
@@ -38,16 +38,50 @@ SETTINGS, not identity, so a fresh paper account passes it today.
 
 The fund's own records WOULD catch that class, and they are still only the
 tie-breaker below. That is deliberate, and the reason is one line of SQL:
-recorded_holdings (protection.py:284-289) selects every order ever placed with
+recorded_holdings (protection.py:290-291) selects every order ever placed with
 NO DATE FILTER. A stop that fires on day 5 leaves those rows forever, so a
 records-first guard refuses day 6 and every day after until a human edits the
 table. Buying the #64 class costs a fund that can never trade again.
+
+THE COST OF THE TIE-BREAKER, WHICH THE PARAGRAPH ABOVE DOES NOT ADMIT
+---------------------------------------------------------------------
+That argument is aimed at a records-FIRST guard, but the unreadable branch
+below is records-deciding, and the same SQL indicts it. A position closed by
+a fired OTO stop leg is never netted out: the exit has no `orders` row by
+construction (make_order_recorder, agents/runtime.py:211-227, writes one row
+per place_* TOOL RESPONSE, and a broker-fired stop leg is not one), and an
+untickered row cannot be inserted anyway — orders.client_order_id REFERENCES
+tickets(id) (state/schema.sql:85) under PRAGMA foreign_keys = ON
+(state/db.py:22). So the records stay net-long forever on a position the fund
+no longer holds.
+
+The arming condition is therefore permanently true and structurally
+unclearable. The fund is one optional-field outage away from a total halt at
+all times, and stays halted for the duration of that outage. (Issue #39
+reports exactly this state on the production book: one NVDA buy row, all
+time, against a broker showing 40 after the stop fired.)
+
+The halt ITSELF is clearable — restore long_market_value and the next run
+proceeds — and that is the real difference from the records-first design
+rejected above, which offers no escape at any price. What is not clearable is
+the standing exposure to it. Both halves are load-bearing; either alone
+misleads.
+
+Foreseeable rather than hypothetical: alpaca-py 0.44.0 declares
+long_market_value as `str | None` defaulting to None, so the vendor's own
+contract says the field may be absent. tests/test_source_alpaca_helpers.py
+pins that, and fails if a later version makes it required.
+
+None of this argues for trading on an unreadable discriminator. Invariant 4
+puts ambiguity at HOLD, and sizing a day on a book nothing can confirm is the
+direction this pipeline must never fail. It argues only that the exposure
+should be known before an outage introduces it.
 
 Not caught here either: a PARTIAL payload (some positions listed, some
 dropped) — issue #63. Detecting one needs a tolerance, a tolerance is a
 threshold, and invariant 3 makes thresholds human-commit decisions.
 
-Deliberately NOT here: any per-symbol comparison. protection.py:352-357
+Deliberately NOT here: any per-symbol comparison. protection.py:356-361
 settled that direction — the broker is the authority on what is held, the
 fund's records on what the fund DID — and reversing it would halt the fund on
 every hand-placed intervention its alerts ask for.
@@ -62,7 +96,7 @@ positions concept, so the day is AUDIT CLEAN"), so a fix whose own end state
 is "absent from the audit" looks like it repeats the mistake.
 
 It does not. append_alert (slackkit/outbox.py:33) writes through _insert to
-INSERT INTO events (kind, payload, created_at) (outbox.py:21-22), so the alert
+INSERT INTO events (kind, payload, created_at) (outbox.py:21-23), so the alert
 is durably in SQLite, not only in Slack — the day is recorded in the source of
 truth, satisfying invariant 6 rather than skirting it. And append_alert's own
 docstring makes `code` "what scripts/file_alert_issues.py keys a GitHub issue
@@ -118,10 +152,10 @@ def payload_fault(account: dict, recorded: dict[str, int]) -> str | None:
     The broker's own long_market_value settles it for the class this module
     catches — see the module docstring for the class it does not. The fund's
     records cannot lead here: an OTO stop leg has no `orders` row by
-    construction (protection.py:347), so a fund stopped out overnight has
+    construction (protection.py:351), so a fund stopped out overnight has
     non-empty records and an honestly empty book — the state
     tests/test_protection.py:530 pins as alert-once-and-keep-trading. And
-    recorded_holdings has no date filter (protection.py:284-289), so halting
+    recorded_holdings has no date filter (protection.py:290-291), so halting
     on records alone would halt that day and every day after it, until a human
     edits the orders table. A fund that never trades again is not the safe
     direction, it is a different outage.
@@ -182,7 +216,7 @@ def account_snapshot(conn: sqlite3.Connection, *, source, now_iso: str,
     the case where the broker answers, plausibly, and is wrong needs this
     module.
 
-    One nap and one re-read before refusing, for the reason protection.py:405
+    One nap and one re-read before refusing, for the reason protection.py:413
     naps: a buy that just filled is recorded before the broker lists the
     position. A FIRST run of the day has placed no orders and cannot hit that
     race; a RESUMED run reads the account again after the execution stage
