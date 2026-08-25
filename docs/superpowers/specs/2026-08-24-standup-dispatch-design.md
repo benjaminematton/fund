@@ -123,14 +123,18 @@ several map-issue matches: say so in one line, skip the frontier query, and ask 
 lanes. **That ask does not block the run, and the run does not invent lanes to fill the gap.** It reports
 the board, states plainly that lanes are unnamed and why, and continues through Phase 1's roster and
 Phase 3's digest exactly as written. The run ends having asked; an answer that never arrives is a
-reported state, not a failure. Never invent a priority order from an unordered issue list; never read a
+reported state, not a failure. With no map issue, there are no sub-issues and therefore no declared
+regions at all: Phase 4's collision check has nothing to run against, and lane-to-session matching is the
+human's call that morning. Never invent a priority order from an unordered issue list; never read a
 plan checkbox as state.
 
 **Neither shape of degradation is "no work," and neither forecloses naming lanes.** A repo with open
 issues always has work to report, whether or not a map issue exists, and whether or not it has ever
-adopted the convention. Both shapes list the open issues, name the ones nobody is assigned to, lead with
-anything the repo's own labels mark as high severity ahead of everything else, and let the human name
-today's lanes from that list if they choose to — non-blocking, same rule as above: silence continues the
+adopted the convention. Both shapes list the open issues, name the ones nobody is assigned to, and rank
+them by the repo's own severity tiers in their own order, most severe first, with unlabelled issues last —
+a label that is a status rather than a severity does not enter the ranking, and an issue marked resolved
+or refuted is not surfaced as work at all. Let the human name today's lanes from that list if they choose
+to — non-blocking, same rule as above: silence continues the
 run with lanes reported unnamed, never invented. A morning is "quiet" only when there are no open issues
 and no live sessions (§6) — a repo that is off the board convention, or between maps, can still be loud.
 
@@ -361,3 +365,25 @@ unscoped roster sees them fine.
 Consequence for Phase 1: Phase 1 unions the unscoped listing (`claude agents --json`) with
 `git worktree list --porcelain` paths, filtering to rows whose `cwd` is the repo root or under one of
 the repo's registered worktree paths, rather than relying on `--cwd` scoping alone.
+
+## 10. Not yet exercised
+
+Two cold runs (2026-08-25) executed the skill end to end against `fund`. Both landed in the
+degradation path, because `fund` has no `wayfinder:*` label and had no live peer sessions besides the
+runner. The following therefore have NEVER run, and nothing about them should be read as verified:
+
+- **Phase 2 (poll)** — no `SendMessage` round, no `notify_when_idle` subscription, no six-field
+  collection, no silent-vs-answered handling.
+- **Phase 4 (reconcile)** — no candidate lane ever resolved to covered or needs-a-chat; the
+  capacity-collides-with-region rule has never fired.
+- **Phase 5 (dispatch)** — never reached. The "open N chats", the `startedAt > T` binding, and the
+  overseer briefing are entirely untested.
+- **Phase 6's broadcast** — no peer existed to receive a digest or a "concerns you" tail.
+- **Phase 0's harder branches** — several `wayfinder:map` matches, and a label that exists but no
+  issue wears it.
+- **Self-identification under ambiguity** — the set-difference method worked, but only one
+  repo-rooted row existed, so it never had to tell "absent because it is me" from "absent because the
+  listing was partial".
+
+The first real dispatch is the first true test of Phases 4, 5, and 6, and should be run with a human
+watching. Artifact B (the `fund` board migration) is what would let Phase 0 take its main path at all.
