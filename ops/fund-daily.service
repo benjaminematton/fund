@@ -23,8 +23,8 @@ EnvironmentFile=/etc/fund/env
 # missed it.
 Environment=PATH=/home/fund/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/run_day.py
-# Heartbeat to an off-box watchdog. ExecStartPost runs only when ExecStart
-# succeeded, so a ping means "the day completed".
+# Heartbeat to an off-box watchdog. ExecStopPost runs whether ExecStart
+# succeeded or failed, and ${EXIT_STATUS} carries which it was.
 #
 # This covers the one failure mode OnFailure structurally cannot: a unit that
 # never runs at all. Timer disabled by a daemon-reload, Persistent=false plus a
@@ -33,12 +33,28 @@ ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/run_day.py
 # silence is indistinguishable from a quiet day. A watchdog expecting a daily
 # ping alerts on the absence instead.
 #
+# NOT ExecStartPost, which runs only on success. Under that form a failed run
+# sent no ping and the watchdog fired — but OnFailure had already alerted on
+# that same run. Silence therefore meant "the box is dead" OR "the run failed",
+# ambiguous in exactly the case where the watchdog is the only thing that can
+# speak. Firing unconditionally makes silence mean only "it never ran", and
+# lets the exit status carry pass/fail separately.
+#
+# Healthchecks.io reads a /<exit-status> suffix: 0 registers a success, nonzero
+# registers a failure. So an unconditional ping does not launder a failed day
+# into a healthy one — it reports the failure to the watchdog too.
+#
+# Known edge: on a TimeoutStartSec kill, systemd sets EXIT_STATUS to a signal
+# NAME (e.g. TERM), not a number. Healthchecks rejects that, curl -f errors,
+# the `-` swallows it, and the day reads as silence — which the watchdog alerts
+# on anyway, and OnFailure fires on timeout kills as well. Covered twice.
+#
 # The `-` prefix is deliberate and fail-safe in the right direction: a failed
 # ping cannot fail the trading day it is reporting on, and a ping that silently
 # never lands makes the watchdog alert. Errors here can only cause a false
 # alarm, never silence. Unset HC_PING_URL expands to empty, curl errors, and
 # the `-` swallows it — so this is inert until the URL is in /etc/fund/env.
-ExecStartPost=-/usr/bin/curl -fsS -m 10 --retry 3 ${HC_PING_URL}
+ExecStopPost=-/usr/bin/curl -fsS -m 10 --retry 3 ${HC_PING_URL}/${EXIT_STATUS}
 # Bound a hung LLM call. On kill the kernel releases the flock and checkpoint
 # CAS makes the next run resume rather than repeat.
 TimeoutStartSec=30min

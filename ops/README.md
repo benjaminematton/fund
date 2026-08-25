@@ -166,12 +166,20 @@ continues a comment across a trailing backslash where a shell would not.
 
 ### The heartbeat check
 
-`fund-daily.service` pings `HC_PING_URL` from `ExecStartPost`, so a ping means
-the day completed. The watchdog alerts on the **absence** of one — the single
-failure mode `OnFailure` cannot see, because a timer that never fires produces
-nothing for systemd to react to. Provisioning a fresh host is not finished
-until this exists; without it the host is silent in exactly the case that
-matters, and silence reads as a quiet day.
+`fund-daily.service` pings `HC_PING_URL/${EXIT_STATUS}` from `ExecStopPost`, so
+a ping means the day **ran**, and the exit status says whether it passed — 0 is
+a success to healthchecks.io, nonzero a failure. The watchdog alerts on the
+**absence** of one — the single failure mode `OnFailure` cannot see, because a
+timer that never fires produces nothing for systemd to react to. Provisioning a
+fresh host is not finished until this exists; without it the host is silent in
+exactly the case that matters, and silence reads as a quiet day.
+
+**It was `ExecStartPost` until 2026-08-24**, which fires only on success. A
+failed run therefore sent nothing and the watchdog fired — but `OnFailure` had
+already alerted on that same run, so silence meant "the box is dead" *or* "the
+run failed", ambiguous precisely where the watchdog is the only thing that can
+speak. If you are deploying a version at or before that date, the old form is
+what you will find on the host.
 
 On healthchecks.io, the check must be in **cron** mode:
 
