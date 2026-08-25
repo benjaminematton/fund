@@ -12,14 +12,20 @@ all invisible to it. `PRAGMA table_info()` is not usable here: it does not
 expose CHECK constraints, which is exactly where the allowed-value lists live.
 
 Nothing carrying a `TABLE` keyword is skipped. Inside a `CREATE TABLE`, an
-unknown column constraint, a trailing table option (`STRICT`, `WITHOUT
-ROWID`) or a quoted identifier raises. So does a statement that is not a
-plain `CREATE TABLE` but mentions `TABLE`: a `CREATE TEMP`/`CREATE VIRTUAL
-TABLE` this comparator cannot represent, and — the route that actually got
-exploited — a statement that has SWALLOWED a following `CREATE TABLE`
-because the statement above it is missing its `;`. Only statements with no
-`TABLE` in them at all (`CREATE INDEX`, `PRAGMA`, ...) are skipped, by
-design. DDL outside a §2 sql fence is not seen.
+unknown column constraint, a `PRIMARY KEY` modifier (`ASC`/`DESC`/
+`AUTOINCREMENT`), a trailing table option (`STRICT`, `WITHOUT ROWID`), a
+schema-qualified table name or a quoted identifier raises. So does a
+statement that is not a plain `CREATE TABLE` but mentions `TABLE`: a `CREATE
+TEMP`/`CREATE VIRTUAL TABLE` this comparator cannot represent. And a `TABLE`
+keyword anywhere but position 1 of a `CREATE TABLE` raises wherever it sits,
+including inside a column CHECK, a DEFAULT expression, a type's parens or a
+table-constraint item: it means a second table statement has been swallowed,
+by a missing `;` above or by a `(` left open across it, and would be
+compared by nothing. Only statements with no `TABLE` keyword in them at all
+(`CREATE INDEX`, `CREATE TRIGGER`, `PRAGMA`, ...) are skipped, by design.
+
+DDL outside a §2 fence is not seen, and a fence inside §2 whose info string
+is not `sql` or `sqlite` raises rather than being passed over.
 
 The failure mode this file dies of quietly is under-extraction — a spec fence
 that stops yielding tables leaves a green test comparing almost nothing — so
@@ -58,6 +64,12 @@ _COLUMN_CONSTRAINTS = frozenset({
     "COLLATE", "REFERENCES", "GENERATED", "AS",
 })
 _PUNCT = "(),;"
+# May follow `PRIMARY KEY` in a column definition. None of them is a field of
+# `Column`, so each one raises rather than being dropped — see `_parse_column`.
+_PK_MODIFIERS = frozenset({"ASC", "DESC", "AUTOINCREMENT"})
+# Fence info strings inside a spec §2 that hold DDL, matched case-insensitively.
+# Anything else fenced in §2 raises — see `_section_sql`.
+_DDL_FENCE_TAGS = frozenset({"sql", "sqlite"})
 
 
 # --------------------------------------------------------------------------
@@ -217,9 +229,18 @@ def _parse_column(table: str, toks: list[str]) -> Column:
             i += 1
         elif kw == "PRIMARY" and nxt(i + 1).upper() == "KEY":
             primary_key, i = True, i + 2
-            while i < len(toks) and toks[i].upper() in {"ASC", "DESC",
-                                                        "AUTOINCREMENT"}:
-                i += 1
+            if i < len(toks) and toks[i].upper() in _PK_MODIFIERS:
+                raise ValueError(
+                    f"{where}: PRIMARY KEY {toks[i].upper()} — `primary_key`"
+                    " is compared but this modifier is not, and it is not"
+                    " cosmetic. Measured against SQLite: `INTEGER PRIMARY KEY"
+                    " DESC` is NOT a rowid alias, so every id inserted without"
+                    " one comes back NULL; AUTOINCREMENT adds a"
+                    " `sqlite_sequence` table and changes id reuse. (ASC alone"
+                    " behaves like plain PRIMARY KEY, but it is still a"
+                    " declared-scope difference nothing would compare.) Drop"
+                    " it, or extend the parser rather than letting it skip a"
+                    " constraint")
         elif kw == "UNIQUE":
             unique, i = True, i + 1
         elif kw == "CHECK":
@@ -274,18 +295,25 @@ def _parse_tables(sql: str) -> dict[str, Table]:
     tables: dict[str, Table] = {}
     for stmt in _split_top(_tokenize(sql), ";"):
         upper = [t.upper() for t in stmt]
+        # Checked on EVERY statement, including one that DOES start with
+        # `CREATE TABLE`. A `CREATE TABLE` anywhere but position 0 is a table
+        # this comparator will not compare, and the raw-text floor below
+        # cannot see it either once `CREATE` and `TABLE` sit on two lines.
+        # Restricting this to statements failing the test below left four
+        # regions of a `CREATE TABLE` — a column CHECK, a DEFAULT (expr), a
+        # type's parens and a whole table-constraint item — as free text a
+        # second table could hide in, reached by leaving a `(` open across
+        # the `;` that would otherwise have ended the statement.
+        if any(upper[k:k + 2] == ["CREATE", "TABLE"]
+               for k in range(1, len(upper))):
+            raise ValueError(
+                f"{' '.join(stmt[:6])!r}...: a CREATE TABLE is buried inside"
+                " this statement instead of starting it, so it would not be"
+                " compared at all. Either the statement above it is missing"
+                " its `;`, or a `(` opened earlier in this statement is never"
+                " closed and has swallowed it. Add the semicolon or balance"
+                " the parentheses.")
         if upper[:2] != ["CREATE", "TABLE"]:
-            # The whole statement is searched, not just its first tokens. A
-            # statement that CONTAINS `CREATE TABLE` without starting with one
-            # has swallowed a real table — the statement above it is missing
-            # its `;` — and used to be dropped here without a word.
-            if any(upper[k:k + 2] == ["CREATE", "TABLE"]
-                   for k in range(1, len(upper))):
-                raise ValueError(
-                    f"{' '.join(stmt[:6])!r}...: a CREATE TABLE is buried"
-                    " inside this statement instead of starting it, so the"
-                    " statement above it is missing its `;` — the swallowed"
-                    " table would not be compared at all. Add the semicolon.")
             # CREATE INDEX / VIEW / TRIGGER are ignored on purpose. CREATE TEMP
             # TABLE and CREATE VIRTUAL TABLE are tables this comparator cannot
             # represent, and silently skipping one is how a table stops being
@@ -301,7 +329,28 @@ def _parse_tables(sql: str) -> dict[str, Table]:
             i += 3
         if i + 1 >= len(stmt):
             raise ValueError(f"{' '.join(stmt)!r}: truncated CREATE TABLE")
+        if "TABLE" in upper[2:]:
+            # `TABLE` is reserved, so it cannot be a column name or a type: a
+            # second one inside this statement's body is another table
+            # statement swallowed by an unclosed `(`. The check above only
+            # sees `CREATE TABLE`; this catches CREATE TEMP/VIRTUAL, ALTER and
+            # DROP, which would otherwise turn a raise into silence.
+            raise ValueError(
+                f"{' '.join(stmt[:4])!r}...: a second TABLE statement is"
+                " buried inside this CREATE TABLE's body, swallowed by a `(`"
+                " that is never closed — it is not compared and not reported."
+                " Balance the parentheses.")
         name = stmt[i].lower()
+        if "." in name:
+            # `.` is in the tokenizer's identifier charset and has to be, for
+            # `0.20` and `tbl(col)` refs — so a schema prefix rides along into
+            # the dict key and the table quietly stops matching its twin. Both
+            # existence tests then fire, naming two innocent sides instead of
+            # the cause.
+            raise ValueError(
+                f"{name}: schema-qualified table name — it would be keyed as"
+                f" {name!r} and so compared against nothing on the other side."
+                " Write the bare table name.")
         if stmt[i + 1] != "(":
             raise ValueError(f"{name}: CREATE TABLE without a column list")
         close = _close(stmt, i + 1)
@@ -328,7 +377,16 @@ def _parse_tables(sql: str) -> dict[str, Table]:
 
 
 def _section_sql(path: Path, heading: str) -> str:
-    """The one ```sql fence inside `path`'s `heading` section."""
+    """The one DDL fence inside `path`'s `heading` section.
+
+    EVERY fence in the section is looked at, and one whose info string is not
+    a known DDL tag raises. Matching the literal "```sql" instead meant a
+    fence tagged ```` ```sqlite ````, ```` ```SQL ```` or nothing at all was
+    not a fence as far as this function was concerned: a whole table could
+    sit in one inside §2, be compared by nothing, and never even reach the
+    one-fence guard below. Unlike the buried-`CREATE TABLE` route this needs
+    no malformed SQL — a mistagged fence is a plausible typo.
+    """
     lines = path.read_text().splitlines()
     try:
         start = lines.index(heading) + 1
@@ -340,11 +398,21 @@ def _section_sql(path: Path, heading: str) -> str:
     fences = []
     i = start
     while i < end:
-        if lines[i].strip() == "```sql":
+        stripped = lines[i].strip()
+        if stripped.startswith("```"):
+            tag = stripped[3:].strip()
+            if tag.lower() not in _DDL_FENCE_TAGS:
+                raise ValueError(
+                    f"{path.name}: fence tagged {tag!r} inside {heading!r} —"
+                    f" only {sorted(_DDL_FENCE_TAGS)} are read as DDL, so"
+                    " anything in this fence is compared by nothing. Retag it,"
+                    " move it out of the section, or add its tag to"
+                    " _DDL_FENCE_TAGS")
             close = next((j for j in range(i + 1, end)
                           if lines[j].strip() == "```"), None)
             if close is None:
-                raise ValueError(f"{path.name}: unclosed sql fence in {heading!r}")
+                raise ValueError(
+                    f"{path.name}: unclosed ```{tag} fence in {heading!r}")
             fences.append("\n".join(lines[i + 1:close]))
             i = close
         i += 1
@@ -452,12 +520,11 @@ def test_spec_extraction_did_not_come_up_short():
     particular tables must survive is pinned by the two existence tests, from
     both directions.
 
-    It is a backstop, and it is only safe to describe it as one now. Before
-    the parser learned to raise on a swallowed statement, this floor was the
-    SOLE guard on that route, and it was defeated by a two-part edit with no
-    typo in it. Demonstrated against this repo by adding a `positions` table
-    to `contracts.md` §2 that `schema.sql` lacks — the exact drift this file
-    exists to catch:
+    It is a backstop. On ONE route — a `/* */` comment, which the tokenizer
+    did not strip until `da59f50` — it was for a while the only thing
+    failing, and a two-part edit with no typo in it walked past it. Measured
+    at `caa35d5` by adding a `positions` table to `contracts.md` §2 that
+    `schema.sql` lacks — the exact drift this file exists to catch:
 
         `--` comment before it        parsed=10 declared=10  -> failed (right)
         `/* */` comment before it     parsed=9  declared=10  -> failed HERE only
@@ -466,9 +533,20 @@ def test_spec_extraction_did_not_come_up_short():
 
     Both ingredients were legal: `/* */` is ordinary SQL, and the line split
     is a reformat this suite's own negative controls require to stay green.
-    The fix was in the parser (block comments are now stripped, a buried
-    `CREATE TABLE` now raises), not in this operator: `==` would not have
-    caught the third row either, and it would fire on a legitimate reformat.
+
+    `da59f50` also read that finding across to the missing-`;` route, and
+    that part does NOT reproduce — it is corrected rather than left standing.
+    Deleting the `;` from `strategy-contracts.md`'s second `CREATE INDEX` at
+    `caa35d5` failed BOTH this test and
+    `test_allowlisted_tables_still_have_no_schema_home`: dropping a `;` does
+    not change how many lines START with `CREATE ... TABLE`, so declared held
+    at 7 while parsed fell to 6 (`assert 6 >= 7`). That route needed the line
+    split as well. The parser raise is still the right fix — this floor is
+    blind to both ingredients — but it did not close a route that was open.
+
+    The fix was in the parser (block comments are stripped, a buried
+    `CREATE TABLE` raises), not in this operator: `==` would not have caught
+    the third row either, and it would fire on a legitimate reformat.
     """
     for label, (raw, names) in SPEC_EXTRACTION.items():
         assert names, (
