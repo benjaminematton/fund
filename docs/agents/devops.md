@@ -35,7 +35,7 @@ checker that can disagree with the first.
 |---|---|
 | In-run assertions, and the day's exit code | `scripts/audit_day.py::audit()` |
 | Failure alerting | `OnFailure=fund-alert@%n.service` → `ops/notify_failure.sh` |
-| Liveness — the run that never started | `ExecStartPost` heartbeat to an off-box watchdog (`HC_PING_URL`) |
+| Liveness — the run that never started | `ExecStopPost` heartbeat to an off-box watchdog (`HC_PING_URL/${EXIT_STATUS}`), fired pass or fail so silence means only "never ran" |
 | Pre-trade control | `gate/` |
 
 **Alert on what happened; watchdog what didn't.** A signal that stops arriving is invisible to any
