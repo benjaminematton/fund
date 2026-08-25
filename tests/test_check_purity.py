@@ -9,12 +9,12 @@ imports, unlisted clock spellings, `market/`). Round two adds four groups:
 
 * MASTER_REGRESSION_CASES — violations master flagged that the binding rewrite
   stopped flagging. A lint that gets looser is worse than one that never moved.
-* COLLISION_CASES — an import binding colliding with a rebinding is a
-  violation, not a shadow, wherever a use site can still reach the import.
-  Popping the name on any rebinding makes `import time` + `if False: time =
-  None` a working, silent bypass. The discriminator that decides which
-  positions qualify, and the history of the three cases that moved across it,
-  are documented on that table.
+* BINDING_STANDS_CASES — where a rebinding cannot hide the import from a use
+  site the binding STANDS rather than being popped, which is what lets the
+  reference check resolve `time.sleep` through `import time` + `if False: time
+  = None`. The collision REPORT that once lived here was deleted; the
+  discriminator that decides where the binding stands, and the history of every
+  case that moved, are documented on that table.
 * CALLABLE_CAPTURE_CASES — only a call on an attribute chain was matched, so
   `_sleep = time.sleep` defeated the check while reading as careful seam code.
 * SLACKKIT_* — option (d): lint `slackkit/` as a pure package with `real.py`
@@ -106,7 +106,6 @@ def _lint_exit_code_for_tree(files: dict[str, str]) -> int:
 RULE_FORBIDDEN_IMPORT = "forbidden import"
 RULE_DYNAMIC_IMPORT = "dynamic import"
 RULE_CLOCK_REF = "wall-clock/sleep reference"
-RULE_COLLISION = "imported and rebound"
 RULE_SLACKKIT_INIT = "must stay import-free"
 
 
@@ -240,8 +239,34 @@ MASTER_REGRESSION_CASES = [
     """, RULE_CLOCK_REF),
 ]
 
-# THE COLLISION DISCRIMINATOR. One question decides every shadowing case in
-# this file:
+# WHAT THIS TABLE PINS: the binding STANDS. Not that a collision is reported —
+# that report was deleted (see below). Where a rebinding cannot hide the import
+# from a use site, the import binding is left in place instead of being popped,
+# and that is what lets the REFERENCE check still resolve `time.sleep` through
+# the rebind. Every case here is a violation caught by the reference check;
+# delete binding-stands and they all go clean, which is the whole point.
+#
+# THE COLLISION REPORT WAS DELETED — ruled and approved 2026-08-25 after final
+# review. Ablating the report (keeping binding-stands) over the whole corpus of
+# 104 unique snippets lost ZERO purity detections; independently reproduced
+# here, across every violation table, lost 0. Six violations disappeared and
+# every one of them SHOULD have:
+#
+#   * four were false positives on class-body fields that never use the name —
+#     `@dataclass date: str`, `NamedTuple time: str`, an Enum member `time`, a
+#     method named `date`. Losing those IS the fix; they are guards in
+#     CLEAN_CASES now.
+#   * two were not purity violations at all: `class Stamp(datetime.datetime):
+#     datetime = None` and `class Bar(BaseModel): date: date`. In both the use
+#     reaches the import but the use is NOT a forbidden target — no clock is
+#     read. A use that cannot reach a forbidden target is not a purity concern.
+#     Both are now clean cases; see the note on each.
+#
+# What the report uniquely caught was shadowing HYGIENE, not purity, which is
+# not this lint's job. What is load-bearing, and stays, is binding-stands.
+#
+# THE DISCRIMINATOR STAYS — it now decides where the BINDING stands rather than
+# where a report fires. One question decides every shadowing case in this file:
 #
 #     Can the rebinding make a use site resolve to the import?
 #
@@ -289,6 +314,12 @@ MASTER_REGRESSION_CASES = [
 #      or partial bindings are suspicious" was offered and explicitly rejected.
 #      The table that held them (INVERTED_SHADOW_CASES) was retired rather than
 #      left as a husk; this comment is the durable artefact, not that table.
+#   4. The collision REPORT was deleted outright and every case here was
+#      re-measured against an ablated copy rather than reassigned by
+#      assumption. Seven stayed violations under the reference check and their
+#      rule moved from the deleted RULE_COLLISION to RULE_CLOCK_REF; `global`
+#      stayed red for a different reason (see its case); two moved to
+#      CLEAN_CASES. RULE_COLLISION was removed because nothing asserts it.
 #
 # The background to move 1 stands: the shadow rule was deleted because it
 # protected nothing. Monkeypatching `_bound_names` to return set() left every
@@ -300,7 +331,7 @@ MASTER_REGRESSION_CASES = [
 # Each module-scope entry below pairs with a function-body twin in CLEAN_CASES
 # under the same name. Same shape, different scope, opposite verdict — that
 # pairing IS the rule, so keep the names matched if you touch either table.
-COLLISION_CASES = [
+BINDING_STANDS_CASES = [
     ("`if False: time = None` at module scope", """
         import time
 
@@ -310,7 +341,7 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     ("`time = time` self-assignment on the last line", """
         import time
 
@@ -320,7 +351,7 @@ COLLISION_CASES = [
 
 
         time = time
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     ("except-as (module scope)", """
         import time
 
@@ -332,7 +363,7 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     ("with-as (module scope)", """
         import time
 
@@ -342,18 +373,26 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     # Added when the function-body twin moved to CLEAN_CASES, so the pair is
     # complete on both sides. Verified at module scope: the use above returns a
     # real timestamp and `time` afterwards is the captured value.
     # `global` defeats the function-body exemption: the declared binding is the
     # MODULE's, so the privacy guarantee the discriminator's function-body row
     # rests on does not apply — the read below reaches the real module and
-    # returns a live timestamp rather than raising UnboundLocalError. Twin of
-    # "nonlocal (function body)" in CLEAN_CASES, which cannot reach an import
-    # at all. Low reachability: no `global` or `nonlocal` statement exists
-    # anywhere in this repo today. It is written because the discriminator's
-    # own comment is false for it, not because anyone is about to write it.
+    # returns a live timestamp rather than raising UnboundLocalError.
+    #
+    # With the collision report deleted, the fix is in the BINDING logic, not in
+    # a report: a name declared `global` must not shadow, so the import binding
+    # stands and the reference check sees `time.time`. Measured against an
+    # ablated copy rather than assumed — it is clean both with and without the
+    # report, which is what shows the report was never what caught it.
+    #
+    # Twin of "nonlocal (function body)" in CLEAN_CASES, which cannot reach an
+    # import at all. Low reachability: no `global` or `nonlocal` statement
+    # exists anywhere in this repo today. It is written because the
+    # discriminator's own comment is false for it, not because anyone is about
+    # to write it.
     ("global (function body declaring a module binding)", """
         import time
 
@@ -363,7 +402,7 @@ COLLISION_CASES = [
             grabbed = time.time
             time = None
             return grabbed
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     ("match-capture (module scope)", """
         import time
 
@@ -372,7 +411,7 @@ COLLISION_CASES = [
         match {"clock": 1}:
             case {"clock": time}:
                 pass
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     ("walrus `if (time := None):` at module scope", """
         import time
 
@@ -382,13 +421,13 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     ("same-scope rebind placed after the use", """
         import time
 
         time.sleep(1)
         time = None
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
 ]
 
 # Same clock, one spelling away from the listed one.
@@ -644,7 +683,8 @@ ENCLOSING_SCOPE_CASES = [
             clock = staticmethod(time.time)
             time = None
     """, RULE_CLOCK_REF),
-    # RULE CHANGED from RULE_COLLISION to RULE_CLOCK_REF when the "every
+    # RULE CHANGED from the since-deleted RULE_COLLISION to RULE_CLOCK_REF
+    # when the "every
     # scope" rule was revised: the parameter is private to the body, so the
     # collision rule no longer fires here. What makes this a violation is that
     # the DEFAULT is evaluated in the enclosing scope, so the parameter really
@@ -686,16 +726,6 @@ ENCLOSING_SCOPE_CASES = [
             clock: time.time = None
             time = None
     """, RULE_CLOCK_REF),
-    # The base list resolves to the module attribute, which is not itself
-    # forbidden — so what must fire here is the collision on the class-body
-    # rebinding, which the shadow rule currently swallows.
-    ("base-class list is evaluated in the enclosing scope", """
-        import datetime
-
-
-        class Stamp(datetime.datetime):
-            datetime = None
-    """, RULE_COLLISION),
     # --- the outer expression ALONE, with nothing else in the file ---------
     # The cases above pair an outer expression with a rebinding, so a rule that
     # only ever looked at the rebinding would still pass them. These four strip
@@ -736,22 +766,11 @@ ENCLOSING_SCOPE_CASES = [
         class C(time.sleep):
             pass
     """, RULE_CLOCK_REF),
-    # Twin of "class-body field with NO use (GUARD)" in CLEAN_CASES. The whole
-    # difference is the annotation: `date: date` evaluates the annotation to
-    # the import and only then rebinds, on the same line, so a use really does
-    # reach the import. `date: str` does not. Keep the pair named together.
-    ("class-body field annotated with the import itself (use, then rebind)", """
-        from datetime import date
-
-
-        class Bar(BaseModel):
-            date: date
-    """, RULE_COLLISION),
 ]
 
 EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
                  + UNLISTED_CLOCK_CALL_CASES + MASTER_REGRESSION_CASES
-                 + COLLISION_CASES + CLOCK_SPELLING_CASES
+                 + BINDING_STANDS_CASES + CLOCK_SPELLING_CASES
                  + DYNAMIC_IMPORT_SPELLING_CASES + CALLABLE_CAPTURE_CASES
                  + ENCLOSING_SCOPE_CASES)
 
@@ -832,14 +851,14 @@ CLEAN_CASES = [
     """),
     # --- the function-body row of the discriminator -----------------------
     # These three pin it, and each is the twin of an identically-named entry in
-    # COLLISION_CASES that differs ONLY in scope. Same shape, module scope =
+    # BINDING_STANDS_CASES that differs ONLY in scope. Same shape, module scope =
     # violation; same shape, function body = clean. That pairing IS the rule,
     # so keep the names matched if you touch either table.
     #
     # All three were inverted to violations under the superseded "collision at
     # every scope" rule and reverted here — the parameter first, then the other
     # two once execution showed an `except ... as` target and a `match` capture
-    # are exactly as private as a parameter. Full history on COLLISION_CASES.
+    # are exactly as private as a parameter. History on BINDING_STANDS_CASES.
     #
     # Unlike the shadow cases further up, every file here DOES import the name,
     # which is what makes them pins rather than trivia: with no import there is
@@ -883,12 +902,12 @@ CLEAN_CASES = [
 
         def pause(ctx):
             with ctx as time:
-                # Completes the matrix: every shape in COLLISION_CASES has a
+                # Completes the matrix: every shape in BINDING_STANDS_CASES
                 # function-body twin here. A gap in the pairing reads as an
                 # unexamined shape.
                 return time.monotonic()
     """),
-    # Twin of "global (function body ...)" in COLLISION_CASES. `nonlocal` can
+    # Twin of "global (function body ...)" in BINDING_STANDS_CASES. `nonlocal` can
     # only bind an ENCLOSING FUNCTION's local, never a module-level import, so
     # it can never reach the stdlib and must stay clean. That asymmetry with
     # `global` is the whole content of the pair.
@@ -1127,6 +1146,34 @@ CLEAN_CASES = [
     ("class-body control: date: str with no import of `date`", """
         class Bar:
             date: str
+    """),
+    # --- a use that cannot reach a forbidden target is not a purity concern --
+    # RECLASSIFIED from violation to clean, ruled 2026-08-25 when the collision
+    # report was deleted. In both of these the use DOES reach the import — the
+    # base list and the annotation are evaluated in the enclosing scope, before
+    # the rebinding, exactly as the discriminator says. What the earlier
+    # specification got wrong is the step after that: the thing reached is
+    # `datetime.datetime` / `date`, which is not a forbidden target. No clock is
+    # read, so there is no purity violation to report. The mechanism was right
+    # and the consequence was wrong.
+    #
+    # The second was previously pinned as a violation on the reasoning "an
+    # annotation is a use". It is ordinary pydantic. Meeting it as a corrected
+    # decision is the point of this note — without it a future reader
+    # rediscovers the argument and re-files it as a bug.
+    ("base-class list reaches the import but not a forbidden target", """
+        import datetime
+
+
+        class Stamp(datetime.datetime):
+            datetime = None
+    """),
+    ("ordinary pydantic: `date: date` (was mis-specified as a violation)", """
+        from datetime import date
+
+
+        class Bar(BaseModel):
+            date: date
     """),
     # --- round four: two FALSE-POSITIVE GUARDS ----------------------------
     # Both of these read at a glance like violations — a name spelled `time`
@@ -1479,10 +1526,10 @@ def test_master_regressions_stay_flagged():
     _assert_all_flagged(MASTER_REGRESSION_CASES, "regression vs master")
 
 
-def test_import_colliding_with_a_rebinding_is_flagged():
+def test_a_rebound_import_still_resolves_for_the_reference_check():
     """Popping a name on any rebinding, anywhere in the scope, regardless of
     whether the branch can execute, is a one-line silencer for a whole file."""
-    _assert_all_flagged(COLLISION_CASES, "same-scope collision")
+    _assert_all_flagged(BINDING_STANDS_CASES, "binding stands")
 
 
 def test_clock_spellings_are_flagged():
