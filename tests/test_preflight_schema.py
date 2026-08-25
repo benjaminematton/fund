@@ -309,15 +309,23 @@ def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
     assert "trial_registry" in proc.stderr        # names what it did find
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory mode")
-def test_an_unwritable_directory_cannot_determine(tmp_path):
-    """The REAL failure mode of a read-only open, measured rather than
-    assumed. A WAL database needs its `-shm` sidecar beside the main file and
-    a read-only open still has to create it, so an unwritable DIRECTORY blocks
-    the read. This test replaces one that monkeypatched sqlite3.connect to
-    raise 'attempt to write a readonly database' and attributed it to WAL
-    recovery — the code never had that behaviour, so the test pinned a
-    fiction and could not have caught this."""
+needs_mode_bits = pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root ignores directory mode. NOTE: master's ci.yml runs on"
+           " ubuntu-latest with no `container:` key, so CI is uid 1001 and"
+           " this DOES execute there. Adding a `container:` key would make it"
+           " root and turn this green-by-skipping.")
+
+
+@needs_mode_bits
+def test_a_sidecar_that_cannot_be_created_cannot_determine(tmp_path):
+    """The measured failure mode: SQLite must CREATE a `-wal`/`-shm` beside
+    the main file and the directory does not allow it. This is the droplet's
+    between-runs shape — WAL-mode header, sidecars cleanly checkpointed away.
+
+    Replaces a test that monkeypatched sqlite3.connect to raise and blamed WAL
+    recovery; the code never had that behaviour, so it pinned a fiction.
+    """
     home = tmp_path / "locked"
     home.mkdir()
     db = _live_db(home / "fund.sqlite")
@@ -330,6 +338,52 @@ def test_an_unwritable_directory_cannot_determine(tmp_path):
 
     assert proc.returncode == preflight.CANNOT_DETERMINE
     assert "not writable" in proc.stderr
+    assert "sidecar" in proc.stderr
+
+
+@needs_mode_bits
+def test_an_unwritable_directory_alone_is_not_a_failure(tmp_path):
+    """The non-trigger, pinned so the rule stops drifting. With both sidecars
+    already on disk there is nothing to create, and the open succeeds in an
+    unwritable directory. "Unwritable dir fails the read" was asserted twice
+    in review of this file and is false on its own."""
+    home = tmp_path / "locked"
+    home.mkdir()
+    db = _wal_only_db(home / "fund.sqlite")       # leaves -wal AND -shm
+    assert db.with_name(db.name + "-shm").exists()
+    home.chmod(0o555)
+    try:
+        proc = _run(db)
+    finally:
+        home.chmod(0o755)
+
+    assert proc.returncode == preflight.OK, proc.stderr
+
+
+@needs_mode_bits
+def test_a_corrupt_file_is_never_blamed_on_the_directory(tmp_path):
+    """Headline and explanation must not disagree about the cause.
+
+    Testing os.access before the SQLite error printed "file is not a database"
+    over an explanation about directory permissions — sending an operator to
+    chmod a directory when FUND_DB pointed at the wrong file. "file is not a
+    database" comes back identically in either directory mode, so it can never
+    mean a permission problem.
+    """
+    home = tmp_path / "locked"
+    home.mkdir()
+    db = home / "fund.sqlite"
+    db.write_bytes(b"this is not a database")
+    home.chmod(0o555)
+    try:
+        proc = _run(db)
+    finally:
+        home.chmod(0o755)
+
+    assert proc.returncode == preflight.CANNOT_DETERMINE
+    assert "not a database" in proc.stderr
+    assert "not writable" not in proc.stderr
+    assert "sidecar" not in proc.stderr
 
 
 def test_a_wal_holding_the_only_copy_of_the_schema_is_read(tmp_path):

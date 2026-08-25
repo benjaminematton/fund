@@ -219,33 +219,60 @@ def check(db_path: str | None) -> tuple[int, str]:
             f" pending.\n{_NAMES_ONLY}\n  db: {path}")
 
 
+# The two errors a read-only open gives when it cannot CREATE a sidecar. Used
+# only to choose which explanation to print — the exit code is
+# CANNOT_DETERMINE whatever the string says, so a future SQLite that reworded
+# these degrades to the generic message and never to a wrong exit code.
+_SIDECAR_ERRORS = ("unable to open database file",
+                   "attempt to write a readonly database")
+
+
 def _unreadable(path: Path, exc: sqlite3.Error) -> str:
     """Why a read-only open failed, without inventing a cause.
 
-    The comment here used to say a read-only open "refuses rather than
-    replaying the log" when the WAL needs recovery. Measured, that is false: a
-    `-wal` holding uncommitted-to-main data with no `-shm` beside it opens
-    fine and reads the WAL's contents, recreating the `-shm`. What actually
-    fails is a DIRECTORY this uid cannot write, because the sidecar cannot be
-    created there — reported as either "unable to open database file" or
-    "attempt to write a readonly database" depending on whether a `-wal`
-    exists. Naming WAL recovery on every sqlite3.Error sent an operator to
-    inspect a write-ahead log when FUND_DB simply pointed at the wrong file.
+    MEASURED, 4 database states x 2 directory modes. What fails is not the WAL
+    state and not the directory alone — it is SQLite needing to CREATE a
+    sidecar it cannot create:
+
+        sidecars on disk   writable dir   unwritable dir
+        -wal and -shm      opens          OPENS — nothing to create
+        -wal only          opens          "unable to open database file"
+        -shm only          opens          "attempt to write a readonly database"
+        neither            opens          "attempt to write a readonly database"
+
+    So a missing `-shm` beside a present `-wal` gives the first string and a
+    missing `-wal` gives the second. Two earlier readings of this were wrong in
+    opposite directions and both got written down as fact: "a WAL needing
+    replay refuses the open" (it does not — it opens and reads the WAL), and
+    "an unwritable directory fails the open" (not on its own — with both
+    sidecars already present it opens, even with the `-shm` file itself mode
+    444). The droplet's between-runs shape is a WAL-mode header with the
+    sidecars cleanly removed, which is the LAST row: it opens in a writable
+    directory and fails in an unwritable one.
+
+    A corrupt file is separate: "file is not a database" comes back the same in
+    either directory mode, so it never indicates a permission problem.
     """
     head = f"CANNOT DETERMINE: cannot read {path} — {exc}"
-    if not os.access(path.parent, os.W_OK):
+    tail = "  Preflight has NOT checked the live schema."
+    # Both halves must hold before blaming the directory. Testing os.access
+    # FIRST let a plain text file in an unwritable directory print the
+    # headline "file is not a database" over an explanation about directory
+    # permissions — headline and cause disagreeing, which is the same wrong
+    # turn at 09:30 as the WAL paragraph this replaced.
+    if (any(s in str(exc) for s in _SIDECAR_ERRORS)
+            and not os.access(path.parent, os.W_OK)):
         return (f"{head}\n"
-                f"  {path.parent} is not writable by this uid. A WAL database"
-                " needs its `-shm` sidecar beside the main file, and a"
-                " read-only open still has to create it — so an unwritable"
-                " DIRECTORY blocks the read. On the droplet this step runs as"
-                " uid `fund`, which owns /var/lib/fund.\n"
-                "  Preflight has NOT checked the live schema.")
+                f"  {path.parent} is not writable by this uid, and this"
+                " database needs a `-wal`/`-shm` sidecar created beside it"
+                " before it can be read — a read-only open still creates"
+                " those. Grant the directory to the uid running preflight; on"
+                " the droplet that is `fund`, which owns /var/lib/fund.\n"
+                f"{tail}")
     return (f"{head}\n"
             "  The file exists but SQLite would not read it: not a database,"
             " a truncated or corrupt one, or unreadable by this uid. Check"
-            " that FUND_DB names the fund's SQLite file.\n"
-            "  Preflight has NOT checked the live schema.")
+            f" that FUND_DB names the fund's SQLite file.\n{tail}")
 
 
 def main() -> int:
