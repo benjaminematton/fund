@@ -1,8 +1,16 @@
+import json
 from orchestrator.clock import iso
 from orchestrator.reconcile import _apply, reconcile_orders
 from state.transition import try_transition
 from tests.fake_alpaca import FakeAlpaca
 from tests.test_tickets import TID, _seed
+
+def _codes(conn):
+    return [json.loads(r["payload"]).get("code") for r in conn.execute(
+        "SELECT payload FROM events WHERE kind='alert' ORDER BY id")]
+
+class _Unreachable:
+    def get_order_by_client_order_id(self, coid): raise ConnectionError()
 
 def _submitted_order(conn, now, qty=67):
     conn.execute("INSERT INTO orders (client_order_id, symbol, side, qty,"
@@ -52,6 +60,7 @@ def test_never_fills_within_cap_decision_failed_alert(fund_db, sim_clock):
     # filled_avg_price comes back as real None, never the string "None".
     o = broker.get_order_by_client_order_id(TID)
     assert o["filled_avg_price"] is None
+    assert _codes(fund_db) == ["order_unfilled_at_cap"]
 
 def test_partial_fill_left_submitted_with_alert(fund_db, sim_clock):
     _seed(fund_db)
@@ -66,17 +75,17 @@ def test_partial_fill_left_submitted_with_alert(fund_db, sim_clock):
                      poll_s=3.0, max_wait_s=3.0)   # one poll then stop
     assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "partially_filled"
     assert fund_db.execute("SELECT COUNT(*) c FROM events WHERE kind='alert'").fetchone()["c"] == 1
+    assert _codes(fund_db) == ["partial_fill_manual_review"]
 
 def test_broker_error_fails_closed_no_transition(fund_db, sim_clock):
     _seed(fund_db)
     now = iso(sim_clock.now())
     fund_db.execute("UPDATE tickets SET status='consumed'"); fund_db.commit()
     _submitted_order(fund_db, now)
-    class Boom:
-        def get_order_by_client_order_id(self, coid): raise ConnectionError()
-    reconcile_orders(fund_db, clock=sim_clock, broker=Boom(),
+    reconcile_orders(fund_db, clock=sim_clock, broker=_Unreachable(),
                      sleep=lambda s: None, poll_s=3.0, max_wait_s=6.0)
     assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "submitted"
+    assert _codes(fund_db) == ["order_unresolved_at_cap"]
 
 def test_malformed_fill_none_values_leaves_submitted_no_transition(fund_db, sim_clock):
     """CRITICAL regression: broker says 'filled' but the numbers are None
@@ -94,6 +103,7 @@ def test_malformed_fill_none_values_leaves_submitted_no_transition(fund_db, sim_
     assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
     assert fund_db.execute(
         "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"] == 0
+    assert _codes(fund_db) == ["order_unresolved_at_cap"]
 
 def test_malformed_fill_missing_keys_leaves_submitted_no_transition(fund_db, sim_clock):
     """Same CRITICAL regression, but the broker omits the fill keys entirely."""
@@ -118,9 +128,7 @@ def test_broker_unreachable_at_cap_alerts_loudly(fund_db, sim_clock):
     now = iso(sim_clock.now())
     fund_db.execute("UPDATE tickets SET status='consumed'"); fund_db.commit()
     _submitted_order(fund_db, now)
-    class Boom:
-        def get_order_by_client_order_id(self, coid): raise ConnectionError()
-    reconcile_orders(fund_db, clock=sim_clock, broker=Boom(),
+    reconcile_orders(fund_db, clock=sim_clock, broker=_Unreachable(),
                      sleep=lambda s: None, poll_s=3.0, max_wait_s=6.0)
     assert fund_db.execute("SELECT status FROM orders").fetchone()["status"] == "submitted"
     assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
@@ -129,6 +137,19 @@ def test_broker_unreachable_at_cap_alerts_loudly(fund_db, sim_clock):
     assert alert is not None
     assert "ConnectionError" in alert["payload"]
     assert "unresolved" in alert["payload"]
+    assert _codes(fund_db) == ["order_unresolved_at_cap"]
+
+def test_no_reconcile_alert_carries_a_ticker_key(fund_db, sim_clock):
+    """An order id or symbol as a key here would file an issue per order,
+    forever. Driven through the cheapest alerting path in this file."""
+    _seed(fund_db)
+    fund_db.execute("UPDATE tickets SET status='consumed'"); fund_db.commit()
+    _submitted_order(fund_db, iso(sim_clock.now()))
+    reconcile_orders(fund_db, clock=sim_clock, broker=_Unreachable(),
+                     sleep=lambda s: None, poll_s=3.0, max_wait_s=6.0)
+    payloads = [json.loads(r["payload"]) for r in fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert'")]
+    assert payloads and all("ticker" not in p for p in payloads)
 
 def test_apply_returns_false_on_cas_noop_already_filled(fund_db, sim_clock):
     """Fix 5: _apply must not report a fill when another writer already
@@ -207,6 +228,7 @@ def test_fill_with_decision_not_approved_alerts_and_does_not_transition(fund_db,
     alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
     assert alert is not None
     assert "expired" in alert["payload"] and "not" in alert["payload"]
+    assert _codes(fund_db) == ["fill_on_unapproved_decision"]
 
 
 def _pending(conn, sim_clock, qty=67):
@@ -263,6 +285,7 @@ def test_cancel_error_and_still_open_leaves_order_submitted(fund_db, sim_clock):
     assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
     alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
     assert alert is not None and "cancel unconfirmed" in alert["payload"]
+    assert _codes(fund_db) == ["order_unreconciled"]
 
 
 def test_requery_error_after_cancel_leaves_order_submitted(fund_db, sim_clock):
@@ -283,6 +306,7 @@ def test_requery_error_after_cancel_leaves_order_submitted(fund_db, sim_clock):
     assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
     alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
     assert alert is not None and "ConnectionError" in alert["payload"]
+    assert _codes(fund_db) == ["order_unreconciled"]
 
 
 def test_pending_cancel_is_not_a_confirmed_cancel(fund_db, sim_clock):
@@ -300,6 +324,7 @@ def test_pending_cancel_is_not_a_confirmed_cancel(fund_db, sim_clock):
     assert fund_db.execute("SELECT status FROM decisions").fetchone()["status"] == "approved"
     alert = fund_db.execute("SELECT payload FROM events WHERE kind='alert'").fetchone()
     assert alert is not None and "pending_cancel" in alert["payload"]
+    assert _codes(fund_db) == ["order_unreconciled"]
 
 
 def test_second_run_after_cancel_is_a_noop(fund_db, sim_clock):
@@ -359,6 +384,10 @@ def test_partial_then_canceled_records_the_shares_held(fund_db, sim_clock):
     alerts = [r["payload"] for r in fund_db.execute(
         "SELECT payload FROM events WHERE kind='alert'")]
     assert any("partial 5 of 10 then canceled" in a for a in alerts), alerts
+    # Two alerts on this path: the main poll loop's partial-fill alert when
+    # the order first goes submitted -> partially_filled, then the
+    # timeout-close alert when it is canceled with shares held.
+    assert _codes(fund_db) == ["partial_fill_manual_review", "order_partial_then_dead"]
 
 
 def test_zero_fill_cancel_fails_the_decision_and_writes_no_fill(fund_db, sim_clock):

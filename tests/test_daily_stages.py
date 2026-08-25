@@ -59,6 +59,11 @@ def _seed_decision(fund_db, sim_clock, ticker, action, qty):
     fund_db.commit()
 
 
+def _codes(conn):
+    return [json.loads(r["payload"]).get("code") for r in conn.execute(
+        "SELECT payload FROM events WHERE kind='alert' ORDER BY id")]
+
+
 # --- pre-gate ---------------------------------------------------------------
 
 def test_pre_gate_drops_no_action_tickers(fund_db, sim_clock):
@@ -210,6 +215,23 @@ def test_decision_timeout_defaults_hold_with_event(fund_db, sim_clock):
     assert fund_db.execute("SELECT COUNT(*) c FROM critiques").fetchone()["c"] == 1
     assert fund_db.execute("SELECT COUNT(*) c FROM events WHERE kind='alert'"
                            " AND payload LIKE '%pm_timeout%'").fetchone()["c"] == 1
+    assert _codes(fund_db) == ["pm_timeout"]
+    payload = json.loads(fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert'").fetchone()["payload"])
+    assert "ticker" not in payload
+
+
+def test_pm_timeout_on_three_tickers_is_one_code_with_no_ticker_key(fund_db, sim_clock):
+    """One root cause — the PM did not answer. A ticker key here would file
+    three issues for one silence."""
+    tickers = ("AAPL", "MSFT", "NVDA")
+    market = {t: _nvda_inputs(ticker=t) for t in tickers}
+    ctx = _ctx(fund_db, sim_clock, market)
+    run_decision(ctx, active=list(tickers))      # the PM turn that never answers
+    payloads = [json.loads(r["payload"]) for r in fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert' ORDER BY id")]
+    assert [p["code"] for p in payloads] == ["pm_timeout"] * 3
+    assert all("ticker" not in p for p in payloads)
 
 
 def test_decision_critique_row_lands_before_the_pm_turn(fund_db, sim_clock):
@@ -437,6 +459,9 @@ def test_pre_gate_alerts_on_gate_error_but_stays_silent_on_no_headroom(fund_db, 
     texts = [json.loads(r["payload"])["text"] for r in alerts]
     assert any("gate_error" in t and "NVDA" in t for t in texts)
     assert not any("AAPL" in t for t in texts)
+    assert _codes(fund_db) == ["gate_error"]
+    payload = json.loads(alerts[0]["payload"])
+    assert payload["ticker"] == "NVDA"
 
 
 def test_close_journals_survive_a_crash_after_the_digest_commits(fund_db, sim_clock, tmp_path):
@@ -458,9 +483,9 @@ def test_close_journals_survive_a_crash_after_the_digest_commits(fund_db, sim_cl
 
 def test_decision_pm_timeout_alert_ordered_before_the_row_commit(
         fund_db, sim_clock, monkeypatch):
-    """review Minor 7: the row commit used to precede append_event, so a
-    kill in between plus the SELECT 1 resume-guard silently dropped the
-    pm_timeout alert forever. If append_event raises/crashes, the decision
+    """review Minor 7: the row commit used to precede the pm_timeout alert
+    write, so a kill in between plus the SELECT 1 resume-guard silently
+    dropped the alert forever. If append_alert raises/crashes, the decision
     row must not already be committed — otherwise the resume guard skips
     the ticker forever and the alert is lost for good."""
     import orchestrator.daily as daily
@@ -468,7 +493,7 @@ def test_decision_pm_timeout_alert_ordered_before_the_row_commit(
     def boom(*a, **k):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(daily, "append_event", boom)
+    monkeypatch.setattr(daily, "append_alert", boom)
     ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
     with pytest.raises(RuntimeError):
         run_decision(ctx, active=["NVDA"])
@@ -729,6 +754,10 @@ def test_execution_alerts_when_the_turn_placed_no_order(fund_db, sim_clock):
     assert run_execution(ctx, lambda: None) == "done"      # turn does nothing
     assert _alert_texts(fund_db) == [
         f"ticket {TID[:8]} open after exec turn — no order"]
+    assert _codes(fund_db) == ["ticket_open_after_exec"]
+    payload = json.loads(fund_db.execute(
+        "SELECT payload FROM events WHERE kind='alert'").fetchone()["payload"])
+    assert "ticker" not in payload
     assert fund_db.execute("SELECT status FROM checkpoints WHERE stage='execution'"
                            ).fetchone()["status"] == "done"
     posts = ctx.slack.posts["#risk"]         # projected to #risk, drained once
