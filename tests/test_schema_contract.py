@@ -11,9 +11,16 @@ reformatting, `--` comments and `CREATE TABLE IF NOT EXISTS` are all
 invisible to it. `PRAGMA table_info()` is not usable here: it does not expose
 CHECK constraints, which is exactly where the allowed-value lists live.
 
-Anything the parser cannot account for raises rather than being skipped — a
-comparator that silently extracts nothing is a green test that checks
-nothing.
+Inside a `CREATE TABLE`, anything the parser cannot account for raises rather
+than being skipped: an unknown column constraint, a trailing table option
+(`STRICT`, `WITHOUT ROWID`), a quoted identifier, or a `CREATE TEMP`/`CREATE
+VIRTUAL TABLE`. Statements that are not `CREATE TABLE` at all (`CREATE
+INDEX`, ...) are skipped by design. DDL outside a §2 sql fence is not seen.
+
+The failure mode this file dies of quietly is under-extraction — a spec fence
+that stops yielding tables leaves a green test comparing almost nothing — so
+extraction is audited on its own in `test_spec_extraction_did_not_come_up_short`
+and every table is pinned from both directions.
 """
 
 from __future__ import annotations
@@ -80,6 +87,12 @@ def _tokenize(sql: str) -> list[str]:
         elif ch in _PUNCT:
             toks.append(ch)
             i += 1
+        elif ch in '"`[]':
+            raise ValueError(
+                f"quoted identifier {ch!r} at offset {i}: the tokenizer would"
+                " fold it into the neighbouring token, key the column under the"
+                " quote character and then compare one column against another"
+                " — use unquoted identifiers, or extend the tokenizer")
         elif ch.isalnum() or ch in "_.":
             j = i
             while j < n and (sql[j].isalnum() or sql[j] in "_."):
@@ -234,19 +247,42 @@ def _is_table_constraint(item: list[str]) -> bool:
 
 
 def _parse_tables(sql: str) -> dict[str, Table]:
-    """Every CREATE TABLE in `sql`, keyed by table name. Other statements
-    (CREATE INDEX, ...) are ignored."""
+    """Every CREATE TABLE in `sql`, keyed by table name. CREATE INDEX / VIEW /
+    TRIGGER are ignored; any other CREATE ... TABLE form raises."""
     tables: dict[str, Table] = {}
     for stmt in _split_top(_tokenize(sql), ";"):
-        if len(stmt) < 4 or [t.upper() for t in stmt[:2]] != ["CREATE", "TABLE"]:
+        head = [t.upper() for t in stmt[:4]]
+        if not head or head[0] != "CREATE":
+            continue
+        if head[:2] != ["CREATE", "TABLE"]:
+            # CREATE INDEX / VIEW / TRIGGER are ignored on purpose. CREATE TEMP
+            # TABLE and CREATE VIRTUAL TABLE are tables this comparator cannot
+            # represent, and silently skipping one is how a table stops being
+            # compared without anyone noticing.
+            if "TABLE" in head:
+                raise ValueError(
+                    f"{' '.join(stmt[:4])!r}: only plain CREATE TABLE is"
+                    " compared — extend the parser rather than letting this"
+                    " table be skipped")
             continue
         i = 2
         if [t.upper() for t in stmt[i:i + 3]] == ["IF", "NOT", "EXISTS"]:
             i += 3
+        if i + 1 >= len(stmt):
+            raise ValueError(f"{' '.join(stmt)!r}: truncated CREATE TABLE")
         name = stmt[i].lower()
         if stmt[i + 1] != "(":
             raise ValueError(f"{name}: CREATE TABLE without a column list")
-        body = stmt[i + 2:_close(stmt, i + 1)]
+        close = _close(stmt, i + 1)
+        body = stmt[i + 2:close]
+        if stmt[close + 1:]:
+            # `) STRICT` and `) WITHOUT ROWID` change type enforcement and PK
+            # semantics; neither is in `Table`, so neither can be compared.
+            raise ValueError(
+                f"{name}: unparsed table option"
+                f" {' '.join(stmt[close + 1:])!r} after the column list — it"
+                " changes table semantics and is not compared; extend the"
+                " parser rather than letting it be skipped")
 
         columns, constraints = [], []
         for item in _split_top(body, ","):
@@ -294,12 +330,19 @@ def _section_sql(path: Path, heading: str) -> str:
 SCHEMA_TABLES = _parse_tables(SCHEMA.read_text())
 SPEC_TABLES: dict[str, Table] = {}
 SPEC_SOURCE: dict[str, str] = {}
+# label -> (raw fence text, names parsed out of it). Kept so the extraction can
+# be audited as its own claim, not inferred from the comparison it feeds.
+SPEC_EXTRACTION: dict[str, tuple[str, tuple[str, ...]]] = {}
 for _path, _heading in SPEC_SECTIONS:
-    for _name, _table in _parse_tables(_section_sql(_path, _heading)).items():
+    _label = f"{_path.parent.name}/{_path.name} §2"
+    _raw = _section_sql(_path, _heading)
+    _parsed = _parse_tables(_raw)
+    SPEC_EXTRACTION[_label] = (_raw, tuple(_parsed))
+    for _name, _table in _parsed.items():
         if _name in SPEC_TABLES:
             raise ValueError(f"{_name}: declared in two spec files")
         SPEC_TABLES[_name] = _table
-        SPEC_SOURCE[_name] = f"{_path.parent.name}/{_path.name} §2"
+        SPEC_SOURCE[_name] = _label
 
 BOUND = sorted(set(SPEC_TABLES) - NO_SCHEMA_HOME)
 
@@ -337,14 +380,54 @@ def _diff(name: str) -> list[str]:
     return out
 
 
+# Independent of the parser: raw-text CREATE ... TABLE lines in a fence. Used
+# only as a LOWER bound on how many statements the text declares — it misses a
+# `CREATE` and `TABLE` split across lines, so the comparison below is one-sided
+# and a reformat can never make it fire.
+_CREATE_TABLE_LINE = re.compile(r"(?im)^[ \t]*CREATE\b[^;\n]*\bTABLE\b")
+
+
 def test_parsers_found_the_ddl():
-    """A comparator that extracts nothing would pass every other test."""
+    """Both sides parsed to something, and no table parsed to zero columns.
+
+    A floor, not a coverage check: it says nothing about how MUCH of either
+    source was extracted. That job belongs to
+    `test_spec_extraction_did_not_come_up_short` and to the two existence
+    tests, which pin every known table from both directions.
+    """
     assert SCHEMA_TABLES, "no CREATE TABLE parsed from state/schema.sql"
     assert BOUND, "no CREATE TABLE parsed from the spec §2 sections"
     for src, tables in (("state/schema.sql", SCHEMA_TABLES),
                         ("spec §2", SPEC_TABLES)):
         empty = [t for t, tbl in tables.items() if not tbl.columns]
         assert not empty, f"{src}: parsed no columns for {empty}"
+
+
+def test_spec_extraction_did_not_come_up_short():
+    """Every spec §2 section still yields all the DDL its text contains.
+
+    Under-extraction is silent by construction: tables that stop being
+    extracted stop being compared, and a comparison of nothing passes. Two
+    checks, both self-updating — no table name or count is written down here:
+    a section that yields no tables at all fails, and a section that yields
+    fewer tables than its raw text visibly declares fails.
+
+    This guards the SIZE of the extraction, not its correctness. Which
+    particular tables must survive is pinned by the two existence tests, from
+    both directions.
+    """
+    for label, (raw, names) in SPEC_EXTRACTION.items():
+        assert names, (
+            f"spec extraction came up short: parsed 0 CREATE TABLE statements"
+            f" out of {label} — its sql fence is empty, or its DDL moved out of"
+            " §2. Every table it used to declare has silently stopped being"
+            " compared.")
+        declared = len(_CREATE_TABLE_LINE.findall(raw))
+        assert len(names) >= declared, (
+            f"spec extraction came up short: {label} spells out {declared}"
+            f" CREATE TABLE statements but only {len(names)} were parsed"
+            f" ({', '.join(names)}) — the parser is dropping DDL the spec still"
+            " contains, and every dropped table stopped being compared.")
 
 
 def test_every_spec_table_is_declared_in_schema():
@@ -354,6 +437,19 @@ def test_every_spec_table_is_declared_in_schema():
         + ", ".join(f"{t} ({SPEC_SOURCE[t]})" for t in missing)
         + " — add it to schema.sql, or to NO_SCHEMA_HOME with a reason in"
           " issue #50")
+
+
+def test_every_schema_table_is_declared_in_a_spec():
+    """The reverse direction: schema.sql may not grow a table the specs
+    never declared, and a spec may not drop one schema.sql still runs."""
+    undeclared = sorted(set(SCHEMA_TABLES) - set(SPEC_TABLES))
+    assert not undeclared, (
+        "in state/schema.sql but declared in no canonical spec §2: "
+        + ", ".join(undeclared)
+        + " — add the DDL to specs/contracts.md §2 or"
+          " specs/strategy-contracts.md §2. NO_SCHEMA_HOME is the opposite"
+          " direction (spec tables with no schema home) and is not an escape"
+          " hatch for this one.")
 
 
 def test_allowlisted_tables_still_have_no_schema_home():
