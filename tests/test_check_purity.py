@@ -32,7 +32,9 @@ so it runs under pytest (what CI and `make test` invoke) and under the
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
@@ -59,8 +61,10 @@ def _errors_for(source: str) -> list[str]:
         return _load().check_file(path)
 
 
-def _lint_exit_code_for_tree(files: dict[str, str]) -> int:
-    """main() against a scratch ROOT built from {relative path: source}."""
+def _lint_run_tree(files: dict[str, str]) -> tuple[int, str]:
+    """main() against a scratch ROOT built from {relative path: source},
+    returning (exit code, everything it printed). The output is what lets a
+    tree case assert WHICH rule fired, not merely that the exit was non-zero."""
     with tempfile.TemporaryDirectory() as tmp:
         for rel, source in files.items():
             path = Path(tmp) / rel
@@ -68,15 +72,42 @@ def _lint_exit_code_for_tree(files: dict[str, str]) -> int:
             path.write_text(dedent(source))
         lint = _load()
         lint.ROOT = Path(tmp)
-        return lint.main()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = lint.main()
+        return code, buf.getvalue()
 
 
-def _lint_exit_code(pkg: str, source: str) -> int:
-    """main() against a scratch ROOT whose only content is `pkg/sample.py`."""
-    return _lint_exit_code_for_tree({f"{pkg}/sample.py": source})
+def _lint_exit_code_for_tree(files: dict[str, str]) -> int:
+    return _lint_run_tree(files)[0]
 
 
-# --- (case name, source) tables -------------------------------------------
+# --- rule fragments: deliberate contract, do not loosen ---------------------
+#
+# Every violation case below is (name, source, RULE) and asserts that the
+# named rule is the one that fired — not merely that *something* did.
+#
+# This is not belt-and-braces. `except Exception as time:` stayed red for a
+# whole round with the collision rule deleted, because the reference check
+# flagged `time.sleep` instead and a truthiness assertion cannot tell the two
+# apart. The test reported a plausible verdict while measuring something other
+# than what it claimed, which is the defect in issue #43's own title arriving
+# inside the suite meant to close it. A bare `assert errors` scores a deleted
+# rule as covered.
+#
+# The fragments are deliberately the MINIMUM that identifies a rule, so an
+# implementer stays free to reword any message without breaking a test. Do not
+# extend them toward the full text (that freezes prose), and do not simplify
+# them back to a truthiness check (that reopens the hole).
+
+RULE_FORBIDDEN_IMPORT = "forbidden import"
+RULE_DYNAMIC_IMPORT = "dynamic import"
+RULE_CLOCK_REF = "wall-clock/sleep reference"
+RULE_COLLISION = "imported and rebound"
+RULE_SLACKKIT_INIT = "must stay import-free"
+
+
+# --- (case name, source, expected rule) tables -----------------------------
 
 # Dynamic imports: an ast.Call, never an ast.Import, so the import branch
 # never sees them.
@@ -86,11 +117,11 @@ DYNAMIC_IMPORT_CASES = [
 
         def sdk():
             return importlib.import_module("claude" + "_agent_sdk")
-    """),
+    """, RULE_DYNAMIC_IMPORT),
     ("__import__ builtin", """
         def sdk():
             return __import__("anthropic")
-    """),
+    """, RULE_DYNAMIC_IMPORT),
 ]
 
 # Aliased bindings: FORBIDDEN_CALLS keys on the base's literal source text
@@ -101,19 +132,19 @@ ALIASED_BINDING_CASES = [
 
         def pause():
             _t.sleep(1)
-    """),
+    """, RULE_CLOCK_REF),
     ("from datetime import datetime as _dt, then _dt.now()", """
         from datetime import datetime as _dt
 
         def stamp():
             return _dt.now()
-    """),
+    """, RULE_CLOCK_REF),
     ("from time import sleep, then a bare sleep(1)", """
         from time import sleep
 
         def pause():
             sleep(1)
-    """),
+    """, RULE_CLOCK_REF),
 ]
 
 # Clock/blocking calls absent from FORBIDDEN_CALLS entirely.
@@ -123,25 +154,25 @@ UNLISTED_CLOCK_CALL_CASES = [
 
         def stamp():
             return time.time()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.monotonic()", """
         import time
 
         def stamp():
             return time.monotonic()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.perf_counter()", """
         import time
 
         def stamp():
             return time.perf_counter()
-    """),
+    """, RULE_CLOCK_REF),
     ("asyncio.sleep()", """
         import asyncio
 
         async def pause():
             await asyncio.sleep(0.1)
-    """),
+    """, RULE_CLOCK_REF),
 ]
 
 # --- round two -------------------------------------------------------------
@@ -162,14 +193,14 @@ MASTER_REGRESSION_CASES = [
 
             def stamp(self):
                 return date.today()
-    """),
+    """, RULE_CLOCK_REF),
     ("star-import binds the literal name '*'", """
         from datetime import *
 
 
         def stamp():
             return datetime.now()
-    """),
+    """, RULE_CLOCK_REF),
     ("comprehension target folded into the parent scope", """
         import time
 
@@ -180,7 +211,7 @@ MASTER_REGRESSION_CASES = [
 
         def pause():
             time.sleep(1)
-    """),
+    """, RULE_CLOCK_REF),
 ]
 
 # An import binding rebound in the SAME scope is incoherent code, not a shadow.
@@ -196,7 +227,7 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """),
+    """, RULE_COLLISION),
     ("`time = time` self-assignment on the last line", """
         import time
 
@@ -206,7 +237,7 @@ COLLISION_CASES = [
 
 
         time = time
-    """),
+    """, RULE_COLLISION),
     ("`except Exception as time:` at module scope", """
         import time
 
@@ -218,7 +249,7 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """),
+    """, RULE_COLLISION),
     ("`with open(...) as time:` at module scope", """
         import time
 
@@ -228,7 +259,7 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """),
+    """, RULE_COLLISION),
     ("walrus `if (time := None):` at module scope", """
         import time
 
@@ -238,13 +269,13 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
-    """),
+    """, RULE_COLLISION),
     ("same-scope rebind placed after the use", """
         import time
 
         time.sleep(1)
         time = None
-    """),
+    """, RULE_COLLISION),
 ]
 
 # Same clock, one spelling away from the listed one.
@@ -255,49 +286,49 @@ CLOCK_SPELLING_CASES = [
 
         def stamp():
             return datetime.today()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.time_ns()", """
         import time
 
 
         def stamp():
             return time.time_ns()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.monotonic_ns()", """
         import time
 
 
         def stamp():
             return time.monotonic_ns()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.perf_counter_ns()", """
         import time
 
 
         def stamp():
             return time.perf_counter_ns()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.process_time()", """
         import time
 
 
         def stamp():
             return time.process_time()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.localtime()", """
         import time
 
 
         def stamp():
             return time.localtime()
-    """),
+    """, RULE_CLOCK_REF),
     ("time.gmtime()", """
         import time
 
 
         def stamp():
             return time.gmtime()
-    """),
+    """, RULE_CLOCK_REF),
 ]
 
 # Rebindings of the dynamic-import builtins. Master misses these too — they are
@@ -309,14 +340,14 @@ DYNAMIC_IMPORT_SPELLING_CASES = [
 
         def sdk():
             return __import__("anthropic")
-    """),
+    """, RULE_DYNAMIC_IMPORT),
     ("_imp = __import__, then _imp(...)", """
         _imp = __import__
 
 
         def sdk():
             return _imp("anthropic")
-    """),
+    """, RULE_DYNAMIC_IMPORT),
 ]
 
 # Capturing the callable instead of calling it. These read as conscientious
@@ -327,12 +358,12 @@ CALLABLE_CAPTURE_CASES = [
         import time
 
         _sleep = time.sleep
-    """),
+    """, RULE_CLOCK_REF),
     ("dispatch table holding datetime.utcnow", """
         from datetime import datetime
 
         _FIELDS = {"ts": datetime.utcnow}
-    """),
+    """, RULE_CLOCK_REF),
     ("adapter class whose attributes are the clock functions", """
         import time
         from datetime import datetime
@@ -341,7 +372,7 @@ CALLABLE_CAPTURE_CASES = [
         class SystemClock:
             now = datetime.now
             sleep = time.sleep
-    """),
+    """, RULE_CLOCK_REF),
     ("default-argument fallback `_fallback=time.monotonic`", """
         import time
 
@@ -350,7 +381,7 @@ CALLABLE_CAPTURE_CASES = [
             def __init__(self, clock=None, _fallback=time.monotonic):
                 self._clock = clock
                 self._fallback = _fallback
-    """),
+    """, RULE_CLOCK_REF),
     ("intermediate module alias `_clock_mod = time`", """
         import time
 
@@ -359,14 +390,14 @@ CALLABLE_CAPTURE_CASES = [
 
         def pause():
             _clock_mod.sleep(1)
-    """),
+    """, RULE_CLOCK_REF),
     ("getattr(time, \"sleep\")() — house style at market/source_alpaca.py:33", """
         import time
 
 
         def pause():
             getattr(time, "sleep")()
-    """),
+    """, RULE_CLOCK_REF),
 ]
 
 EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
@@ -378,25 +409,25 @@ EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
 DETECTED_CASES = [
     ("plain import anthropic", """
         import anthropic
-    """),
+    """, RULE_FORBIDDEN_IMPORT),
     ("from claude_agent_sdk import query", """
         from claude_agent_sdk import query
-    """),
+    """, RULE_FORBIDDEN_IMPORT),
     ("import agents.runtime", """
         import agents.runtime
-    """),
+    """, RULE_FORBIDDEN_IMPORT),
     ("plain datetime.now()", """
         from datetime import datetime
 
         def stamp():
             return datetime.now()
-    """),
+    """, RULE_CLOCK_REF),
     ("plain time.sleep(1)", """
         import time
 
         def pause():
             time.sleep(1)
-    """),
+    """, RULE_CLOCK_REF),
 ]
 
 # Correct code. Flagging any of these would make the lint forbid the very
@@ -543,37 +574,37 @@ SLACKKIT_INIT_VIOLATIONS = [
     ("__init__.py re-exports the real port", {
         "slackkit/__init__.py": "from .real import RealSlack\n",
         "slackkit/real.py": "import slack_sdk\n",
-    }),
+    }, RULE_SLACKKIT_INIT),
     ("__init__.py imports slack_sdk directly", {
         "slackkit/__init__.py": "import slack_sdk\n",
-    }),
+    }, RULE_SLACKKIT_INIT),
     ("__init__.py imports anything at all, even stdlib", {
         # Not about *what* is imported: an __init__ that executes imports is a
         # package that can grow one, which is how the boundary erodes.
         "slackkit/__init__.py": "import os\n",
-    }),
+    }, RULE_SLACKKIT_INIT),
 ]
 
 SLACKKIT_REAL_VIOLATIONS = [
     ("pure package does `from slackkit.real import RealSlack`", {
         "slackkit/__init__.py": "",
         "orchestrator/daily.py": "from slackkit.real import RealSlack\n",
-    }),
+    }, RULE_FORBIDDEN_IMPORT),
     ("pure package does `import slackkit.real`", {
         "slackkit/__init__.py": "",
         "orchestrator/daily.py": "import slackkit.real\n",
-    }),
+    }, RULE_FORBIDDEN_IMPORT),
     ("dotted prefix reaches subpackages: slackkit.real.helpers", {
         "slackkit/__init__.py": "",
         "orchestrator/daily.py": "from slackkit.real.helpers import retry\n",
-    }),
+    }, RULE_FORBIDDEN_IMPORT),
     ("`from slackkit import real` — the module is the package, not the name", {
         # The other three spellings all put "slackkit.real" in `node.module`,
         # so they never reach the per-alias check. This one is the natural way
         # to write it and is the only case that exercises that branch.
         "slackkit/__init__.py": "",
         "orchestrator/daily.py": "from slackkit import real\n",
-    }),
+    }, RULE_FORBIDDEN_IMPORT),
     ("wall clock parked in slackkit/outbox.py", {
         # The better half of (d): outbox/render/fake/port are orchestrator's
         # live dependency and are completely unlinted today, so a clock read
@@ -586,11 +617,11 @@ SLACKKIT_REAL_VIOLATIONS = [
             def append_event(path, event):
                 return time.time()
         """,
-    }),
+    }, RULE_CLOCK_REF),
     ("slack_sdk imported by slackkit/outbox.py", {
         "slackkit/__init__.py": "",
         "slackkit/outbox.py": "import slack_sdk\n",
-    }),
+    }, RULE_FORBIDDEN_IMPORT),
 ]
 
 # The ablation. Without it, "the matcher was changed" is only the word of
@@ -633,17 +664,41 @@ SLACKKIT_ABLATION_CLEAN = [
 # --- assertions ------------------------------------------------------------
 
 def _assert_all_flagged(cases, label):
-    missed = [name for name, src in cases if not _errors_for(src)]
-    assert not missed, (
-        f"{label}: purity lint reported clean for {len(missed)} of {len(cases)} "
-        f"case(s) it must flag: " + "; ".join(missed))
+    """Each case is (name, source, rule). Reports "not caught at all" and
+    "caught by the wrong rule" separately — they are different bugs, and
+    collapsing them is what let a deleted rule score as covered."""
+    missed, wrong = [], []
+    for name, src, rule in cases:
+        errors = _errors_for(src)
+        if not errors:
+            missed.append(name)
+        elif not any(rule in e for e in errors):
+            wrong.append(f"{name} -> wanted {rule!r}, got {errors}")
+    assert not (missed or wrong), "; ".join(filter(None, [
+        (f"{label}: reported CLEAN for {len(missed)} of {len(cases)} case(s): "
+         + "; ".join(missed)) if missed else "",
+        (f"{label}: flagged by the WRONG RULE for {len(wrong)} of {len(cases)} "
+         f"case(s) — the violation was caught, but not by the rule under test, "
+         f"so deleting that rule would not turn this red: " + "; ".join(wrong))
+        if wrong else "",
+    ]))
 
 
 def _assert_trees_rejected(cases, label):
-    passed = [name for name, tree in cases if _lint_exit_code_for_tree(tree) == 0]
-    assert not passed, (
-        f"{label}: purity lint exited 0 for {len(passed)} of {len(cases)} "
-        f"tree(s) it must reject: " + "; ".join(passed))
+    """Each case is (name, tree, rule). Same two-way split as above."""
+    passed, wrong = [], []
+    for name, tree, rule in cases:
+        code, out = _lint_run_tree(tree)
+        if code == 0:
+            passed.append(name)
+        elif rule not in out:
+            wrong.append(f"{name} -> wanted {rule!r}, got: {out.strip()}")
+    assert not (passed or wrong), "; ".join(filter(None, [
+        (f"{label}: exited 0 for {len(passed)} of {len(cases)} tree(s): "
+         + "; ".join(passed)) if passed else "",
+        (f"{label}: flagged by the WRONG RULE for {len(wrong)} of {len(cases)} "
+         f"tree(s): " + "; ".join(wrong)) if wrong else "",
+    ]))
 
 
 def _assert_trees_accepted(cases, label):
@@ -689,16 +744,20 @@ def test_clean_file_yields_no_errors():
 
 def test_an_evasion_exits_nonzero():
     """The issue's headline repro: gate/evade.py, `clean`, exit 0."""
-    for name, source in EVASION_CASES:
-        code = _lint_exit_code("gate", source)
+    for name, source, rule in EVASION_CASES:
+        code, out = _lint_run_tree({"gate/sample.py": source})
         assert code != 0, f"gate/ evasion '{name}' left the lint exit 0"
+        assert rule in out, (
+            f"gate/ evasion '{name}' exited non-zero but not via {rule!r}: {out.strip()}")
 
 
 def test_market_is_linted():
     """market/ computes the gate's own inputs; it is currently unlinted."""
     assert (ROOT / "market").is_dir(), "market/ is gone — retarget this test"
-    code = _lint_exit_code("market", "import anthropic\n")
+    code, out = _lint_run_tree({"market/sample.py": "import anthropic\n"})
     assert code != 0, "a forbidden import in market/ left the lint exit 0"
+    assert RULE_FORBIDDEN_IMPORT in out, (
+        f"market/ was scanned but not via {RULE_FORBIDDEN_IMPORT!r}: {out.strip()}")
 
 
 def test_master_regressions_stay_flagged():
