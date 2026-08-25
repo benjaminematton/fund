@@ -10,6 +10,7 @@ the broker has not confirmed (invariants 4 and 6)."""
 from __future__ import annotations
 import sqlite3
 from typing import Callable
+from gate.tickets import open_tickets_without_orders
 from orchestrator.clock import Clock, iso
 from slackkit.outbox import append_alert, append_event
 from state.transition import EDGES, try_transition
@@ -273,3 +274,120 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
             f"unparseable ({reason}) at cap, left {cur_status} for retry",
             now_iso=now)
     return filled
+
+
+def _recoverable_qty(o: dict, ticket: dict) -> int | None:
+    """The whole-share qty on a broker order that MATCHES the ticket which
+    authorized it; None if anything does not line up.
+
+    Fail closed (invariant 4): an order that is not what the gate approved is
+    not this ticket's order, and recording it would put an unauthorized trade
+    in the books. So a mismatched symbol or side, a qty that is fractional,
+    below 1, or above the ticket's max_qty all deny. Numbers arrive as STRINGS
+    on the real wire (alpaca-py 0.44 Order fields are Optional[str]), so
+    coerce and reject rather than floor — this fund is whole-share only and
+    orders.qty is INTEGER."""
+    if o.get("symbol") != ticket["ticker"] or o.get("side") != ticket["side"]:
+        return None
+    try:
+        raw = float(o["qty"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if raw != int(raw):
+        return None
+    qty = int(raw)
+    if qty < 1 or qty > ticket["max_qty"]:
+        return None
+    return qty
+
+
+def recover_lost_orders(conn: sqlite3.Connection, *, clock: Clock,
+                        broker) -> int:
+    """Repair pass for issue #40: an order that LANDED at the broker but whose
+    `orders` row was never written. Returns the number of tickets whose
+    open->consumed CAS THIS call won, so a re-run cannot over-count.
+
+    The row is written submit-then-write, by a PostToolUse hook on the place_*
+    response. A response lost to a gateway 504, or returned as the
+    duplicate-client_order_id 422, makes agents.runtime._extract_order return
+    None and nothing at all is written. reconcile_orders selects `FROM orders`
+    and so is structurally blind to it: the broker filled and SQLite
+    permanently records that nothing traded.
+
+    **The recovered order is recorded at status 'submitted' and nothing else.**
+    No fill parsing, no order transition, no fill event, no decision touched —
+    reconcile_orders runs immediately after, in the same stage body, and drives
+    all of that through its already-tested _apply. This holds even when the
+    broker's order is already 'rejected' or 'canceled': it is still recorded at
+    'submitted', and reconcile_orders then polls, sees the terminal status at
+    the broker, and CASes it through the state machine. A recovered order must
+    behave IDENTICALLY to a normally-recorded one — same broker state, same
+    outcome, regardless of whether the recorder happened to work that day —
+    because two classes of order row would force anyone defining retry
+    semantics later to handle both. state/schema.sql declares
+    `status TEXT NOT NULL DEFAULT 'submitted'`: rows are born submitted and
+    move by CAS, and that is the canonical DDL's stated intent.
+
+    Fail closed everywhere (invariant 4). No broker or a port without the
+    lookup: return 0, no writes, no alert. Broker never heard of the ticket:
+    SILENT skip — that is the ordinary "the turn placed nothing" day, which
+    the execution stage's ticket_open_after_exec alert already reports. Broker
+    raises: alert, write nothing, leave the ticket open for the next run.
+    Order does not match the ticket: alert, write nothing. The try/except is
+    INSIDE the loop, so one bad ticket does not stop the rest.
+
+    A successful recovery alerts deliberately: the PostToolUse recorder
+    failing is a fault a human should see, and #40 exists because such days
+    read as clean. Idempotent (invariant 5): INSERT OR IGNORE, the ticket
+    moves by CAS, and the alert fires only when that CAS wins."""
+    lookup = getattr(broker, "get_order_by_client_order_id", None)
+    if lookup is None:
+        return 0
+    now = iso(clock.now())
+    recovered = 0
+    for ticket in open_tickets_without_orders(conn):
+        tid = ticket["id"]
+        try:
+            o = lookup(tid)
+            if not o:
+                continue                  # the turn placed nothing: normal
+            qty = _recoverable_qty(o, ticket)
+            if qty is None:
+                append_alert(conn, "order_recovery_mismatch",
+                    f"ticket {tid[:8]} has no order row and the broker's order"
+                    f" does not match it ({o.get('symbol')!r}"
+                    f" {o.get('side')!r} {o.get('qty')!r} vs ticket"
+                    f" {ticket['ticker']!r} {ticket['side']!r} max"
+                    f" {ticket['max_qty']}) — nothing recorded", now_iso=now)
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO orders (client_order_id,"
+                " alpaca_order_id, symbol, side, qty, status, submitted_at)"
+                " VALUES (?, ?, ?, ?, ?, 'submitted', ?)",
+                (tid, o.get("id"), ticket["ticker"], ticket["side"], qty, now))
+            conn.commit()
+            if try_transition(conn, "tickets", {"id": tid},
+                              "open", "consumed", now):
+                recovered += 1
+                append_alert(conn, "order_recovered",
+                    f"ticket {tid[:8]} had no order row but the broker holds"
+                    f" {qty} — recorded submitted; the place_* recorder did"
+                    " not run", now_iso=now)
+        except Exception as e:            # per-ticket isolation, fail closed
+            append_alert(conn, "order_recovery_failed",
+                f"ticket {tid[:8]} could not be checked against the broker"
+                f" ({type(e).__name__}) — nothing recorded, left open for the"
+                " next run", now_iso=now)
+    return recovered
+
+
+def reconcile_stage(conn: sqlite3.Connection, *, clock: Clock, broker,
+                    sleep: Callable[[float], None],
+                    poll_s: float = 3.0, max_wait_s: float = 90.0) -> int:
+    """The reconciliation stage body: recover the orders that never got a row,
+    then poll every submitted order to a terminal state. Returns
+    reconcile_orders' fill count, so the stage's return value keeps its
+    existing meaning."""
+    recover_lost_orders(conn, clock=clock, broker=broker)
+    return reconcile_orders(conn, clock=clock, broker=broker, sleep=sleep,
+                            poll_s=poll_s, max_wait_s=max_wait_s)
