@@ -230,10 +230,38 @@ def test_unparseable_qty_is_a_mismatch_and_never_raises(fund_db, sim_clock):
     assert _codes(fund_db) == ["order_recovery_mismatch"]
 
 
-def test_qty_coercion_is_no_laxer_than_its_sibling_coercers(fund_db, sim_clock):
-    """gate/tickets.py:_as_share_count rejects bool and requires .isdigit();
-    orchestrator/protection.py:_qty rejects bool. A bool reaching here would
-    record a 1-share trade nobody placed."""
+def test_whole_number_decimal_qty_recovers(fund_db, sim_clock):
+    """A BROKER ECHO, not tool input: market/source_alpaca.py builds its dict
+    with str(v) over qty, so a Decimal or float at the adapter arrives here as
+    "67.0". _parse_fill — the sibling parsing the same payload in the same
+    module — has always accepted that form, and refusing it here would file
+    order_recovery_mismatch on a real fill, on the path whose whole job is
+    repairing real fills. Every rejection that matters still denies."""
+    assert _recoverable_qty(_o(qty="67"), _TICKET) == 67
+    assert _recoverable_qty(_o(qty="67.0"), _TICKET) == 67
+    assert _recoverable_qty(_o(qty=67), _TICKET) == 67
+
+    for bad in (True, "67.5", 67.5, "nan", "inf", "-inf", "  67  ", "6_7",
+                None):
+        assert _recoverable_qty(_o(qty=bad), _TICKET) is None, bad
+    missing = _o()
+    del missing["qty"]
+    assert _recoverable_qty(missing, _TICKET) is None
+
+    _seed(fund_db)
+    assert recover_lost_orders(fund_db, clock=sim_clock,
+                               broker=_Holding(qty="67.0")) == 1
+    assert fund_db.execute("SELECT qty FROM orders").fetchone()["qty"] == 67
+    assert _codes(fund_db) == ["order_recovered"]
+
+
+def test_qty_coercion_still_rejects_bool_padding_and_underscores(
+        fund_db, sim_clock):
+    """The decimal form is the ONLY loosening. gate/tickets.py:_as_share_count
+    and orchestrator/protection.py:_qty both reject bool, and a bool reaching
+    here would record a 1-share trade nobody placed; padded and underscored
+    strings never come off the wire and a bare float() would silently take
+    them."""
     assert _recoverable_qty(_o(qty=67), _TICKET) == 67       # the plain case
     assert _recoverable_qty(_o(qty=True), _TICKET) is None
     assert _recoverable_qty(_o(qty="  67  "), _TICKET) is None

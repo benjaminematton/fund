@@ -8,6 +8,7 @@ closed — the order stays 'submitted' and the next run retries; all of it is
 surfaced as loud alerts, never silent. The DB never claims a terminal state
 the broker has not confirmed (invariants 4 and 6)."""
 from __future__ import annotations
+import re
 import sqlite3
 from typing import Callable
 from gate.tickets import open_tickets_without_orders
@@ -276,6 +277,14 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
     return filled
 
 
+# A whole-number share count as the wire may spell it: ASCII digits, with an
+# optional decimal point and fractional part. Written [0-9] rather than \d so
+# non-ASCII digits (which int() would happily take) can never match, and
+# anchored by fullmatch so padding, underscores, signs, 'nan' and 'inf' never
+# reach a conversion.
+_DECIMAL_QTY = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+
 def _recoverable_qty(o: dict, ticket: dict) -> int | None:
     """The whole-share qty on a broker order that MATCHES the ticket which
     authorized it; None if anything does not line up.
@@ -297,15 +306,27 @@ def _recoverable_qty(o: dict, ticket: dict) -> int | None:
 
     Numbers arrive as STRINGS on the real wire (alpaca-py 0.44 Order fields
     are Optional[str]), so coerce and reject rather than floor — this fund is
-    whole-share only and orders.qty is INTEGER. The coercion accepts an int or
-    an ASCII digit-string and nothing else, which is at least as strict as
-    both sibling coercers (gate/tickets.py:_as_share_count, which this
-    mirrors, and orchestrator/protection.py:_qty). They stay separate
-    functions on purpose — see _qty's docstring. Matching on SHAPE rather than
-    running float() is also what keeps this function total: 'nan' and 'inf'
-    parse as floats and then raise inside int(), which would make this
-    function raise where it promises None, and the caller would file
-    "could not be checked against the broker" for a payload it checked fine."""
+    whole-share only and orders.qty is INTEGER. The accepted forms are an int
+    and a whole-number decimal string: "67", "67.0" and 67 all recover.
+
+    That decimal form is why this coercer is deliberately NOT a copy of
+    gate/tickets.py:_as_share_count. _as_share_count coerces TOOL INPUT — a
+    string the fund itself constructed — where .isdigit() is exactly right.
+    This one coerces a BROKER ECHO, a different contract:
+    market/source_alpaca.py builds its dict with str(v) over qty, so if
+    alpaca-py hands back a Decimal or a float, "67.0" is what arrives here.
+    _parse_fill, the sibling that parses the same payload in the same module,
+    has always accepted that form (float() then an integrality check); being
+    stricter than it would file order_recovery_mismatch on a real fill, on the
+    path whose whole job is repairing real fills. The third coercer,
+    orchestrator/protection.py:_qty, stays separate too — see its docstring.
+
+    Matching on SHAPE before converting is what keeps this function total, and
+    is why there is no bare float(): 'nan' and 'inf' parse as floats and then
+    raise inside int(), which would make this function raise where it promises
+    None, and the caller would file "could not be checked against the broker"
+    for a payload it checked fine. Padded ("  67  ") and underscored ("6_7")
+    forms never come off the wire, and a bare float() would take them."""
     if o.get("symbol") != ticket["ticker"] or o.get("side") != ticket["side"]:
         return None
     if o.get("client_order_id") != ticket.get("id"):
@@ -313,8 +334,13 @@ def _recoverable_qty(o: dict, ticket: dict) -> int | None:
     qty = o.get("qty")
     if isinstance(qty, bool):              # bool is an int; 1 share nobody placed
         return None
-    if isinstance(qty, str) and qty.isascii() and qty.isdigit():
-        qty = int(qty)
+    if isinstance(qty, str):
+        if not _DECIMAL_QTY.fullmatch(qty):
+            return None
+        whole, _, frac = qty.partition(".")
+        if frac.strip("0"):                # fractional: reject, never floor
+            return None
+        qty = int(whole)
     if not isinstance(qty, int):
         return None
     if qty < 1 or qty > ticket["max_qty"]:
@@ -326,7 +352,11 @@ def recover_lost_orders(conn: sqlite3.Connection, *, clock: Clock,
                         broker) -> int:
     """Repair pass for issue #40: an order that LANDED at the broker but whose
     `orders` row was never written. Returns the number of tickets whose
-    open->consumed CAS THIS call won, so a re-run cannot over-count.
+    open->consumed CAS THIS call won; a re-run cannot over-count it. Nothing
+    in production reads that count — it is kept because returning it is the
+    idiomatic way to report work done, and because reconcile_orders, its
+    sibling on the next line of reconcile_stage, returns an equally-unread
+    fill count.
 
     The row is written submit-then-write, by a PostToolUse hook on the place_*
     response. A response lost to a gateway 504, or returned as the
