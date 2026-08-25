@@ -126,6 +126,11 @@ def test_port_without_the_lookup_method_recovers_nothing_silently(fund_db, sim_c
 
 
 def test_raising_broker_alerts_and_leaves_the_ticket_open(fund_db, sim_clock):
+    """The ticket is left open, but the alert must NOT promise a retry: there
+    is none. run_execution calls expire_open_tickets first and unscoped by
+    date, so tomorrow's execution stage sweeps this ticket open->expired
+    before tomorrow's reconciliation stage can look at it again. An operator
+    told to wait for the next run waits forever."""
     _seed(fund_db)
     assert recover_lost_orders(fund_db, clock=sim_clock,
                                broker=_Unreachable()) == 0
@@ -134,6 +139,9 @@ def test_raising_broker_alerts_and_leaves_the_ticket_open(fund_db, sim_clock):
     alert = fund_db.execute(
         "SELECT payload FROM events WHERE kind='alert'").fetchone()
     assert "ConnectionError" in alert["payload"]
+    text = json.loads(alert["payload"])["text"]
+    assert "will NOT be retried" in text and "by hand" in text
+    assert "next run" not in text
     assert fund_db.execute("SELECT status FROM tickets").fetchone()["status"] == "open"
 
 

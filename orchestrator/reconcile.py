@@ -383,10 +383,31 @@ def recover_lost_orders(conn: sqlite3.Connection, *, clock: Clock,
     lookup: return 0, no writes, no alert. Broker never heard of the ticket:
     SILENT skip — that is the ordinary "the turn placed nothing" day, which
     the execution stage's ticket_open_after_exec alert already reports. Broker
-    raises: alert, write nothing, leave the ticket open for the next run.
-    Order does not match the ticket: alert, write nothing. Row could not be
-    written: alert, leave the ticket open — see the INSERT below. The
-    try/except is INSIDE the loop, so one bad ticket does not stop the rest.
+    raises: alert, write nothing, leave the ticket open. Order does not match
+    the ticket: alert, write nothing. Row could not be written: alert, leave
+    the ticket open — see the INSERT below. The try/except is INSIDE the loop,
+    so one bad ticket does not stop the rest.
+
+    ONE ATTEMPT, at the reconciliation stage of the day the ticket opened.
+    "Left open" does NOT mean "retried tomorrow" — there is no next run.
+    run_execution's body calls expire_open_tickets FIRST, and it is unscoped
+    by date, so the next day's execution stage sweeps the still-open ticket
+    open->expired (and its decision approved->expired) before that day's
+    reconciliation stage ever reaches this function, whose predicate is
+    status='open'. The ticket is then permanently out of scope. Traced over
+    three days: day 1 alerts, days 2 and 3 emit nothing, final state
+    ticket=expired decision=expired orders=0 while the broker holds a real
+    filled position — a discrepancy that is now permanently invisible.
+
+    A swallow amplifies it. market/source_alpaca.py's
+    get_order_by_client_order_id catches every exception and returns None
+    ("# fail closed; poll retries" — a precondition true for reconcile_orders
+    and false for this caller), so against the real adapter a broker outage
+    takes the SILENT-SKIP path above rather than the alert path, and is
+    indistinguishable from "the turn placed nothing". Issue #55 is the
+    completing fix (recovery reaching an 'expired' ticket, held for a human
+    ruling); issue #74 is the adapter's two-callers-incompatible-contracts
+    problem.
 
     Every alert here passes the ticket's `ticker`. scripts/file_alert_issues.py
     groups on ("alert:{code}", "ticker:{ticker}") and skips a group that
@@ -454,8 +475,10 @@ def recover_lost_orders(conn: sqlite3.Connection, *, clock: Clock,
         except Exception as e:            # per-ticket isolation, fail closed
             append_alert(conn, "order_recovery_failed",
                 f"ticket {tid[:8]} could not be checked against the broker"
-                f" ({type(e).__name__}) — nothing recorded, left open for the"
-                " next run", now_iso=now, ticker=ticket["ticker"])
+                f" ({type(e).__name__}) — nothing recorded and this ticket will"
+                " NOT be retried: tomorrow's execution stage expires it before"
+                " recovery runs again. Reconcile it against the broker by hand",
+                now_iso=now, ticker=ticket["ticker"])
     return recovered
 
 
