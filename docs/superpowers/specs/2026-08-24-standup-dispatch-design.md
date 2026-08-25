@@ -119,6 +119,13 @@ as much a guess).
   rows in a shape it can interpret; a row written by `get-aligned` or `split-the-plan` is left alone,
   never reinterpreted.
 - **region-declared** — see below; a lane with no declared region is excluded here, not carried forward
+- **not waiting on a human** — no label marking it as awaiting a ruling (`needs-decision`, or the
+  repo's equivalent). `blocked_by` models **issue-to-issue edges only**, so an issue blocked on a
+  decision nobody has made reports `blocked_by == 0` and reads as ready. Measured 2026-08-25 on the
+  first board built for `fund`: #38 and #42 both carried `needs-decision` and both reported
+  `blocked_by == 0`, and #38 was the second candidate lane the first dispatch would have handed out.
+  Dispatching such a lane does not get the decision made; it gets a seat to guess at it. Phase 3
+  surfaces it as a flag to the human instead, naming the decision it waits on
 
 in map order. These are the **candidate lanes**.
 
