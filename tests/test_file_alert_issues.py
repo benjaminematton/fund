@@ -130,7 +130,12 @@ def test_fake_tracker_matches_by_superset_like_gh_does():
 
 
 def test_split_codes_no_longer_collide_on_the_shared_prefix(db):
-    """THE F1 defect and its fix. Before the code split, every UNVERIFIED
+    """Documents the SHAPE the F1 fix produces. It does not pin the fix —
+    it seeds the codes directly rather than driving assert_positions_protected,
+    so it still passes if the split is reverted. The four assertions in
+    tests/test_protection.py are the pin; they do fail on revert.
+
+    Before the code split, every UNVERIFIED
     protection alert shared the code `unprotected_position` with the
     ticker-keyed exposure alert, so an open NVDA-keyed issue for that code
     silently satisfied the lookup for an unrelated, unkeyed 'broker

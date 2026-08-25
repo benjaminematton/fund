@@ -118,9 +118,12 @@ any `append_event(...)` call anywhere passes the literal `"alert"` as its `kind`
 
 ### 3.3 The codes
 
-**Twenty-two codes are minted across the 25 emission sites; twenty-one of them file.** Five
+**Twenty-two codes are minted across the 26 emission sites; twenty-one of them file.** Five
 `reconcile.py` sites share one code, and `audit_failed` is minted but never files (see below). Most
 promote a token already sitting at the front of the text.
+
+Line numbers below are the sites as they stood on `4685579`, before the `protection_unverified`
+split added a closure; read the parenthetical, not the number, to identify a row.
 
 | Site (on `4685579`) | Code | `ticker` |
 |---|---|---|

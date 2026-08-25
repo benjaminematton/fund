@@ -17,12 +17,19 @@ Zero dependencies. Exit 1 on any violation.
 **The pass-through rule.** scripts/run_day.py keeps a thin `_alert(conn, clock,
 code, text, **payload)` wrapper that logs and delegates, so its one
 `append_alert(conn, code, ...)` call forwards a *variable* by construction.
-Rather than exempt that file, the rule is general: a call sitting inside a
-function that declares its own `code` parameter is a forwarder and is skipped
-— and `_alert` itself is checked as an alert raiser, so its five call sites
-still owe a literal. Known edge, documented rather than hidden: a NEW wrapper
-named something else would have its own callers unchecked until its name is
-added to ALERT_FUNCS.
+Rather than exempt that file, the rule is general: a call is a forwarder, and
+skipped, only when it passes the ENCLOSING function's own `code` parameter
+through as the code argument. Declaring a `code` parameter is not enough — a
+function that declares one and then passes something else is still checked,
+so a wrapper cannot launder a dynamic code past the lint. `_alert` itself is
+checked as an alert raiser, so its five call sites still owe a literal.
+
+Known edge, documented rather than hidden: a NEW wrapper named something else
+would have its own callers unchecked until its name is added to ALERT_FUNCS.
+A second edge: a code passed by keyword (`append_alert(conn, code="x", ...)`)
+finds no positional arg and is reported as a non-literal. That is a false
+positive, and deliberately so — it fails CLOSED, at build time, the moment it
+appears.
 """
 from __future__ import annotations
 
