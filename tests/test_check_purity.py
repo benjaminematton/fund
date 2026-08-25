@@ -148,6 +148,18 @@ ALIASED_BINDING_CASES = [
         def pause():
             sleep(1)
     """, RULE_CLOCK_REF),
+    # Twin of "star-import (name bound to a parameter)" in CLEAN_CASES: same
+    # file, but nothing binds `sleep`, so the star module's own prefix is the
+    # only thing that can resolve it. WATCHED_BASES cannot reach a leaf
+    # function on its own — it holds `time`, not `time.sleep` — so this is the
+    # case that pins the star-module prefix guess.
+    ("star-import (name unbound)", """
+        from time import *
+
+
+        def pause():
+            sleep(1)
+    """, RULE_CLOCK_REF),
 ]
 
 # Clock/blocking calls absent from FORBIDDEN_CALLS entirely.
@@ -561,6 +573,26 @@ CALLABLE_CAPTURE_CASES = [
 # "a function-local rebinding makes the name local for the whole body, so it
 # can never silently resolve to the stdlib" — is true for function BODIES only.
 # Each of these was confirmed by executing it.
+#
+# KNOWN SHAPE, ruled deliberate 2026-08-25 — the most likely future false
+# positive in this change, documented so it is met as a decision and not as a
+# surprise CI failure. A class body reports a collision for ANY watched
+# rebinding, so a pydantic/dataclass model with a field named `date` in a file
+# doing `from datetime import date` reddens:
+#
+#     from datetime import date
+#     class Row:
+#         date: date = None          # <- collision reported here
+#
+# state/models.py:8 is exactly that import and holds the models; there are zero
+# such fields today. It is a TRUE positive under the discriminator — in a class
+# body a use above the field genuinely reaches the module, which is the
+# ambiguity the rule exists to name — and it is consistent with narrowing
+# `numpy` out, since `date` IS a watched base and `numpy` is not. The remedy
+# for a developer who hits it is to rename the field, or to import the module
+# (`import datetime`) rather than the name. Do not "fix" it by exempting class
+# bodies: that would delete the class-body row of the discriminator, which
+# four cases below depend on.
 ENCLOSING_SCOPE_CASES = [
     ("class body: LOAD_NAME falls back to the global import", """
         import time
@@ -624,6 +656,46 @@ ENCLOSING_SCOPE_CASES = [
         class Stamp(datetime.datetime):
             datetime = None
     """, RULE_COLLISION),
+    # --- the outer expression ALONE, with nothing else in the file ---------
+    # The cases above pair an outer expression with a rebinding, so a rule that
+    # only ever looked at the rebinding would still pass them. These four strip
+    # that away: nothing is rebound, the function is never called, and in the
+    # first three the name is never referenced in the body either.
+    #
+    # "Unused" is the whole point. A default, a decorator, an annotation and a
+    # base list are all evaluated in the ENCLOSING scope at definition time —
+    # `def f(x=time.sleep)` captures the real time.sleep the moment the def
+    # executes, whether or not anything ever calls f. Each of these pins one
+    # arm of _outer_exprs; delete that arm and the case goes silent.
+    ("outer position alone: unused default argument", """
+        import time
+
+
+        def f(x=time.sleep):
+            pass
+    """, RULE_CLOCK_REF),
+    ("outer position alone: decorator", """
+        import time
+
+
+        @time.sleep
+        def f():
+            pass
+    """, RULE_CLOCK_REF),
+    ("outer position alone: parameter annotation", """
+        import time
+
+
+        def f(x: time.sleep):
+            pass
+    """, RULE_CLOCK_REF),
+    ("outer position alone: base-class list", """
+        import time
+
+
+        class C(time.sleep):
+            pass
+    """, RULE_CLOCK_REF),
 ]
 
 EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
@@ -814,7 +886,10 @@ CLEAN_CASES = [
 
         _KEYS = tuple(json for json in ("a", "b"))
     """),
-    ("a name bound to a local must not fall through to a star-import", """
+    # Twin of "star-import (name unbound)" in ALIASED_BINDING_CASES. Same file
+    # shape, one difference: here the name IS bound, by a parameter. Bound ->
+    # clean, unbound -> violation. Keep the pair named together.
+    ("star-import (name bound to a parameter)", """
         from time import *
 
 
@@ -902,6 +977,36 @@ CLEAN_CASES = [
 
         def at(value):
             return pd.Timestamp(value)
+    """),
+    # --- round four: two FALSE-POSITIVE GUARDS ----------------------------
+    # Both of these read at a glance like violations — a name spelled `time`
+    # with `.time()` called on it. They are not, and the lint reports 1 error
+    # instead of 0 if either supporting block is removed. Named as guards on
+    # purpose: the failure mode is a later reader "fixing" the lint to flag
+    # them.
+    #
+    # GUARD 1. A sibling module named `time` is not the stdlib. An unresolved
+    # relative import must bind the name to *nothing*, so it resolves to
+    # nothing. Bind it to the bare alias instead and `time.time()` reads as
+    # the stdlib clock, which is a false positive on ordinary package code.
+    ("relative import of a sibling named `time` is not the stdlib (GUARD)", """
+        from . import time
+
+
+        def stamp():
+            return time.time()
+    """),
+    # GUARD 2. Class scope is genuinely invisible to methods, so the method's
+    # `time` is NOT the class's import — it is an unbound global. The same
+    # rule that makes `class Row: date = None` fail to shadow a module-level
+    # `from datetime import date` has to cut this way too, or the lint claims
+    # a resolution Python does not perform.
+    ("a class-body import is invisible to its own methods (GUARD)", """
+        class C:
+            import time
+
+            def stamp(self):
+                return time.time()
     """),
 ]
 
@@ -1033,6 +1138,33 @@ SLACKKIT_ABLATION_CLEAN = [
 
             def append_event(path, event):
                 return json.dumps(event)
+        """,
+    }),
+]
+
+# The relative-import guard again, this time through main() so the file sits in
+# a REAL package and the import resolves to `state.time` rather than to
+# nothing. The CLEAN_CASES twin covers the unresolved (package-unknown) half;
+# this covers the resolved half, which is the spelling a contributor writes.
+PACKAGE_RELATIVE_CLEAN_TREES = [
+    ("sibling module named `time` imported relatively (GUARD)", {
+        "state/__init__.py": "",
+        "state/helpers.py": """
+            from . import time
+
+
+            def stamp():
+                return time.time()
+        """,
+    }),
+    ("class-body import inside a real package (GUARD)", {
+        "state/__init__.py": "",
+        "state/helpers.py": """
+            class C:
+                import time
+
+                def stamp(self):
+                    return time.time()
         """,
     }),
 ]
@@ -1175,6 +1307,12 @@ def test_slackkit_init_must_stay_import_free():
 
 def test_slackkit_real_is_out_of_bounds_for_pure_packages():
     _assert_trees_rejected(SLACKKIT_REAL_VIOLATIONS, "slackkit.real")
+
+
+def test_relative_and_class_body_imports_are_not_the_stdlib():
+    """False-positive guards, through main() so package resolution is real.
+    Both shapes look like violations and are not."""
+    _assert_trees_accepted(PACKAGE_RELATIVE_CLEAN_TREES, "package-relative guard")
 
 
 def test_slackkit_ablation():
