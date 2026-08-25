@@ -483,35 +483,44 @@ CALLABLE_CAPTURE_CASES = [
 
 # --- round three ------------------------------------------------------------
 
-# DELIBERATE ASSERTION INVERSION — approved 2026-08-25, ruled by the
-# coordinator, recorded here so nobody later mistakes it for the forbidden move.
+# THE COLLISION DISCRIMINATOR. One question decides every case in this file:
 #
-# These three cases asserted CLEAN in rounds two and three-minus-one. They now
-# assert a VIOLATION. That is a TIGHTENING — a new, stricter claim about what
-# the lint must catch — not a weakening to make a failing test pass, which is
-# what CLAUDE.md's test invariants forbid. No expected value was edited to
-# match an implementation's output; the rule the tests encode changed.
+#     Can the rebinding make a use site resolve to the import?
 #
-# Why: the shadow rule is being deleted. Ablation showed it protects nothing —
-# monkeypatching `_bound_names` to return set() left every injected-Clock shape
-# clean, including orchestrator/clock.py verbatim, because the real mechanism
-# is that `self` is unresolvable, not that shadowing is tracked. A sweep of all
-# 45 pure-package files found ZERO parameters or locals named time/date/
-# datetime/asyncio/importlib. It protected nothing, cost ~10 looser-than-master
-# rows, and enabled a regression.
+# The rows fall out of the question; the question cannot be re-derived from the
+# rows, which is why it is written here and not as a list of scope kinds.
+# Module scope: yes, rebind and use share one namespace. Class body: yes —
+# LOAD_NAME with a global fallback, so `a = time.time()` on the line ABOVE
+# `time = None` returns a real timestamp. Defaults, decorators, annotations,
+# base-class lists, a genexp's outermost iterable: yes, all evaluated in the
+# ENCLOSING scope, before the shadow exists. Function body: no, Python
+# guarantees the binding is private for the whole body. Comprehension target:
+# no, Python 3 scopes it and it does not leak (verified by execution).
 #
-# The rule is now uniform: a rebinding that collides with an import binding is
-# an error at ANY scope. A rebinding with no colliding import binds nothing and
-# stays clean — that hinge is unchanged, and the CLEAN_CASES entries for files
-# that never import the shadowed name are still correct and still green.
+# ASSERTION HISTORY — inverted, then PARTIALLY reverted. Both moves ruled and
+# approved by the coordinator, 2026-08-25, recorded so the next reader files
+# this as a decision rather than churn and does not re-litigate it:
+#
+#   1. Round three: these cases asserted CLEAN and were INVERTED to assert a
+#      VIOLATION, when the rule was "a collision at EVERY scope". That was a
+#      tightening — a stricter claim about what the lint must catch — never a
+#      weakening to make a failing test pass, which CLAUDE.md forbids. No
+#      expected value was edited to match an implementation's output.
+#   2. Round four: the "every scope" rule was revised to the discriminator
+#      above, and the parameter case was REVERTED to CLEAN — a parameter can
+#      never make a use site resolve to the import. It now lives in
+#      CLEAN_CASES. The revert is partial ON PURPOSE: `except ... as` and
+#      `match/case` capture stay violations. Blanket-undoing the inversion
+#      would have been the easy edit and would have quietly re-opened two
+#      shapes.
+#
+# The background to move 1 stands: the shadow rule was deleted because it
+# protected nothing. Monkeypatching `_bound_names` to return set() left every
+# injected-Clock shape clean, orchestrator/clock.py included, because the real
+# mechanism is that `self` is unresolvable. A sweep of all 45 pure-package
+# files found ZERO parameters or locals named time/date/datetime/asyncio/
+# importlib. It cost ~10 looser-than-master rows and enabled a regression.
 INVERTED_SHADOW_CASES = [
-    ("import time + a parameter named `time`", """
-        import time
-
-
-        def elapsed(time):
-            return time.perf_counter()
-    """, RULE_COLLISION),
     ("import time + `except TimeoutError as time`", """
         import time
 
@@ -534,13 +543,12 @@ INVERTED_SHADOW_CASES = [
     """, RULE_COLLISION),
 ]
 
-# Positions evaluated in the ENCLOSING scope, where a later rebinding does not
-# shadow the import. The earlier ruling — "a function-local rebinding makes the
-# name local for the whole body, so it can never silently resolve to the
-# stdlib" — is true for function bodies ONLY. Class bodies compile to LOAD_NAME
-# with a global fallback, and defaults/annotations/base lists are evaluated
-# where the statement sits, not inside the new scope. Each was confirmed by
-# executing it.
+# The "yes" rows of the discriminator above: positions evaluated in the
+# ENCLOSING scope, where a later rebinding does not shadow the import, plus
+# class bodies whose LOAD_NAME falls back to the global. The earlier ruling —
+# "a function-local rebinding makes the name local for the whole body, so it
+# can never silently resolve to the stdlib" — is true for function BODIES only.
+# Each of these was confirmed by executing it.
 ENCLOSING_SCOPE_CASES = [
     ("class body: LOAD_NAME falls back to the global import", """
         import time
@@ -552,6 +560,13 @@ ENCLOSING_SCOPE_CASES = [
             clock = staticmethod(time.time)
             time = None
     """, RULE_CLOCK_REF),
+    # RULE CHANGED from RULE_COLLISION to RULE_CLOCK_REF when the "every
+    # scope" rule was revised: the parameter is private to the body, so the
+    # collision rule no longer fires here. What makes this a violation is that
+    # the DEFAULT is evaluated in the enclosing scope, so the parameter really
+    # holds the imported class and `datetime.now()` resolves through it to
+    # datetime.datetime.now. Catching it means propagating a default into the
+    # parameter's binding — the alias-propagation family, not the collision one.
     ("default argument is evaluated in the enclosing scope", """
         from datetime import datetime
 
@@ -559,7 +574,7 @@ ENCLOSING_SCOPE_CASES = [
         def stamp(datetime=datetime):
             # The default IS the datetime class, so this reads the wall clock.
             return datetime.now()
-    """, RULE_COLLISION),
+    """, RULE_CLOCK_REF),
     ("class nested in a function", """
         import time
 
@@ -678,6 +693,22 @@ CLEAN_CASES = [
     ("parameter named `time` shadowing the module", """
         def elapsed(time):
             # `time` is a Timer passed in by the caller, not the stdlib module.
+            return time.perf_counter()
+    """),
+    # PARTIALLY REVERTED 2026-08-25 (see the note on INVERTED_SHADOW_CASES).
+    # This case was inverted to a violation under the "collision at every
+    # scope" rule, then reverted here when that rule was revised to the
+    # discriminator: a parameter is private to the whole function body, so it
+    # can never make a use site resolve to the import. Unlike the two cases
+    # above it, this file DOES import `time` — which is exactly why it is the
+    # one that pins the function-body row of the discriminator.
+    ("module-level `import time` + a parameter named `time`", """
+        import time
+
+
+        def elapsed(time):
+            # Python binds this to the parameter for the entire body; the
+            # module-level import is unreachable from here.
             return time.perf_counter()
     """),
     ("local variable named `datetime` shadowing the class", """
@@ -1078,10 +1109,13 @@ def test_captured_callables_are_flagged():
     _assert_all_flagged(CALLABLE_CAPTURE_CASES, "callable capture")
 
 
-def test_shadowing_an_import_is_a_collision_at_any_scope():
-    """Assertions here were deliberately INVERTED from clean to violation on
-    2026-08-25 — see the note on INVERTED_SHADOW_CASES. A tightening, ruled
-    and approved, not a weakening to make a test pass."""
+def test_shadowing_an_import_where_a_use_can_still_reach_it():
+    """Assertions here were deliberately INVERTED from clean to violation, then
+    PARTIALLY reverted, both ruled and approved 2026-08-25 — see the note on
+    INVERTED_SHADOW_CASES. A tightening, never a weakening to make a test pass.
+    Renamed from ..._is_a_collision_at_any_scope: "any scope" was the rule that
+    got revised, and a test name outliving its rule is how the next reader
+    learns the wrong one."""
     _assert_all_flagged(INVERTED_SHADOW_CASES, "inverted shadow")
 
 
