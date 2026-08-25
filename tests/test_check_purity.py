@@ -9,9 +9,12 @@ imports, unlisted clock spellings, `market/`). Round two adds four groups:
 
 * MASTER_REGRESSION_CASES — violations master flagged that the binding rewrite
   stopped flagging. A lint that gets looser is worse than one that never moved.
-* COLLISION_CASES — an import binding colliding with a rebinding *in the same
-  scope* is a violation, not a shadow. Popping the name on any rebinding makes
-  `import time` + `if False: time = None` a working, silent bypass.
+* COLLISION_CASES — an import binding colliding with a rebinding is a
+  violation, not a shadow, wherever a use site can still reach the import.
+  Popping the name on any rebinding makes `import time` + `if False: time =
+  None` a working, silent bypass. The discriminator that decides which
+  positions qualify, and the history of the three cases that moved across it,
+  are documented on that table.
 * CALLABLE_CAPTURE_CASES — only a call on an attribute chain was matched, so
   `_sleep = time.sleep` defeated the check while reading as careful seam code.
 * SLACKKIT_* — option (d): lint `slackkit/` as a pure package with `real.py`
@@ -225,9 +228,66 @@ MASTER_REGRESSION_CASES = [
     """, RULE_CLOCK_REF),
 ]
 
-# An import binding rebound in the SAME scope is incoherent code, not a shadow.
-# The current pop is position- and condition-independent, so each of these
-# silences the whole scope while looking like a no-op.
+# THE COLLISION DISCRIMINATOR. One question decides every shadowing case in
+# this file:
+#
+#     Can the rebinding make a use site resolve to the import?
+#
+# The rows fall out of the question; the question cannot be re-derived from the
+# rows, which is why it is written here and not as a list of scope kinds.
+#
+#   module scope ................................. YES, rebind and use share
+#       one namespace. Verified: with `import time` above it, a use placed
+#       before an `except ... as time` / `with ... as time` / `case {...: time}`
+#       returns a real 145616.61 timestamp, and afterwards the name is the
+#       caught object (or deleted, for except-as).
+#   class body ................................... YES, LOAD_NAME with a global
+#       fallback: `a = time.time()` on the line ABOVE `time = None` is real.
+#   defaults, decorators, annotations, base-class
+#       lists, a genexp's outermost iterable ..... YES, evaluated in the
+#       ENCLOSING scope, before the shadow exists.
+#   function body ................................ NO. Binding a name ANYWHERE
+#       in a function makes it local for the whole body, so a use before the
+#       binding raises UnboundLocalError and never reaches the module. This
+#       covers parameters, `except ... as`, and `match`/`case` captures alike —
+#       all three verified by execution.
+#   comprehension target ......................... NO, Python 3 scopes it and
+#       it does not leak.
+#
+# Rareness and suspiciousness are NOT the test; reachability is. A rule that
+# flags code which cannot produce the harm is the failure mode that gets lints
+# deleted, which this lane has now established twice.
+#
+# ASSERTION HISTORY — inverted, then reverted in two steps. Every move ruled
+# and approved by the coordinator, 2026-08-25. Recorded so the next reader
+# files this as a decision rather than churn and does not re-litigate it:
+#
+#   1. The parameter / except-as / match-capture cases asserted CLEAN, and were
+#      INVERTED to assert a VIOLATION under a rule of "a collision at EVERY
+#      scope". That was a TIGHTENING — a stricter claim about what the lint
+#      must catch — never a weakening to make a failing test pass, which
+#      CLAUDE.md forbids. No expected value was edited to match an
+#      implementation's output; the encoded rule changed.
+#   2. The rule was revised to the discriminator above and the PARAMETER case
+#      was reverted to CLEAN. The revert was deliberately partial.
+#   3. The two remaining cases were then reverted as well, once execution
+#      showed the justification for keeping them was wrong: an `except ... as`
+#      target and a `match` capture are exactly as private as a parameter, so
+#      the discriminator answers NO for all three. A carve-out for "conditional
+#      or partial bindings are suspicious" was offered and explicitly rejected.
+#      The table that held them (INVERTED_SHADOW_CASES) was retired rather than
+#      left as a husk; this comment is the durable artefact, not that table.
+#
+# The background to move 1 stands: the shadow rule was deleted because it
+# protected nothing. Monkeypatching `_bound_names` to return set() left every
+# injected-Clock shape clean, orchestrator/clock.py included, because the real
+# mechanism is that `self` is unresolvable. A sweep of all 45 pure-package
+# files found ZERO parameters or locals named time/date/datetime/asyncio/
+# importlib. It cost ~10 looser-than-master rows and enabled a regression.
+#
+# Each module-scope entry below pairs with a function-body twin in CLEAN_CASES
+# under the same name. Same shape, different scope, opposite verdict — that
+# pairing IS the rule, so keep the names matched if you touch either table.
 COLLISION_CASES = [
     ("`if False: time = None` at module scope", """
         import time
@@ -249,7 +309,7 @@ COLLISION_CASES = [
 
         time = time
     """, RULE_COLLISION),
-    ("`except Exception as time:` at module scope", """
+    ("except-as (module scope)", """
         import time
 
         try:
@@ -261,7 +321,7 @@ COLLISION_CASES = [
         def pause():
             time.sleep(1)
     """, RULE_COLLISION),
-    ("`with open(...) as time:` at module scope", """
+    ("with-as (module scope)", """
         import time
 
         with open("/dev/null") as time:
@@ -270,6 +330,18 @@ COLLISION_CASES = [
 
         def pause():
             time.sleep(1)
+    """, RULE_COLLISION),
+    # Added when the function-body twin moved to CLEAN_CASES, so the pair is
+    # complete on both sides. Verified at module scope: the use above returns a
+    # real timestamp and `time` afterwards is the captured value.
+    ("match-capture (module scope)", """
+        import time
+
+        _NOW = time.monotonic()
+
+        match {"clock": 1}:
+            case {"clock": time}:
+                pass
     """, RULE_COLLISION),
     ("walrus `if (time := None):` at module scope", """
         import time
@@ -483,66 +555,6 @@ CALLABLE_CAPTURE_CASES = [
 
 # --- round three ------------------------------------------------------------
 
-# THE COLLISION DISCRIMINATOR. One question decides every case in this file:
-#
-#     Can the rebinding make a use site resolve to the import?
-#
-# The rows fall out of the question; the question cannot be re-derived from the
-# rows, which is why it is written here and not as a list of scope kinds.
-# Module scope: yes, rebind and use share one namespace. Class body: yes —
-# LOAD_NAME with a global fallback, so `a = time.time()` on the line ABOVE
-# `time = None` returns a real timestamp. Defaults, decorators, annotations,
-# base-class lists, a genexp's outermost iterable: yes, all evaluated in the
-# ENCLOSING scope, before the shadow exists. Function body: no, Python
-# guarantees the binding is private for the whole body. Comprehension target:
-# no, Python 3 scopes it and it does not leak (verified by execution).
-#
-# ASSERTION HISTORY — inverted, then PARTIALLY reverted. Both moves ruled and
-# approved by the coordinator, 2026-08-25, recorded so the next reader files
-# this as a decision rather than churn and does not re-litigate it:
-#
-#   1. Round three: these cases asserted CLEAN and were INVERTED to assert a
-#      VIOLATION, when the rule was "a collision at EVERY scope". That was a
-#      tightening — a stricter claim about what the lint must catch — never a
-#      weakening to make a failing test pass, which CLAUDE.md forbids. No
-#      expected value was edited to match an implementation's output.
-#   2. Round four: the "every scope" rule was revised to the discriminator
-#      above, and the parameter case was REVERTED to CLEAN — a parameter can
-#      never make a use site resolve to the import. It now lives in
-#      CLEAN_CASES. The revert is partial ON PURPOSE: `except ... as` and
-#      `match/case` capture stay violations. Blanket-undoing the inversion
-#      would have been the easy edit and would have quietly re-opened two
-#      shapes.
-#
-# The background to move 1 stands: the shadow rule was deleted because it
-# protected nothing. Monkeypatching `_bound_names` to return set() left every
-# injected-Clock shape clean, orchestrator/clock.py included, because the real
-# mechanism is that `self` is unresolvable. A sweep of all 45 pure-package
-# files found ZERO parameters or locals named time/date/datetime/asyncio/
-# importlib. It cost ~10 looser-than-master rows and enabled a regression.
-INVERTED_SHADOW_CASES = [
-    ("import time + `except TimeoutError as time`", """
-        import time
-
-
-        def deadline(fn):
-            try:
-                return fn()
-            except TimeoutError as time:
-                return time.time
-    """, RULE_COLLISION),
-    ("import time + a match/case capture named `time`", """
-        import time
-
-
-        def handle(event):
-            match event:
-                case {"clock": time}:
-                    return time.monotonic()
-            return None
-    """, RULE_COLLISION),
-]
-
 # The "yes" rows of the discriminator above: positions evaluated in the
 # ENCLOSING scope, where a later rebinding does not shadow the import, plus
 # class bodies whose LOAD_NAME falls back to the global. The earlier ruling —
@@ -618,7 +630,7 @@ EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
                  + UNLISTED_CLOCK_CALL_CASES + MASTER_REGRESSION_CASES
                  + COLLISION_CASES + CLOCK_SPELLING_CASES
                  + DYNAMIC_IMPORT_SPELLING_CASES + CALLABLE_CAPTURE_CASES
-                 + INVERTED_SHADOW_CASES + ENCLOSING_SCOPE_CASES)
+                 + ENCLOSING_SCOPE_CASES)
 
 # Already caught today. These must survive the rewrite.
 DETECTED_CASES = [
@@ -695,14 +707,21 @@ CLEAN_CASES = [
             # `time` is a Timer passed in by the caller, not the stdlib module.
             return time.perf_counter()
     """),
-    # PARTIALLY REVERTED 2026-08-25 (see the note on INVERTED_SHADOW_CASES).
-    # This case was inverted to a violation under the "collision at every
-    # scope" rule, then reverted here when that rule was revised to the
-    # discriminator: a parameter is private to the whole function body, so it
-    # can never make a use site resolve to the import. Unlike the two cases
-    # above it, this file DOES import `time` — which is exactly why it is the
-    # one that pins the function-body row of the discriminator.
-    ("module-level `import time` + a parameter named `time`", """
+    # --- the function-body row of the discriminator -----------------------
+    # These three pin it, and each is the twin of an identically-named entry in
+    # COLLISION_CASES that differs ONLY in scope. Same shape, module scope =
+    # violation; same shape, function body = clean. That pairing IS the rule,
+    # so keep the names matched if you touch either table.
+    #
+    # All three were inverted to violations under the superseded "collision at
+    # every scope" rule and reverted here — the parameter first, then the other
+    # two once execution showed an `except ... as` target and a `match` capture
+    # are exactly as private as a parameter. Full history on COLLISION_CASES.
+    #
+    # Unlike the shadow cases further up, every file here DOES import the name,
+    # which is what makes them pins rather than trivia: with no import there is
+    # no binding to collide with and the case proves nothing.
+    ("parameter (function body)", """
         import time
 
 
@@ -710,6 +729,41 @@ CLEAN_CASES = [
             # Python binds this to the parameter for the entire body; the
             # module-level import is unreachable from here.
             return time.perf_counter()
+    """),
+    ("except-as (function body)", """
+        import time
+
+
+        def deadline(fn):
+            try:
+                return fn()
+            except TimeoutError as time:
+                # Binding `time` anywhere in this function makes it local for
+                # the WHOLE body — a use above would raise UnboundLocalError,
+                # never reach the module. Verified by execution.
+                return time.time
+    """),
+    ("match-capture (function body)", """
+        import time
+
+
+        def handle(event):
+            match event:
+                case {"clock": time}:
+                    # Same as except-as: local for the whole body.
+                    return time.monotonic()
+            return None
+    """),
+    ("with-as (function body)", """
+        import time
+
+
+        def pause(ctx):
+            with ctx as time:
+                # Completes the matrix: every shape in COLLISION_CASES has a
+                # function-body twin here. A gap in the pairing reads as an
+                # unexamined shape.
+                return time.monotonic()
     """),
     ("local variable named `datetime` shadowing the class", """
         def label(rows):
@@ -1107,16 +1161,6 @@ def test_captured_callables_are_flagged():
     """Capturing the function instead of calling it. Reads as careful seam
     code; is the banned dependency."""
     _assert_all_flagged(CALLABLE_CAPTURE_CASES, "callable capture")
-
-
-def test_shadowing_an_import_where_a_use_can_still_reach_it():
-    """Assertions here were deliberately INVERTED from clean to violation, then
-    PARTIALLY reverted, both ruled and approved 2026-08-25 — see the note on
-    INVERTED_SHADOW_CASES. A tightening, never a weakening to make a test pass.
-    Renamed from ..._is_a_collision_at_any_scope: "any scope" was the rule that
-    got revised, and a test name outliving its rule is how the next reader
-    learns the wrong one."""
-    _assert_all_flagged(INVERTED_SHADOW_CASES, "inverted shadow")
 
 
 def test_enclosing_scope_positions_are_flagged():
