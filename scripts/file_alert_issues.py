@@ -120,8 +120,11 @@ class GhTracker:
         self.repo = repo
 
     def _gh(self, *args: str) -> str:
-        r = self._run(["gh", *args, "--repo", self.repo],
-                      capture_output=True, text=True)
+        try:
+            r = self._run(["gh", *args, "--repo", self.repo],
+                          capture_output=True, text=True)
+        except FileNotFoundError as e:
+            raise RuntimeError(f"gh {' '.join(args)} failed: {e}") from e
         if r.returncode != 0:
             raise RuntimeError(f"gh {' '.join(args)} failed: {r.stderr.strip()}")
         return r.stdout

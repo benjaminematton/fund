@@ -254,3 +254,66 @@ def test_an_unreadable_db_exits_non_zero_having_filed_nothing(tmp_path, capsys):
                        "--apply"], run=run)
     assert rc != 0
     assert run.calls == []
+
+
+def test_missing_gh_binary_during_planning_is_reported_not_a_traceback(db, db_path, capsys):
+    """open_issue runs during plan_filings, before --apply is even consulted.
+    A bare FileNotFoundError from subprocess.run must not escape main()."""
+    _alert(db, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    db.close()
+
+    def run(argv, **kw):
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+
+    rc = _load().main([str(db_path), "--since", "2026-08-24"], run=run)
+    assert rc != 0
+    assert "tracker unavailable" in capsys.readouterr().err
+
+
+def test_missing_gh_binary_during_apply_is_reported_not_a_traceback(db, db_path, capsys):
+    """Here `gh` exists for the planning lookup (issue list) but disappears
+    before the mutating call — e.g. a PATH change between processes. The
+    apply-time FileNotFoundError must land as a FAILED line, not a crash."""
+    _alert(db, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    db.close()
+
+    def run(argv, **kw):
+        if "label" in argv and "create" in argv:
+            raise FileNotFoundError(2, "No such file or directory", "gh")
+        class R: returncode, stdout, stderr = 0, "[]", ""
+        return R()
+
+    rc = _load().main([str(db_path), "--since", "2026-08-24", "--apply"], run=run)
+    assert rc != 0
+    assert "FAILED" in capsys.readouterr().err
+
+
+def test_failing_label_create_is_reported_and_skips_only_that_filing(db, db_path, capsys):
+    """A failure in one filing's label-create must not abort the rest."""
+    _alert(db, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    _alert(db, "2026-08-24T13:00:00+00:00", code="pm_timeout",
+           text="pm_timeout AAPL — defaulted to hold")
+    db.close()
+
+    class FailLabelRun(RecordingRun):
+        def __call__(self, argv, **kw):
+            self.calls.append(argv)
+            failing = ("label" in argv and "create" in argv
+                       and "alert:unprotected_position" in argv)
+            class R:
+                returncode = 1 if failing else 0
+                stdout, stderr = "[]", "gh: HTTP 403"
+            return R()
+
+    run = FailLabelRun()
+    rc = _load().main([str(db_path), "--since", "2026-08-24", "--apply"], run=run)
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "FAILED" in err and "unprotected_position" in err
+
+    creates = [c for c in run.calls if "create" in c and "issue" in c]
+    assert not any("unprotected_position" in " ".join(c) for c in creates)
+    assert any("pm_timeout" in " ".join(c) for c in creates)  # second filing still ran
