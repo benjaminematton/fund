@@ -346,6 +346,24 @@ COLLISION_CASES = [
     # Added when the function-body twin moved to CLEAN_CASES, so the pair is
     # complete on both sides. Verified at module scope: the use above returns a
     # real timestamp and `time` afterwards is the captured value.
+    # `global` defeats the function-body exemption: the declared binding is the
+    # MODULE's, so the privacy guarantee the discriminator's function-body row
+    # rests on does not apply — the read below reaches the real module and
+    # returns a live timestamp rather than raising UnboundLocalError. Twin of
+    # "nonlocal (function body)" in CLEAN_CASES, which cannot reach an import
+    # at all. Low reachability: no `global` or `nonlocal` statement exists
+    # anywhere in this repo today. It is written because the discriminator's
+    # own comment is false for it, not because anyone is about to write it.
+    ("global (function body declaring a module binding)", """
+        import time
+
+
+        def capture():
+            global time
+            grabbed = time.time
+            time = None
+            return grabbed
+    """, RULE_COLLISION),
     ("match-capture (module scope)", """
         import time
 
@@ -574,25 +592,47 @@ CALLABLE_CAPTURE_CASES = [
 # can never silently resolve to the stdlib" — is true for function BODIES only.
 # Each of these was confirmed by executing it.
 #
-# KNOWN SHAPE, ruled deliberate 2026-08-25 — the most likely future false
-# positive in this change, documented so it is met as a decision and not as a
-# surprise CI failure. A class body reports a collision for ANY watched
-# rebinding, so a pydantic/dataclass model with a field named `date` in a file
-# doing `from datetime import date` reddens:
+# KNOWN SHAPE, ruled deliberate 2026-08-25 and NARROWED the same day in final
+# review. Documented so it is met as a decision, not as a surprise CI failure.
+#
+# THE RULING, as it now stands. A class-body rebinding of a watched name is a
+# collision ONLY WHERE A USE ACTUALLY REACHES THE IMPORT. This one is a true
+# positive and must stay flagged:
 #
 #     from datetime import date
-#     class Row:
-#         date: date = None          # <- collision reported here
+#     class Bar(BaseModel):
+#         date: date            # <- annotation evaluates to the import, THEN rebinds
+#
+# THE NARROWING, and why it was needed. The rule originally fired on the mere
+# EXISTENCE of an import/rebind pair, never checking that a use PRECEDES the
+# rebinding — so it also reddened all of these, none of which use the name at
+# all, making the error message ("a use above the rebinding still resolves to
+# it") literally false:
+#
+#     @dataclass                      class Bar(NamedTuple):
+#     class Bar:                          time: str
+#         date: str
+#     class Kind(Enum):               class Bar:
+#         time = 1                        def date(self): ...
+#
+# A position where the code and the discriminator disagree is exactly what the
+# discriminator exists to prevent, so these are fixed rather than documented.
+# The ruling stands for the case that HAS a use; it never should have covered
+# the case that has none.
+#
+# THE NUANCE THE FIX MUST NOT LOSE: an annotation IS a use. `date: date`
+# evaluates the annotation — resolving to the import — and only then rebinds,
+# on the SAME line. A naive "report only if a Load appears at a strictly lower
+# lineno" would wrongly clear it. The two shapes are written below and in
+# CLEAN_CASES as a matched pair so the boundary is pinned from both sides.
 #
 # state/models.py:8 is exactly that import and holds the models; there are zero
-# such fields today. It is a TRUE positive under the discriminator — in a class
-# body a use above the field genuinely reaches the module, which is the
-# ambiguity the rule exists to name — and it is consistent with narrowing
-# `numpy` out, since `date` IS a watched base and `numpy` is not. The remedy
-# for a developer who hits it is to rename the field, or to import the module
-# (`import datetime`) rather than the name. Do not "fix" it by exempting class
-# bodies: that would delete the class-body row of the discriminator, which
-# four cases below depend on.
+# uses of either shape today. Consistency with narrowing `numpy` out is
+# unchanged: `date` IS a watched base and `numpy` is not. The remedy for a
+# developer who hits the true positive is to rename the field, or to import the
+# module (`import datetime`) rather than the name. Do not "fix" it by exempting
+# class bodies: that would delete the class-body row of the discriminator,
+# which four cases below depend on.
 ENCLOSING_SCOPE_CASES = [
     ("class body: LOAD_NAME falls back to the global import", """
         import time
@@ -696,6 +736,17 @@ ENCLOSING_SCOPE_CASES = [
         class C(time.sleep):
             pass
     """, RULE_CLOCK_REF),
+    # Twin of "class-body field with NO use (GUARD)" in CLEAN_CASES. The whole
+    # difference is the annotation: `date: date` evaluates the annotation to
+    # the import and only then rebinds, on the same line, so a use really does
+    # reach the import. `date: str` does not. Keep the pair named together.
+    ("class-body field annotated with the import itself (use, then rebind)", """
+        from datetime import date
+
+
+        class Bar(BaseModel):
+            date: date
+    """, RULE_COLLISION),
 ]
 
 EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
@@ -837,6 +888,24 @@ CLEAN_CASES = [
                 # unexamined shape.
                 return time.monotonic()
     """),
+    # Twin of "global (function body ...)" in COLLISION_CASES. `nonlocal` can
+    # only bind an ENCLOSING FUNCTION's local, never a module-level import, so
+    # it can never reach the stdlib and must stay clean. That asymmetry with
+    # `global` is the whole content of the pair.
+    ("nonlocal (function body)", """
+        import time
+
+
+        def outer():
+            time = None
+
+            def inner():
+                nonlocal time
+                time = object()
+                return time
+
+            return inner
+    """),
     ("local variable named `datetime` shadowing the class", """
         def label(rows):
             datetime = Formatter(rows)
@@ -977,6 +1046,87 @@ CLEAN_CASES = [
 
         def at(value):
             return pd.Timestamp(value)
+    """),
+    # gmtime and localtime belong to the same arity family as ctime/asctime —
+    # they read the clock ONLY with no argument — but sat unconditionally in
+    # the forbidden refs. The third case is the docstring's own justifying
+    # example, which failed on itself: strftime with two args is correctly
+    # pure, while the gmtime(0) feeding it was flagged, so the inconsistency
+    # was visible in a single line. Twins of the bare `time.gmtime()` /
+    # `time.localtime()` violations in CLOCK_SPELLING_CASES.
+    ("time.gmtime(epoch) is a pure converter", """
+        import time
+
+
+        def stamp():
+            return time.gmtime(0)
+    """),
+    ("time.localtime(epoch) is a pure converter", """
+        import time
+
+
+        def stamp(epoch):
+            return time.localtime(epoch)
+    """),
+    ("time.strftime('%Y', time.gmtime(0)) — the docstring's own example", """
+        import time
+
+
+        def year():
+            return time.strftime("%Y", time.gmtime(0))
+    """),
+    # --- round five: class-body fields that never USE the name -------------
+    # Four shapes that reddened on the mere existence of an import/rebind pair.
+    # None of them uses the name, so nothing resolves to the import and the
+    # collision message is false. Twin of "class-body field annotated with the
+    # import itself" in ENCLOSING_SCOPE_CASES, which DOES use it and stays a
+    # violation — the annotation is the whole difference.
+    ("class-body field with NO use (GUARD): @dataclass date: str", """
+        from dataclasses import dataclass
+        from datetime import date
+
+
+        @dataclass
+        class Bar:
+            date: str
+    """),
+    ("class-body field with NO use (GUARD): NamedTuple time: str", """
+        import time
+        from typing import NamedTuple
+
+
+        class Bar(NamedTuple):
+            time: str
+    """),
+    ("class-body field with NO use (GUARD): Enum member named time", """
+        import time
+        from enum import Enum
+
+
+        class Kind(Enum):
+            time = 1
+    """),
+    ("class-body field with NO use (GUARD): method named date", """
+        from datetime import date
+
+
+        class Bar:
+            def date(self):
+                return None
+    """),
+    # Controls: these two were already clean and must stay so. The first is an
+    # unwatched name, the second has no import to collide with — together they
+    # keep the fix from being "stop checking class bodies".
+    ("class-body control: run_date: str is an unwatched name", """
+        from datetime import date
+
+
+        class Bar:
+            run_date: str
+    """),
+    ("class-body control: date: str with no import of `date`", """
+        class Bar:
+            date: str
     """),
     # --- round four: two FALSE-POSITIVE GUARDS ----------------------------
     # Both of these read at a glance like violations — a name spelled `time`
