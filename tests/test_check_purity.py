@@ -463,6 +463,58 @@ CLEAN_CASES = [
                     return time.monotonic()
             return None
     """),
+    # Comprehension scoping, guarded from the other side. The violation table
+    # has `[None for time in ()]` silencing a module, which the collision rule
+    # also happens to catch — so these are what actually pin the comprehension
+    # branch of _SCOPE_NODES. A comprehension target is scoped to the
+    # comprehension in Python 3: it rebinds nothing outside, so reusing an
+    # imported name is legal and must not read as a same-scope collision.
+    # The name is genuinely imported in the file — that is the hinge.
+    ("comprehension target reusing an imported name — list", """
+        import json
+
+        _KEYS = [json for json in ("a", "b")]
+    """),
+    ("comprehension target reusing an imported name — set", """
+        import json
+
+        _KEYS = {json for json in ("a", "b")}
+    """),
+    ("comprehension target reusing an imported name — dict", """
+        import json
+
+        _KEYS = {json: 1 for json in ("a", "b")}
+    """),
+    ("comprehension target reusing an imported name — generator", """
+        import json
+
+        _KEYS = tuple(json for json in ("a", "b"))
+    """),
+    # Same shape as the comprehension pair above, for two more blocks that the
+    # violation tables were catching by a different route and so left unpinned.
+    ("`except ... as time` binds the caught exception, not the module", """
+        import time
+
+
+        def deadline(fn):
+            try:
+                return fn()
+            except TimeoutError as time:
+                # The caught exception carries its own .time; the module is
+                # shadowed inside this handler. A nested scope, so not a
+                # collision — and not the stdlib clock either.
+                return time.time
+    """),
+    ("a name bound to a local must not fall through to a star-import", """
+        from time import *
+
+
+        def run(sleep):
+            # `sleep` is the injected callable, not the one the star import
+            # would have supplied. Resolving to nothing must mean nothing —
+            # never "guess the star module".
+            sleep(1)
+    """),
 ]
 
 CLEAN_FILE = """
@@ -514,6 +566,13 @@ SLACKKIT_REAL_VIOLATIONS = [
     ("dotted prefix reaches subpackages: slackkit.real.helpers", {
         "slackkit/__init__.py": "",
         "orchestrator/daily.py": "from slackkit.real.helpers import retry\n",
+    }),
+    ("`from slackkit import real` — the module is the package, not the name", {
+        # The other three spellings all put "slackkit.real" in `node.module`,
+        # so they never reach the per-alias check. This one is the natural way
+        # to write it and is the only case that exercises that branch.
+        "slackkit/__init__.py": "",
+        "orchestrator/daily.py": "from slackkit import real\n",
     }),
     ("wall clock parked in slackkit/outbox.py", {
         # The better half of (d): outbox/render/fake/port are orchestrator's
