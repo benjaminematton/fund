@@ -127,9 +127,10 @@ roster immediately before dispatch, and state coverage ("polled 3 of 11").
 
 One `SendMessage` per rostered peer: the existing four fields (**did / doing / next / blocked**), plus
 
-- **capacity** — could you take any of these lanes at your next boundary, or are you too deep in
-  something else? The candidate lane list is inlined. The message states plainly that this is not an
-  assignment and nothing has been decided.
+- **capacity** — could you take **ownership** of one of these lanes at your next boundary, or are you
+  too deep in what you have? Owning a lane means running it — fanning out to subagents, or splitting
+  it — not typing it yourself. The candidate lane list is inlined. The message states plainly that
+  this is not an assignment and nothing has been decided.
 
 Deadline: subscribe with `SendMessage`'s `notify_when_idle` rather than `Bash(run_in_background: true):
 sleep 300`. It is one-shot, costs no tokens in the watched session, and expires after 12 hours.
@@ -152,6 +153,11 @@ six-hour session is not read blind. Compaction count is not observable, so age a
 must be labelled as proxies.
 
 ### Phase 4 — Reconcile
+
+**One lane, one overseer.** A lane is *owned*, never *worked*. The seat that takes it runs it — fans
+out to subagents, or fires `/split-the-plan` if it is big enough — and does not implement it directly.
+This is uniform: a seat that was already running and a chat opened this morning take a lane on exactly
+the same terms, so "covered" means the same thing in every row of the digest.
 
 Each candidate lane resolves to exactly one of:
 
@@ -176,23 +182,31 @@ List what each will own. No prompts to paste, no session ids to copy. When they 
 session with `startedAt > T` whose cwd is at or under the repo. If fewer appear than asked, bind what
 exists, name the unbound lanes, and wait.
 
-**Provisioning is conditional on why the chat exists:**
+**Standup provisions nothing.** A new chat is an overseer seat, and an overseer does not edit files —
+it reconciles, fans out, and reviews. It sits in the repo root. Isolation belongs one level down, to
+whatever that overseer dispatches, and it is that overseer's decision to make with the lane in front of
+it. Standup creating worktrees for seats that may never write a line is provisioning cost paid on
+speculation, and a worktree nobody wrote in still has to be reaped.
 
-| Reason | Provisioning |
-|---|---|
-| **Parallel** — lane touches a region no live session holds | Worktree **outside** the repo, `settings.local.json` copied in, provisioned one at a time, the lane's `done when` command run and recorded as its baseline |
-| **Fresh head** — lane is a region a live session holds **which answered capacity no** | No worktree. The new chat inherits that session's branch and tree. The outgoing session is told it has released the region, and the release is written as its own `map.md` row |
+The consequence worth stating: **this skill never creates a branch, a worktree, or a commit.** It reads,
+it messages, and it writes two files under `~/.claude/align/`. Everything that touches the repo is done
+by a seat that owns a lane.
 
 **Silence is not a release.** A rostered session that never answered has not given up its region: its
 lanes are treated as needing a chat only where no live session claims that region. Replacing a silent
 session's head is a decision for the human, never an inference from a missing reply.
 
-State which case each lane is, and why, in one line each. An implied release is not a release: two live
-heads on one branch is how work is lost.
+Then brief each bound session as an **overseer**, not an implementer:
 
-Then brief each bound session with its lane — the issue number, the region, where to work (absolute
-paths under its worktree, never the repo root), its neighbours, and that
-`coordinating-with-peer-sessions` governs how they talk.
+- the lane: issue number, title, and the region it covers
+- **that it owns the lane, and owns how the lane gets done** — `subagent-driven-development` for a lane
+  that fits one seat's fan-out, `/split-the-plan` for one that needs several. Where it needs a plan
+  first, `writing-plans`. The choice is the overseer's, not standup's
+- that isolation is its call: worktrees for what it dispatches, provisioned outside the repo, one at a
+  time
+- its neighbours — who owns the adjacent lanes, under what name — and that
+  `coordinating-with-peer-sessions` governs how they talk
+- that it reports back at the next standup, not continuously
 
 ### Phase 6 — Record
 
