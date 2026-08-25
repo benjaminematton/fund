@@ -13,7 +13,7 @@ from typing import Callable
 
 from gate.tickets import validate_order
 from orchestrator.clock import Clock, iso
-from slackkit.outbox import append_event
+from slackkit.outbox import append_alert, append_event
 from state.transition import try_transition
 
 log = logging.getLogger(__name__)
@@ -111,7 +111,8 @@ def _deny(conn, clock, reason: str, alert_text: str) -> dict:
         "permissionDecisionReason": reason,
     }}
     try:
-        append_event(conn(), "alert", {"text": alert_text}, iso(clock.now()))
+        append_alert(conn(), "order_gate_denied", alert_text,
+                     now_iso=iso(clock.now()))
     # Logged, never silent: if this path is broken, denies go dark again.
     except Exception as exc:
         log.error("order gate: DENIED %s but could not record the alert —"
@@ -384,10 +385,11 @@ def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
     session_id = str(getattr(result, "session_id", None) or "unknown")
     if isinstance(usd, bool) or not isinstance(usd, (int, float)) \
             or usd != usd or usd in (float("inf"), float("-inf")):
-        append_event(conn, "alert", {
-            "text": f"cost_unavailable {seat} — turn completed with no"
-                    f" total_cost_usd estimate (session {session_id}); the"
-                    " day's est. inference cost understates spend"}, now_iso)
+        append_alert(conn, "cost_unavailable",
+                     f"cost_unavailable {seat} — turn completed with no"
+                     f" total_cost_usd estimate (session {session_id}); the"
+                     " day's est. inference cost understates spend",
+                     now_iso=now_iso)
         return False
     record_cost(conn, run_date, seat, session_id, float(usd), now_iso)
     return True

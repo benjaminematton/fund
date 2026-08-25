@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Callable
 from orchestrator.clock import Clock, iso
-from slackkit.outbox import append_event
+from slackkit.outbox import append_alert, append_event
 from state.transition import EDGES, try_transition
 
 def _statuses(conn):
@@ -74,10 +74,11 @@ def _apply(conn, row, o, now) -> bool:
                     dec = conn.execute("SELECT status FROM decisions WHERE id=?",
                                        (t["decision_id"],)).fetchone()
                     dec_status = dec["status"] if dec is not None else "missing"
-                    append_event(conn, "alert", {"text":
+                    append_alert(conn, "fill_on_unapproved_decision",
                         f"order {coid[:8]} filled but decision "
                         f"{t['decision_id']} was '{dec_status}', not "
-                        "'approved' — left as-is, manual review"}, now)
+                        "'approved' — left as-is, manual review",
+                        now_iso=now)
         return moved
     if st == "partially_filled":
         filled_qty, filled_avg_price = _parse_fill(o)
@@ -87,8 +88,9 @@ def _apply(conn, row, o, now) -> bool:
         conn.commit()
         if try_transition(conn, "orders", {"client_order_id": coid},
                           "submitted", "partially_filled", now):
-            append_event(conn, "alert", {"text":
-                f"partial fill {row['symbol']} {coid[:8]} — manual review"}, now)
+            append_alert(conn, "partial_fill_manual_review",
+                f"partial fill {row['symbol']} {coid[:8]} — manual review",
+                now_iso=now)
         return False
     return False
 
@@ -146,36 +148,36 @@ def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
             raise ValueError("broker returned no order for this client_order_id")
         status = o.get("status")
     except Exception as e:
-        append_event(conn, "alert", {"text": stale.format(
-            why=f"re-query raised {type(e).__name__}{cancel_err}")}, now)
+        append_alert(conn, "order_unreconciled", stale.format(
+            why=f"re-query raised {type(e).__name__}{cancel_err}"), now_iso=now)
         return False
     if status in ("filled", "partially_filled"):
         try:
             return _apply(conn, row, o, now)      # the race: record the fill
         except Exception as e:
-            append_event(conn, "alert", {"text": stale.format(
+            append_alert(conn, "order_unreconciled", stale.format(
                 why=f"broker reports '{status}' but the payload is "
-                    f"unparseable ({type(e).__name__})")}, now)
+                    f"unparseable ({type(e).__name__})"), now_iso=now)
             return False
     if status not in _CONFIRMED_DEAD:
-        append_event(conn, "alert", {"text": stale.format(
-            why=f"broker still reports '{status}'{cancel_err}")}, now)
+        append_alert(conn, "order_unreconciled", stale.format(
+            why=f"broker still reports '{status}'{cancel_err}"), now_iso=now)
         return False
     dead = _CONFIRMED_DEAD[status]
     cur = conn.execute("SELECT status, qty FROM orders WHERE client_order_id=?",
                        (coid,)).fetchone()
     from_status = cur["status"] if cur is not None else "submitted"
     if (from_status, dead) not in EDGES["orders"]:
-        append_event(conn, "alert", {"text": stale.format(
+        append_alert(conn, "order_unreconciled", stale.format(
             why=f"broker reports '{status}' but the order is '{from_status}'"
-                " — no legal transition")}, now)
+                " — no legal transition"), now_iso=now)
         return False
     try:
         fill = _dead_fill(o)
     except Exception as e:
-        append_event(conn, "alert", {"text": stale.format(
+        append_alert(conn, "order_unreconciled", stale.format(
             why=f"broker reports '{status}' but the fill numbers are "
-                f"unparseable ({type(e).__name__})")}, now)
+                f"unparseable ({type(e).__name__})"), now_iso=now)
         return False
     if fill is not None:                 # shares really changed hands
         conn.execute("UPDATE orders SET filled_qty=?, filled_avg_price=?,"
@@ -190,10 +192,11 @@ def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
             moved = t is not None and try_transition(
                 conn, "decisions", {"id": t["decision_id"]},
                 "approved", "failed", now)
-            append_event(conn, "alert", {"text":
+            append_alert(conn, "order_unfilled_at_cap",
                 f"order {coid[:8]} unfilled after {int(max_wait_s)}s — "
                 f"{dead} at the broker, "
-                f"{'decision failed' if moved else 'decision unchanged'}"}, now)
+                f"{'decision failed' if moved else 'decision unchanged'}",
+                now_iso=now)
         else:                            # a real position exists: executed
             filled_qty, filled_avg_price = fill
             append_event(conn, "fill", {
@@ -204,11 +207,11 @@ def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
             moved = t is not None and try_transition(
                 conn, "decisions", {"id": t["decision_id"]},
                 "approved", "executed", now)
-            append_event(conn, "alert", {"text":
+            append_alert(conn, "order_partial_then_dead",
                 f"order {coid[:8]} partial {filled_qty} of {cur['qty']} then "
                 f"{dead} at the broker after {int(max_wait_s)}s, "
-                f"{'decision executed' if moved else 'decision unchanged'}"},
-                now)
+                f"{'decision executed' if moved else 'decision unchanged'}",
+                now_iso=now)
     return False
 
 
@@ -265,7 +268,8 @@ def reconcile_orders(conn: sqlite3.Connection, *, clock: Clock, broker,
         cur = conn.execute("SELECT status FROM orders WHERE client_order_id=?",
                            (coid,)).fetchone()
         cur_status = cur["status"] if cur is not None else "submitted"
-        append_event(conn, "alert", {"text":
+        append_alert(conn, "order_unresolved_at_cap",
             f"order {coid[:8]} unresolved — broker unreachable or response "
-            f"unparseable ({reason}) at cap, left {cur_status} for retry"}, now)
+            f"unparseable ({reason}) at cap, left {cur_status} for retry",
+            now_iso=now)
     return filled
