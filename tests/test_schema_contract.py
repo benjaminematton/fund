@@ -7,15 +7,19 @@ compares them, so a column added to one side alone drifts silently.
 Both sides are PARSED, never restated: a column list typed out here would be
 a third source of truth. The comparison is structural (names, types, NOT
 NULL, DEFAULT, CHECK, UNIQUE, PRIMARY KEY, REFERENCES), not textual, so
-reformatting, `--` comments and `CREATE TABLE IF NOT EXISTS` are all
-invisible to it. `PRAGMA table_info()` is not usable here: it does not expose
-CHECK constraints, which is exactly where the allowed-value lists live.
+reformatting, `--` and `/* */` comments and `CREATE TABLE IF NOT EXISTS` are
+all invisible to it. `PRAGMA table_info()` is not usable here: it does not
+expose CHECK constraints, which is exactly where the allowed-value lists live.
 
-Inside a `CREATE TABLE`, anything the parser cannot account for raises rather
-than being skipped: an unknown column constraint, a trailing table option
-(`STRICT`, `WITHOUT ROWID`), a quoted identifier, or a `CREATE TEMP`/`CREATE
-VIRTUAL TABLE`. Statements that are not `CREATE TABLE` at all (`CREATE
-INDEX`, ...) are skipped by design. DDL outside a §2 sql fence is not seen.
+Nothing carrying a `TABLE` keyword is skipped. Inside a `CREATE TABLE`, an
+unknown column constraint, a trailing table option (`STRICT`, `WITHOUT
+ROWID`) or a quoted identifier raises. So does a statement that is not a
+plain `CREATE TABLE` but mentions `TABLE`: a `CREATE TEMP`/`CREATE VIRTUAL
+TABLE` this comparator cannot represent, and — the route that actually got
+exploited — a statement that has SWALLOWED a following `CREATE TABLE`
+because the statement above it is missing its `;`. Only statements with no
+`TABLE` in them at all (`CREATE INDEX`, `PRAGMA`, ...) are skipped, by
+design. DDL outside a §2 sql fence is not seen.
 
 The failure mode this file dies of quietly is under-extraction — a spec fence
 that stops yielding tables leaves a green test comparing almost nothing — so
@@ -61,7 +65,16 @@ _PUNCT = "(),;"
 
 
 def _tokenize(sql: str) -> list[str]:
-    """SQL text -> tokens. Drops `--` comments, keeps string literals whole."""
+    """SQL text -> tokens. Drops `--` and `/* */` comments, keeps string
+    literals whole.
+
+    Both comment forms are dropped for the same reason: a comment is not part
+    of the structure being compared, so it must be invisible. `/*` used to
+    fall through to the operator branch and become a token, which pushed the
+    `CREATE` of the following statement off the front and made the whole
+    table vanish silently. The string-literal branch below still wins on `'`,
+    so a `/*` inside a literal is never read as a comment.
+    """
     toks: list[str] = []
     i, n = 0, len(sql)
     while i < n:
@@ -71,6 +84,14 @@ def _tokenize(sql: str) -> list[str]:
         elif sql.startswith("--", i):
             nl = sql.find("\n", i)
             i = n if nl < 0 else nl + 1
+        elif sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end < 0:
+                raise ValueError(
+                    f"unterminated /* block comment at offset {i}: everything"
+                    " after it would be discarded, taking any CREATE TABLE"
+                    " with it")
+            i = end + 2
         elif ch == "'":
             j = i + 1
             while j < n:
@@ -247,19 +268,29 @@ def _is_table_constraint(item: list[str]) -> bool:
 
 
 def _parse_tables(sql: str) -> dict[str, Table]:
-    """Every CREATE TABLE in `sql`, keyed by table name. CREATE INDEX / VIEW /
-    TRIGGER are ignored; any other CREATE ... TABLE form raises."""
+    """Every CREATE TABLE in `sql`, keyed by table name. Statements with no
+    `TABLE` keyword (CREATE INDEX / VIEW / TRIGGER, PRAGMA, ...) are ignored;
+    every other shape raises rather than being skipped."""
     tables: dict[str, Table] = {}
     for stmt in _split_top(_tokenize(sql), ";"):
-        head = [t.upper() for t in stmt[:4]]
-        if not head or head[0] != "CREATE":
-            continue
-        if head[:2] != ["CREATE", "TABLE"]:
+        upper = [t.upper() for t in stmt]
+        if upper[:2] != ["CREATE", "TABLE"]:
+            # The whole statement is searched, not just its first tokens. A
+            # statement that CONTAINS `CREATE TABLE` without starting with one
+            # has swallowed a real table — the statement above it is missing
+            # its `;` — and used to be dropped here without a word.
+            if any(upper[k:k + 2] == ["CREATE", "TABLE"]
+                   for k in range(1, len(upper))):
+                raise ValueError(
+                    f"{' '.join(stmt[:6])!r}...: a CREATE TABLE is buried"
+                    " inside this statement instead of starting it, so the"
+                    " statement above it is missing its `;` — the swallowed"
+                    " table would not be compared at all. Add the semicolon.")
             # CREATE INDEX / VIEW / TRIGGER are ignored on purpose. CREATE TEMP
             # TABLE and CREATE VIRTUAL TABLE are tables this comparator cannot
             # represent, and silently skipping one is how a table stops being
             # compared without anyone noticing.
-            if "TABLE" in head:
+            if "TABLE" in upper:
                 raise ValueError(
                     f"{' '.join(stmt[:4])!r}: only plain CREATE TABLE is"
                     " compared — extend the parser rather than letting this"
@@ -381,9 +412,14 @@ def _diff(name: str) -> list[str]:
 
 
 # Independent of the parser: raw-text CREATE ... TABLE lines in a fence. Used
-# only as a LOWER bound on how many statements the text declares — it misses a
-# `CREATE` and `TABLE` split across lines, so the comparison below is one-sided
-# and a reformat can never make it fire.
+# only as a LOWER bound on how many statements the text declares — it is
+# `^`-anchored per line, so it undercounts a `CREATE` and `TABLE` split across
+# two lines, and it counts two statements sharing one line as one. The
+# comparison below is therefore one-sided and a reformat can never make it
+# fire. Those same blind spots are why this floor must never be the only thing
+# standing between a dropped table and a green run: an under-count here gives
+# a silent parser skip exactly enough slack to hide in. See
+# `test_spec_extraction_did_not_come_up_short` for what that cost once.
 _CREATE_TABLE_LINE = re.compile(r"(?im)^[ \t]*CREATE\b[^;\n]*\bTABLE\b")
 
 
@@ -415,6 +451,24 @@ def test_spec_extraction_did_not_come_up_short():
     This guards the SIZE of the extraction, not its correctness. Which
     particular tables must survive is pinned by the two existence tests, from
     both directions.
+
+    It is a backstop, and it is only safe to describe it as one now. Before
+    the parser learned to raise on a swallowed statement, this floor was the
+    SOLE guard on that route, and it was defeated by a two-part edit with no
+    typo in it. Demonstrated against this repo by adding a `positions` table
+    to `contracts.md` §2 that `schema.sql` lacks — the exact drift this file
+    exists to catch:
+
+        `--` comment before it        parsed=10 declared=10  -> failed (right)
+        `/* */` comment before it     parsed=9  declared=10  -> failed HERE only
+        `/* */` + `CREATE`/`TABLE`
+          split across two lines      parsed=9  declared=9   -> 16 passed
+
+    Both ingredients were legal: `/* */` is ordinary SQL, and the line split
+    is a reformat this suite's own negative controls require to stay green.
+    The fix was in the parser (block comments are now stripped, a buried
+    `CREATE TABLE` now raises), not in this operator: `==` would not have
+    caught the third row either, and it would fire on a legitimate reformat.
     """
     for label, (raw, names) in SPEC_EXTRACTION.items():
         assert names, (
@@ -431,6 +485,13 @@ def test_spec_extraction_did_not_come_up_short():
 
 
 def test_every_spec_table_is_declared_in_schema():
+    """Also the schema side's under-extraction alarm, so it needs no floor of
+    its own: a table that stops parsing out of `state/schema.sql` drops out of
+    SCHEMA_TABLES and lands here. Verified by swallowing `signals` in
+    schema.sql behind a `/* */` comment plus a `CREATE`/`TABLE` line split —
+    this test failed with "signals ... absent from state/schema.sql" while the
+    rest of the suite stayed green.
+    """
     missing = [t for t in BOUND if t not in SCHEMA_TABLES]
     assert not missing, (
         "declared in a canonical spec §2 but absent from state/schema.sql: "
