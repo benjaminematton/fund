@@ -1169,6 +1169,46 @@ PACKAGE_RELATIVE_CLEAN_TREES = [
     }),
 ]
 
+# --- deduplication: the ONLY count assertions in this file -----------------
+#
+# Every other assertion here is existence-based — "did rule X fire" — which is
+# deliberate and must stay that way, because it lets an implementer reword or
+# re-route a message without breaking a test. That design is structurally blind
+# to one thing: the SAME violation reported twice.
+#
+# Two blocks in the lint exist only to deduplicate. A comprehension's outermost
+# iterable and a parameter's annotation are each reachable by two paths through
+# the scanner, and each block suppresses the second. Delete either and the lint
+# stays correct about WHAT is wrong while printing it twice — so no existence
+# check moves, the ablation scores the block as dead, and the next person
+# removes it. The only symptom is doubled output that nobody traces back. That
+# is the same unverified-purpose failure this lane has spent its length
+# closing, with a cosmetic blast radius instead of a correctness one.
+#
+# SCOPE, deliberately narrow (ruled 2026-08-25): these two minimal snippets
+# assert DEDUPLICATION, not a general contract on error counts. Each is chosen
+# to produce exactly one violation by exactly one rule, so the count is
+# unambiguous. If a future rule legitimately fires twice on one of these
+# snippets, the right fix is to update THESE TWO CASES deliberately — not to
+# loosen them back to existence checks, and not to freeze counts anywhere else
+# in this file.
+DEDUP_CASES = [
+    ("comprehension's outermost iterable, reported once", """
+        import time
+
+
+        class C:
+            vals = [x for x in time.time()]
+    """, 1),
+    ("parameter annotation, reported once", """
+        import time
+
+
+        def f(x: time.time = None):
+            pass
+    """, 1),
+]
+
 
 # --- assertions ------------------------------------------------------------
 
@@ -1215,6 +1255,20 @@ def _assert_trees_accepted(cases, label):
     assert not rejected, (
         f"{label}: purity lint exited non-zero for {len(rejected)} of "
         f"{len(cases)} legitimate tree(s): " + "; ".join(rejected))
+
+
+def _assert_error_count(cases, label):
+    """Exact error counts. Used ONLY by DEDUP_CASES — see the scope note there
+    before adding a caller."""
+    wrong = []
+    for name, src, want in cases:
+        errors = _errors_for(src)
+        if len(errors) != want:
+            wrong.append(f"{name} -> wanted {want}, got {len(errors)}: {errors}")
+    assert not wrong, (
+        f"{label}: {len(wrong)} of {len(cases)} case(s) reported the wrong "
+        f"number of errors. The same violation reported twice is a dedup "
+        f"block gone missing, not a new violation: " + "; ".join(wrong))
 
 
 def _assert_none_flagged(cases, label):
@@ -1307,6 +1361,12 @@ def test_slackkit_init_must_stay_import_free():
 
 def test_slackkit_real_is_out_of_bounds_for_pure_packages():
     _assert_trees_rejected(SLACKKIT_REAL_VIOLATIONS, "slackkit.real")
+
+
+def test_one_violation_is_reported_once():
+    """Pins the two deduplication blocks, which no existence check can reach.
+    Read the scope note on DEDUP_CASES before changing either number."""
+    _assert_error_count(DEDUP_CASES, "deduplication")
 
 
 def test_relative_and_class_body_imports_are_not_the_stdlib():
