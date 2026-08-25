@@ -85,8 +85,24 @@ both degrade to human-named lanes rather than to a guess.
 gh issue list --state open --label wayfinder:map --json number,title,body
 ```
 
-Frontier query: open sub-issues of that map, minus any with `issue_dependencies_summary.blocked_by
-> 0`, minus any already claimed in `map.md`, in map order. These are the **candidate lanes**.
+List the map's children — GitHub sub-issues where the repo has them enabled:
+
+```bash
+gh api repos/{owner}/{repo}/issues/<n>/sub_issues --jq '.[] | {number, title, state}'
+```
+
+Where sub-issues are not enabled, that call returns nothing usable: fall back to the task list in the
+map issue's body, whose children each carry a `Part of #<n>` line at the top of their own body — the
+convention documented in `docs/agents/issue-tracker.md`.
+
+Frontier query: for each open child, check its own blockers —
+
+```bash
+gh api repos/{owner}/{repo}/issues/<child> --jq '.issue_dependencies_summary.blocked_by'
+```
+
+— and keep those open children whose own `blocked_by` is `0` and that are not already claimed in
+`map.md`, in map order. These are the **candidate lanes**.
 
 **Each candidate lane carries a region**, read from its issue body — Phase 4's collision check compares
 that region against what each session says it owns, so a lane without one cannot be reconciled. An
@@ -140,22 +156,26 @@ roster immediately before dispatch, and state coverage ("polled 3 of 11").
 ### Phase 2 — Poll
 
 One `SendMessage` per rostered peer: the existing four fields (**did / doing / next / blocked**), plus
+two more — six fields in total:
 
 - **capacity** — could you take **ownership** of one of these lanes at your next boundary, or are you
   too deep in what you have? Owning a lane means running it — fanning out to subagents, or splitting
   it — not typing it yourself. The candidate lane list is inlined. The message states plainly that
   this is not an assignment and nothing has been decided.
+- **owns** — regions, not filenames (`parse_config` and its callers; the retry block in `send()`).
+  "nothing" is a complete answer. This is the field Phase 4's collision check compares each lane's
+  region against.
 
 Deadline: subscribe with `SendMessage`'s `notify_when_idle` rather than `Bash(run_in_background: true):
 sleep 300`. It is one-shot, costs no tokens in the watched session, and expires after 12 hours.
 
 **An idle notice is not a reply.** It fires when the watched session next finishes a turn — and fires
 immediately if that session is already idle, which can happen before it has read the poll at all. The
-notice bounds the wait; the four fields are what count. Collection ends on a full house, or when every
+notice bounds the wait; the six fields are what count. Collection ends on a full house, or when every
 subscribed session has both notified and had a turn since the poll landed. A session that notifies
 without answering is silent, and is treated as silent.
 
-### Phase 3 — Digest, to everyone
+### Phase 3 — Digest
 
 Unchanged in shape: one block per session, silent sessions named as silent, findings surfaced not
 resolved, each flag marked reported or verified with the method named, and the absence rule — a session
@@ -166,17 +186,24 @@ size. A self-report is the routing input; the numbers sit next to it so a "yes, 
 six-hour session is not read blind. Compaction count is not observable, so age and size are proxies and
 must be labelled as proxies.
 
+This phase builds the digest and stops — it does not write it to disk, broadcast it, or report to the
+human. Phase 6 does all three, exactly once each.
+
 ### Phase 4 — Reconcile
 
-**One lane, one overseer.** A lane is *owned*, never *worked*. The seat that takes it runs it — fans
-out to subagents, or fires `/split-the-plan` if it is big enough — and does not implement it directly.
-This is uniform: a seat that was already running and a chat opened this morning take a lane on exactly
-the same terms, so "covered" means the same thing in every row of the digest.
+**One lane, one overseer** — the seat that owns a lane runs it, and never types it itself. A lane is
+*owned*, never *worked*. The seat that takes it runs it — fans out to subagents, or fires
+`/split-the-plan` if it is big enough — and does not implement it directly. This is uniform: a seat
+that was already running and a chat opened this morning take a lane on exactly the same terms, so
+"covered" means the same thing in every row of the digest.
 
 Each candidate lane resolves to exactly one of:
 
 - **covered** — a live session answered capacity yes and its stated region does not collide
 - **needs a chat** — nobody free, or the only candidate's region collides
+
+A candidate lane becomes a **lane** once it resolves to either state above — every phase from here on
+says "lane," never "candidate."
 
 **Region**, throughout, means what `get-aligned` means by it: an area of code, not a filename
 (`parse_config` and its callers; the retry block in `send()`). One file routinely has three owners, so
@@ -232,8 +259,21 @@ Then brief each bound session as an **overseer**, not an implementer:
 
 **Claim release.** Before writing new rows, check existing ones: a row whose `sessionId` is no longer
 live, or whose issue is closed, is released and struck. The measured failure in this class of system is
-not races over work — it is agents finishing and never letting go of the slot. Release is checked
-observationally (is the session live, is the issue closed), never by asking.
+not races over work — it is agents finishing and never letting go of the slot. Liveness is checked
+against the full, unfiltered `claude agents --json` listing — never against the Phase 1 roster, which
+was already filtered to sessions active since the last standup. That window governs who gets polled; it
+never governs who still exists. Release is checked observationally (is the session live, is the issue
+closed), never by asking.
+
+**Broadcast, once.** Send the digest to every rostered peer, including the silent ones — that is the
+part that makes it a standup. Give each copy a personalized tail naming what concerns them, never what
+they should do next: who is blocked on them, who shares their region, and which lane they now own, if
+any. A tail is a relevance filter, not an instruction slot — a peer cannot assign work to a peer,
+including by naming a lane "theirs by authorship." Unowned work goes to the human as a flag and stays
+unowned until they say otherwise.
+
+Report to the human last, leading with the unclaimed lanes and the flags — those are the parts needing
+a decision. This is the single broadcast and the single report for the run; Phase 3 does neither.
 
 ## 5. What does not change
 
