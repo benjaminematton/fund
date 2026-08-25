@@ -130,8 +130,6 @@ def _as_dollars(value) -> float | None:
     parse. Cousin of protection.py:_qty, which coerces SHARE counts and so
     rejects fractions and zero; a market value is legitimately fractional and
     legitimately zero, and zero is the answer that matters most here."""
-    if isinstance(value, bool):
-        return None
     try:
         n = float(value)
     except (TypeError, ValueError):
