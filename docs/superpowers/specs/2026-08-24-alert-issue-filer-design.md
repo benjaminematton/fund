@@ -118,7 +118,7 @@ any `append_event(...)` call anywhere passes the literal `"alert"` as its `kind`
 
 ### 3.3 The codes
 
-**Twenty-one codes are minted across the 25 emission sites; twenty of them file.** Five
+**Twenty-two codes are minted across the 25 emission sites; twenty-one of them file.** Five
 `reconcile.py` sites share one code, and `audit_failed` is minted but never files (see below). Most
 promote a token already sitting at the front of the text.
 
@@ -128,7 +128,8 @@ promote a token already sitting at the front of the text.
 | `orchestrator/daily.py:216` | `pm_timeout` | no |
 | `orchestrator/daily.py:337` | `ticket_open_after_exec` | no |
 | `orchestrator/preconditions.py:56` | `account_precondition_drift` | no |
-| `orchestrator/protection.py:196` | `unprotected_position` | yes |
+| `orchestrator/protection.py:199` (no broker wired / positions unreadable / orders unreadable / re-read failed) | `protection_unverified` | no |
+| `orchestrator/protection.py:255` (per-position exposure) | `unprotected_position` | yes |
 | `orchestrator/protection.py:353` | `accounting_shortfall` | yes |
 | `orchestrator/protection.py:360` | `accounting_unverified` | no |
 | `orchestrator/reconcile.py:77` | `fill_on_unapproved_decision` | no |
@@ -157,10 +158,11 @@ promote a token already sitting at the front of the text.
 - A multi-ticker alert (`missing_price_history`, `unmapped_sector`) carries no `ticker`; its list
   is already in the existing `tickers` payload.
 
-Upper bound on simultaneously-open issues: 17 unkeyed codes, plus 3 ticker-keyed codes
-(`gate_error`, `unprotected_position`, `accounting_shortfall`) times a 3-name watchlist — **26**.
-Without the keying rules, `ticket_open_after_exec` alone would file one issue per trading day
-forever.
+Upper bound on simultaneously-open issues: 18 unkeyed codes (the split added `protection_unverified`,
+unkeyed by construction — no code path that mints it also knows which position, if any, is at
+fault), plus 3 ticker-keyed codes (`gate_error`, `unprotected_position`, `accounting_shortfall`)
+times a 3-name watchlist — **27**. Without the keying rules, `ticket_open_after_exec` alone would
+file one issue per trading day forever.
 
 **`audit_failed` (`run_day.py:428`) is deliberately absent and never files.** It is a rollup that
 restates the day's other alerts — filing it would double every issue. It already carries the

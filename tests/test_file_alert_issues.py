@@ -33,14 +33,24 @@ def _load():
 
 
 class FakeTracker:
-    """Records every lookup; answers from a fixed open set."""
+    """Records every lookup; answers from a fixed open set.
+
+    Matches by SUPERSET, not exact tuple equality — `gh issue list --label`
+    means "has this label" for each `--label` given, not "has exactly this
+    label set" (F1). An exact-tuple dict lookup here would hide the real bug:
+    a query for an unkeyed label tuple must still match an issue carrying
+    that label plus a `ticker:` label, exactly as `gh` would."""
     def __init__(self, open_issues=None):
         self.open_issues = open_issues or {}      # labels tuple -> issue number
         self.lookups = []
 
     def open_issue(self, labels):
         self.lookups.append(labels)
-        return self.open_issues.get(tuple(labels))
+        wanted = set(labels)
+        for existing_labels, number in self.open_issues.items():
+            if wanted <= set(existing_labels):
+                return number
+        return None
 
 
 @pytest.fixture
@@ -109,6 +119,33 @@ def test_an_already_open_issue_files_nothing(db):
     filings, _ = _load().plan_filings(db, "2026-08-24", tracker)
     assert [f.action for f in filings] == ["skip"]
     assert filings[0].issue == 41
+
+
+def test_fake_tracker_matches_by_superset_like_gh_does():
+    """`gh issue list --label X` means 'has label X', not 'has exactly {X}'.
+    An issue carrying alert:foo AND ticker:NVDA satisfies a bare query for
+    alert:foo — this is real `gh` behaviour, not a bug in the fake."""
+    tracker = FakeTracker({("alert:foo", "ticker:NVDA"): 7})
+    assert tracker.open_issue(("alert:foo",)) == 7
+
+
+def test_split_codes_no_longer_collide_on_the_shared_prefix(db):
+    """THE F1 defect and its fix. Before the code split, every UNVERIFIED
+    protection alert shared the code `unprotected_position` with the
+    ticker-keyed exposure alert, so an open NVDA-keyed issue for that code
+    silently satisfied the lookup for an unrelated, unkeyed 'broker
+    unreachable' finding — an unverifiable state hiding behind a known
+    exposure. With the codes split (orchestrator/protection.py), the unkeyed
+    finding now queries `alert:protection_unverified`, which shares no label
+    with an issue filed under `alert:unprotected_position` + `ticker:NVDA`,
+    so gh's has-label superset match (reproduced above) cannot conflate them."""
+    _alert(db, "2026-08-24T13:38:02+00:00", code="protection_unverified",
+           text="position protection UNVERIFIED — no broker wired into the"
+                " run; a held position could be unprotected and nothing"
+                " would say so")
+    tracker = FakeTracker({("alert:unprotected_position", "ticker:NVDA"): 41})
+    filings, _ = _load().plan_filings(db, "2026-08-24", tracker)
+    assert [f.action for f in filings] == ["create"]
 
 
 def test_a_closed_issue_does_not_suppress_a_recurrence(db):
@@ -191,6 +228,21 @@ class RecordingRun:
         out = self.replies.get(key, "[]")
         class R: returncode, stdout, stderr = 0, out, ""
         return R()
+
+
+def test_gh_tracker_queries_only_open_issues():
+    """F3: nothing pins `--state open` on GhTracker.open_issue's real argv —
+    test_a_closed_issue_does_not_suppress_a_recurrence exercises only
+    FakeTracker, which has no notion of open vs closed at all, so deleting
+    `--state open` from GhTracker would pass the whole suite while suppressing
+    every recurrence after a human closes an issue."""
+    run = RecordingRun()
+    tracker = _load().GhTracker("benjaminematton/fund", run=run)
+    tracker.open_issue(("alert:pm_timeout",))
+    assert len(run.calls) == 1
+    argv = run.calls[0]
+    assert "--state" in argv
+    assert argv[argv.index("--state") + 1] == "open"
 
 
 def test_dry_run_performs_no_mutation(db, db_path, capsys):

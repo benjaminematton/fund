@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,7 +116,6 @@ class GhTracker:
     """The tracker, over the `gh` CLI (docs/agents/issue-tracker.md)."""
 
     def __init__(self, repo: str, run=None):
-        import subprocess
         self._run = run or subprocess.run
         self.repo = repo
 

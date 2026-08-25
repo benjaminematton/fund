@@ -33,7 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ["orchestrator", "agents", "scripts", "slackkit", "gate", "state",
-            "market", "evals"]
+            "market", "evals", "fundbt", "stratgate", "calibration", "ops"]
 CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 ALERT_FUNCS = ("append_alert", "_alert")
 
@@ -46,16 +46,35 @@ def _callee(node: ast.Call) -> str | None:
 
 
 def _forwarded_calls(tree: ast.AST) -> set[int]:
-    """Calls inside a function that declares its own `code` parameter."""
+    """Alert-raising calls that pass the enclosing function's own `code`
+    parameter through, unchanged, as their code argument — a forwarder, not
+    a dynamic code.
+
+    Narrower than "any call inside a function declaring `code`": that
+    exempted every call in such a function, including a second alert call
+    built from an f-string that happens to sit next to the real forward.
+    Only a call whose code-position argument (positional or `code=`
+    keyword) is exactly a bare reference to the parameter is exempted."""
     forwarded: set[int] = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        params = [a.arg for a in fn.args.args + fn.args.kwonlyargs]
+        params = [a.arg for a in
+                  fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs]
         if "code" not in params:
             continue
         for inner in ast.walk(fn):
-            if isinstance(inner, ast.Call):
+            if not isinstance(inner, ast.Call):
+                continue
+            name = _callee(inner)
+            if name not in ALERT_FUNCS:
+                continue
+            pos = 1 if name == "append_alert" else 2
+            passed = inner.args[pos] if len(inner.args) > pos else None
+            if passed is None:
+                passed = next((kw.value for kw in inner.keywords
+                              if kw.arg == "code"), None)
+            if isinstance(passed, ast.Name) and passed.id == "code":
                 forwarded.add(id(inner))
     return forwarded
 

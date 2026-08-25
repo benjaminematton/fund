@@ -196,9 +196,21 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
     failure it is built to prevent."""
     nap = sleep or (lambda _s: None)
 
-    def alert(text: str, ticker: str | None = None) -> None:
+    def alert(text: str, ticker: str) -> None:
         append_alert(conn, "unprotected_position", text,
                      now_iso=now_iso, ticker=ticker)
+
+    def unverified(text: str) -> int:
+        # Distinct from `alert()`'s code on purpose (F1): this fires with no
+        # ticker, and `gh issue list --label` matches on has-label, not
+        # has-exact-label-set — so under one shared code, an open
+        # ticker-keyed `unprotected_position` issue for some symbol would
+        # silently satisfy the lookup for THIS unrelated, unkeyed finding.
+        # An unverifiable broker state must never hide behind a known
+        # per-position exposure. Mirrors accounting_shortfall/
+        # accounting_unverified below.
+        append_alert(conn, "protection_unverified", text, now_iso=now_iso)
+        return 1
 
     def why(e: Exception) -> str:
         # The type alone ("ConnectionError") is not actionable at 16:05 on a
@@ -209,16 +221,16 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
         return list(broker.open_orders())
 
     if broker is None:
-        alert("position protection UNVERIFIED — no broker wired into the run;"
-              " a held position could be unprotected and nothing would say so")
-        return 1
+        return unverified(
+            "position protection UNVERIFIED — no broker wired into the run;"
+            " a held position could be unprotected and nothing would say so")
     try:
         positions = list(broker.open_positions())
     except Exception as e:
-        alert("position protection UNVERIFIED — could not read positions"
-              f" ({why(e)}); a held position could be unprotected and nothing"
-              " would say so")
-        return 1
+        return unverified(
+            "position protection UNVERIFIED — could not read positions"
+            f" ({why(e)}); a held position could be unprotected and nothing"
+            " would say so")
     if not positions:
         return 0
 
@@ -230,8 +242,7 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
     try:
         problems = _evaluate(conn, positions, read_orders())
     except Exception as e:
-        alert(unread("read", e))
-        return 1
+        return unverified(unread("read", e))
     if problems:
         # An OTO stop leg is created 'held' and can lag its parent in the API
         # by moments — and this runs immediately after reconciliation, which
@@ -250,8 +261,7 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
                 return 0
             problems = _evaluate(conn, positions, read_orders())
         except Exception as e:
-            alert(unread("re-read", e))
-            return 1
+            return unverified(unread("re-read", e))
     for symbol, text in problems:
         alert(text, ticker=symbol)
     return len(problems)

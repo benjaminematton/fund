@@ -19,6 +19,14 @@ def test_the_real_tree_is_clean():
     assert subprocess.run([sys.executable, str(SCRIPT)]).returncode == 0
 
 
+def test_package_list_is_not_narrower_than_the_repo_it_guards():
+    """F6: PACKAGES omitted fundbt, stratgate, calibration and ops — nothing
+    raises an alert there today, but a lint that only watches part of the
+    tree is a lint that can be silently outgrown."""
+    for pkg in ("fundbt", "stratgate", "calibration", "ops"):
+        assert pkg in _load().PACKAGES
+
+
 def test_a_direct_append_event_alert_is_rejected(tmp_path):
     p = tmp_path / "bad.py"
     p.write_text('append_event(conn, "alert", {"text": "x"}, now)\n')
@@ -75,4 +83,29 @@ def test_a_wrappers_own_callers_still_owe_a_literal(tmp_path):
 def test_a_wrapper_call_site_with_a_literal_is_accepted(tmp_path):
     p = tmp_path / "good.py"
     p.write_text('_alert(conn, clock, "seat_turn_failed", "x")\n')
+    assert _load().check_file(p) == []
+
+
+def test_forwarding_exemption_only_covers_the_actual_forward(tmp_path):
+    """F7: the old rule exempted EVERY call inside any function declaring a
+    `code` parameter, not only the call that forwards it. A second,
+    unrelated alert call in the same function — built from an f-string, not
+    a pass-through of the function's own `code` — must still owe a literal."""
+    p = tmp_path / "bad.py"
+    p.write_text(
+        "def _alert(conn, clock, code, text, **payload):\n"
+        "    log(text)\n"
+        "    append_alert(conn, code, text, now_iso=n, **payload)\n"
+        "    append_alert(conn, f'{code}_extra', text, now_iso=n)\n")
+    errors = _load().check_file(p)
+    assert len(errors) == 1 and "string literal" in errors[0]
+
+
+def test_a_posonly_code_param_is_still_recognized_as_a_forwarder(tmp_path):
+    """F7: posonlyargs must be collected alongside args/kwonlyargs when
+    looking for the function's own `code` parameter."""
+    p = tmp_path / "good.py"
+    p.write_text(
+        "def _alert(conn, clock, code, /, text, **payload):\n"
+        "    append_alert(conn, code, text, now_iso=n, **payload)\n")
     assert _load().check_file(p) == []

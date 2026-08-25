@@ -340,6 +340,9 @@ def test_a_positions_read_that_raises_alerts(fund_db):
     n = assert_positions_protected(fund_db, broker=Down(), now_iso=NOW)
     assert n == 1
     assert "ConnectionError" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "protection_unverified"
+    assert "ticker" not in payload
 
 
 def test_an_orders_read_that_raises_alerts(fund_db):
@@ -353,16 +356,52 @@ def test_an_orders_read_that_raises_alerts(fund_db):
     assert n == 1
     assert "ConnectionError" in _alerts(fund_db)[0]
     assert "401 unauthorized" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "protection_unverified"
+    assert "ticker" not in payload
+
+
+def test_a_re_read_failure_alerts_as_unverified(fund_db):
+    """The re-read (:251) can itself raise — a broker that answered once and
+    then dropped. That is exactly as unverifiable as the first read failing,
+    and must carry the same code, never `unprotected_position` (F1: an
+    unverifiable state must never be filed under the same code as a known,
+    ticker-keyed exposure)."""
+    class FlakesOnSecondRead(Broker):
+        def __init__(self):
+            super().__init__([_long()], [])
+            self.reads = 0
+
+        def open_positions(self):
+            self.reads += 1
+            if self.reads > 1:
+                raise ConnectionError("broker down")
+            return self._positions
+
+    _promised(fund_db)
+    n = assert_positions_protected(
+        fund_db, broker=FlakesOnSecondRead(), now_iso=NOW, sleep=lambda _s: None)
+    assert n == 1
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "protection_unverified"
+    assert "ticker" not in payload
 
 
 def test_a_missing_broker_alerts(fund_db):
     """A None broker in production is a wiring bug. It must scream, not skip:
     'no broker, so no check, so no alert' is the silent pass this whole module
-    exists to make impossible."""
+    exists to make impossible.
+
+    Its code is `protection_unverified`, not `unprotected_position` (F1): the
+    latter is reserved for a genuine per-position exposure and is always
+    ticker-keyed. Before this split, an open ticker-keyed
+    `unprotected_position` issue for one symbol silently satisfied `gh issue
+    list --label alert:unprotected_position` for THIS unkeyed, unrelated
+    finding — an unverifiable broker state hiding behind a known exposure."""
     n = assert_positions_protected(fund_db, broker=None, now_iso=NOW)
     assert n == 1
     payload = _payloads(fund_db)[0]
-    assert payload["code"] == "unprotected_position"
+    assert payload["code"] == "protection_unverified"
     assert "ticker" not in payload
 
 
