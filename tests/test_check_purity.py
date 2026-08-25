@@ -1,20 +1,28 @@
 """The purity lint's own negative controls (issue #43).
 
-`scripts/check_purity.py` enforces CLAUDE.md invariant 3, but it matches on the
-literal source text of a call's base and only ever looks at `ast.Import` /
-`ast.ImportFrom` nodes. A file can therefore import `anthropic` and read the
-wall clock while the lint reports `clean`. Each entry in EVASION_CASES below is
-a snippet that the lint must flag and today does not.
+`scripts/check_purity.py` enforces CLAUDE.md invariant 3. A lint whose negative
+control also passes is not a lint, so every table here is one half of a pair:
+something the lint must catch, and the legitimate code next door it must not.
 
-The two tables that follow are the other half: DETECTED_CASES are the
-violations the lint already catches and must keep catching, and CLEAN_CASES are
-correct code — above all `self._clock.now()`, the injected-Clock pattern the
-invariant exists to *require*. A rewrite that resolves bindings instead of
-source text will over-fire without them.
+Round one covered the source-spelling evasions (aliased bindings, dynamic
+imports, unlisted clock spellings, `market/`). Round two adds four groups:
 
-SLACKKIT_INIT_VIOLATIONS covers the third boundary: `slackkit` goes in neither
-list, and instead `slackkit/__init__.py` must stay import-free — the mechanism
-that lets orchestrator import `slackkit.outbox` without pulling in `slack_sdk`.
+* MASTER_REGRESSION_CASES — violations master flagged that the binding rewrite
+  stopped flagging. A lint that gets looser is worse than one that never moved.
+* COLLISION_CASES — an import binding colliding with a rebinding *in the same
+  scope* is a violation, not a shadow. Popping the name on any rebinding makes
+  `import time` + `if False: time = None` a working, silent bypass.
+* CALLABLE_CAPTURE_CASES — only a call on an attribute chain was matched, so
+  `_sleep = time.sleep` defeated the check while reading as careful seam code.
+* SLACKKIT_* — option (d): lint `slackkit/` as a pure package with `real.py`
+  excluded, and forbid pure packages from importing `slackkit.real`. That last
+  rule needs *dotted-prefix* matching: `FORBIDDEN_IMPORTS` is compared against
+  `name.split(".")[0]`, so the string "slackkit.real" added to it would match
+  nothing, forever. The ablation below is what proves the matcher changed.
+
+CLEAN_CASES is the load-bearing half — above all `self._clock.now()`, the
+injected-Clock pattern the invariant exists to *require*. A lint that flags
+correct code is the failure mode that gets a lint deleted.
 
 Zero dependencies: plain no-arg `def test_*` functions and stdlib `tempfile`,
 so it runs under pytest (what CI and `make test` invoke) and under the
@@ -136,7 +144,235 @@ UNLISTED_CLOCK_CALL_CASES = [
     """),
 ]
 
-EVASION_CASES = DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES + UNLISTED_CLOCK_CALL_CASES
+# --- round two -------------------------------------------------------------
+
+# Violations MASTER flags that the binding rewrite stopped flagging. Each one
+# is a place where the scope model pops a name that Python does not actually
+# rebind, or fails to bind one it does.
+MASTER_REGRESSION_CASES = [
+    ("class-body binding leaking into a method scope", """
+        from datetime import date
+
+
+        class Row:
+            # An ordinary pydantic/dataclass field. Class scope is NOT visible
+            # inside methods, so `date` below is still the stdlib import —
+            # state/models.py:8 already does `from datetime import date`.
+            date: date = None
+
+            def stamp(self):
+                return date.today()
+    """),
+    ("star-import binds the literal name '*'", """
+        from datetime import *
+
+
+        def stamp():
+            return datetime.now()
+    """),
+    ("comprehension target folded into the parent scope", """
+        import time
+
+        # A comprehension target is invisible outside the comprehension, so
+        # folding it into module scope buys nothing and silences the file.
+        _UNUSED = [None for time in ()]
+
+
+        def pause():
+            time.sleep(1)
+    """),
+]
+
+# An import binding rebound in the SAME scope is incoherent code, not a shadow.
+# The current pop is position- and condition-independent, so each of these
+# silences the whole scope while looking like a no-op.
+COLLISION_CASES = [
+    ("`if False: time = None` at module scope", """
+        import time
+
+        if False:
+            time = None
+
+
+        def pause():
+            time.sleep(1)
+    """),
+    ("`time = time` self-assignment on the last line", """
+        import time
+
+
+        def pause():
+            time.sleep(1)
+
+
+        time = time
+    """),
+    ("`except Exception as time:` at module scope", """
+        import time
+
+        try:
+            pass
+        except Exception as time:
+            pass
+
+
+        def pause():
+            time.sleep(1)
+    """),
+    ("`with open(...) as time:` at module scope", """
+        import time
+
+        with open("/dev/null") as time:
+            pass
+
+
+        def pause():
+            time.sleep(1)
+    """),
+    ("walrus `if (time := None):` at module scope", """
+        import time
+
+        if (time := None):
+            pass
+
+
+        def pause():
+            time.sleep(1)
+    """),
+    ("same-scope rebind placed after the use", """
+        import time
+
+        time.sleep(1)
+        time = None
+    """),
+]
+
+# Same clock, one spelling away from the listed one.
+CLOCK_SPELLING_CASES = [
+    ("datetime.today() — date.today is listed, datetime.today is not", """
+        from datetime import datetime
+
+
+        def stamp():
+            return datetime.today()
+    """),
+    ("time.time_ns()", """
+        import time
+
+
+        def stamp():
+            return time.time_ns()
+    """),
+    ("time.monotonic_ns()", """
+        import time
+
+
+        def stamp():
+            return time.monotonic_ns()
+    """),
+    ("time.perf_counter_ns()", """
+        import time
+
+
+        def stamp():
+            return time.perf_counter_ns()
+    """),
+    ("time.process_time()", """
+        import time
+
+
+        def stamp():
+            return time.process_time()
+    """),
+    ("time.localtime()", """
+        import time
+
+
+        def stamp():
+            return time.localtime()
+    """),
+    ("time.gmtime()", """
+        import time
+
+
+        def stamp():
+            return time.gmtime()
+    """),
+]
+
+# Rebindings of the dynamic-import builtins. Master misses these too — they are
+# still-open evasions, not regressions.
+DYNAMIC_IMPORT_SPELLING_CASES = [
+    ("from builtins import __import__", """
+        from builtins import __import__
+
+
+        def sdk():
+            return __import__("anthropic")
+    """),
+    ("_imp = __import__, then _imp(...)", """
+        _imp = __import__
+
+
+        def sdk():
+            return _imp("anthropic")
+    """),
+]
+
+# Capturing the callable instead of calling it. These read as conscientious
+# Clock-protocol code while being exactly the wall-clock dependency invariant 3
+# bans — the reviewers rated this the most realistic gap of the set.
+CALLABLE_CAPTURE_CASES = [
+    ("module-level seam alias `_sleep = time.sleep`", """
+        import time
+
+        _sleep = time.sleep
+    """),
+    ("dispatch table holding datetime.utcnow", """
+        from datetime import datetime
+
+        _FIELDS = {"ts": datetime.utcnow}
+    """),
+    ("adapter class whose attributes are the clock functions", """
+        import time
+        from datetime import datetime
+
+
+        class SystemClock:
+            now = datetime.now
+            sleep = time.sleep
+    """),
+    ("default-argument fallback `_fallback=time.monotonic`", """
+        import time
+
+
+        class Runner:
+            def __init__(self, clock=None, _fallback=time.monotonic):
+                self._clock = clock
+                self._fallback = _fallback
+    """),
+    ("intermediate module alias `_clock_mod = time`", """
+        import time
+
+        _clock_mod = time
+
+
+        def pause():
+            _clock_mod.sleep(1)
+    """),
+    ("getattr(time, \"sleep\")() — house style at market/source_alpaca.py:33", """
+        import time
+
+
+        def pause():
+            getattr(time, "sleep")()
+    """),
+]
+
+EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
+                 + UNLISTED_CLOCK_CALL_CASES + MASTER_REGRESSION_CASES
+                 + COLLISION_CASES + CLOCK_SPELLING_CASES
+                 + DYNAMIC_IMPORT_SPELLING_CASES + CALLABLE_CAPTURE_CASES)
 
 # Already caught today. These must survive the rewrite.
 DETECTED_CASES = [
@@ -199,6 +435,34 @@ CLEAN_CASES = [
             # The feed's own API; nothing to do with the wall clock.
             return feed.now()
     """),
+    # --- round two ---
+    # The hinge of the collision rule: a shadow is legitimate precisely when
+    # the name is bound by something other than an import. The two cases above
+    # (`def elapsed(time)`, `datetime = Formatter(rows)`) are green because
+    # their files never import the shadowed name at all. This one is green for
+    # the harder reason — the file DOES import `time`, and the parameter is a
+    # different scope, which Python resolves to the parameter. Delete the
+    # scope/shadow logic and this case goes red, which is the point of it.
+    ("module-level `import time` + a parameter named `time` (different scope)", """
+        import time
+
+
+        def elapsed(time):
+            # The caller's Timer. Python binds this to the parameter inside
+            # this scope; the module-level import is not visible here.
+            return time.perf_counter()
+    """),
+    ("match/case capture pattern is a binding", """
+        import time
+
+
+        def handle(event):
+            match event:
+                case {"clock": time}:
+                    # `time` is the captured dict value, not the module.
+                    return time.monotonic()
+            return None
+    """),
 ]
 
 CLEAN_FILE = """
@@ -209,14 +473,19 @@ CLEAN_FILE = """
         return gross - fees
 """
 
-# --- slackkit: the empty __init__.py is a load-bearing boundary -------------
+# --- slackkit, option (d) ---------------------------------------------------
 #
-# `slackkit` belongs in NEITHER PURE_PACKAGES nor FORBIDDEN_IMPORTS — both
-# redden legitimate code. What makes `orchestrator/daily.py:24`'s
-# `from slackkit.outbox import ...` safe is that `slackkit/__init__.py` is
-# empty, so importing a submodule pulls in no `slack_sdk`. `slackkit/real.py`
-# says it "must stay empty"; today nothing enforces that. These are the
-# enforcement. Trees are {relative path: source}, run through main().
+# Lint `slackkit/` as a pure package with `real.py` EXCLUDED, and forbid pure
+# packages from importing `slackkit.real`. Keep the import-free `__init__.py`
+# check. Trees are {relative path: source}, run through main().
+#
+# The half that is easy to get wrong: `FORBIDDEN_IMPORTS` is matched on the
+# ROOT module only — `alias.name.split(".")[0]` and
+# `(node.module or "").split(".")[0]`. Putting the string "slackkit.real" in
+# that tuple can never match, because `root` is "slackkit". It would sit in the
+# source looking like a rule and catch nothing, forever. So what is required is
+# dotted-prefix semantics, and SLACKKIT_ABLATION_CLEAN is what proves the
+# matcher actually moved rather than the constant.
 
 SLACKKIT_INIT_VIOLATIONS = [
     ("__init__.py re-exports the real port", {
@@ -233,8 +502,48 @@ SLACKKIT_INIT_VIOLATIONS = [
     }),
 ]
 
-SLACKKIT_CLEAN_TREES = [
-    ("empty __init__.py, real.py holds the SDK", {
+SLACKKIT_REAL_VIOLATIONS = [
+    ("pure package does `from slackkit.real import RealSlack`", {
+        "slackkit/__init__.py": "",
+        "orchestrator/daily.py": "from slackkit.real import RealSlack\n",
+    }),
+    ("pure package does `import slackkit.real`", {
+        "slackkit/__init__.py": "",
+        "orchestrator/daily.py": "import slackkit.real\n",
+    }),
+    ("dotted prefix reaches subpackages: slackkit.real.helpers", {
+        "slackkit/__init__.py": "",
+        "orchestrator/daily.py": "from slackkit.real.helpers import retry\n",
+    }),
+    ("wall clock parked in slackkit/outbox.py", {
+        # The better half of (d): outbox/render/fake/port are orchestrator's
+        # live dependency and are completely unlinted today, so a clock read
+        # here breaks sim-day determinism silently.
+        "slackkit/__init__.py": "",
+        "slackkit/outbox.py": """
+            import time
+
+
+            def append_event(path, event):
+                return time.time()
+        """,
+    }),
+    ("slack_sdk imported by slackkit/outbox.py", {
+        "slackkit/__init__.py": "",
+        "slackkit/outbox.py": "import slack_sdk\n",
+    }),
+]
+
+# The ablation. Without it, "the matcher was changed" is only the word of
+# whoever changed it — which is exactly what `PURITY LINT: clean, exit 0` said
+# the last two times.
+SLACKKIT_ABLATION_CLEAN = [
+    ("pure package does `from slackkit.outbox import append_alert`", {
+        # Real code: orchestrator/{daily,preconditions,protection,reconcile}.py.
+        "slackkit/__init__.py": "",
+        "orchestrator/daily.py": "from slackkit.outbox import append_alert\n",
+    }),
+    ("slackkit/real.py holds the SDK — excluded from the pure scan", {
         "slackkit/__init__.py": "",
         "slackkit/real.py": """
             import slack_sdk
@@ -244,6 +553,10 @@ SLACKKIT_CLEAN_TREES = [
                 def __init__(self, token):
                     self._client = slack_sdk.WebClient(token=token)
         """,
+    }),
+    ("`slackkit.realtime` is not `slackkit.real` — dotted, not string, prefix", {
+        "slackkit/__init__.py": "",
+        "orchestrator/daily.py": "from slackkit.realtime import stream\n",
     }),
     ("empty __init__.py, outbox.py is plain stdlib", {
         "slackkit/__init__.py": "",
@@ -329,15 +642,47 @@ def test_market_is_linted():
     assert code != 0, "a forbidden import in market/ left the lint exit 0"
 
 
+def test_master_regressions_stay_flagged():
+    """Master flagged all three. A binding rewrite that loses them has made
+    the lint looser than the thing it replaced."""
+    _assert_all_flagged(MASTER_REGRESSION_CASES, "regression vs master")
+
+
+def test_import_colliding_with_a_rebinding_is_flagged():
+    """Popping a name on any rebinding, anywhere in the scope, regardless of
+    whether the branch can execute, is a one-line silencer for a whole file."""
+    _assert_all_flagged(COLLISION_CASES, "same-scope collision")
+
+
+def test_clock_spellings_are_flagged():
+    _assert_all_flagged(CLOCK_SPELLING_CASES, "clock spelling")
+
+
+def test_dynamic_import_spellings_are_flagged():
+    _assert_all_flagged(DYNAMIC_IMPORT_SPELLING_CASES, "dynamic import spelling")
+
+
+def test_captured_callables_are_flagged():
+    """Capturing the function instead of calling it. Reads as careful seam
+    code; is the banned dependency."""
+    _assert_all_flagged(CALLABLE_CAPTURE_CASES, "callable capture")
+
+
 def test_slackkit_init_must_stay_import_free():
     _assert_trees_rejected(SLACKKIT_INIT_VIOLATIONS, "slackkit/__init__.py")
 
 
-def test_slackkit_submodules_may_hold_the_sdk():
-    """The boundary, not a ban: real.py is *supposed* to import slack_sdk.
-    A check that lints all of slackkit/ instead of just __init__.py fails
-    here."""
-    _assert_trees_accepted(SLACKKIT_CLEAN_TREES, "slackkit submodule")
+def test_slackkit_real_is_out_of_bounds_for_pure_packages():
+    _assert_trees_rejected(SLACKKIT_REAL_VIOLATIONS, "slackkit.real")
+
+
+def test_slackkit_ablation():
+    """Required, not optional. Every case here is legitimate code that the
+    `slackkit.real` rule must leave alone — the outbox import four orchestrator
+    modules really make, real.py's SDK, and the dotted-vs-string prefix. A rule
+    that reddens these is worse than the gap it closes; a rule that reddens
+    nothing at all is the defect this whole lane is named after."""
+    _assert_trees_accepted(SLACKKIT_ABLATION_CLEAN, "slackkit ablation")
 
 
 def test_the_real_slackkit_init_is_empty():
