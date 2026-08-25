@@ -201,11 +201,23 @@ Replace the roster-building portion of `## Phase 1 — roster` with:
 ## Phase 1 — roster
 
 ```bash
-claude agents --json --cwd <repo-root>
+claude agents --json
+git worktree list --porcelain
 ```
 
-One row per session: `name`, `sessionId`, `cwd`, `kind`, `startedAt`. This listing **includes you**.
-Find your own row by matching your session id and exclude it — you do not poll yourself. This is
+`claude agents --json --cwd <repo-root>` matches by **exact path**, not by repo identity — measured,
+not assumed. It drops every session sitting in a worktree, which on a busy repo is most of them. So
+call `claude agents --json` unscoped and keep only rows whose `cwd` equals `<repo-root>` or sits under
+one of the paths `git worktree list --porcelain` reports (that list includes the repo root plus every
+registered worktree, in or out of tree).
+
+Match by **exact-path equality or containment under `path + "/"`** — never a bare string-prefix test.
+Siblings like `fund-probes/`, `fund-worktrees/`, and `fundablePlayground/` share a string prefix with a
+repo root called `fund` without being under it, and `cwd.startswith(repo_root)` sweeps their sessions
+into the roster.
+
+Each surviving row carries `name`, `sessionId`, `cwd`, `kind`, `startedAt`. The listing **includes
+you**. Find your own row by matching your session id and exclude it — you do not poll yourself. This is
 positive self-identification; the old rule ("you are the one `ListAgents` omits") was inference by
 elimination and broke whenever the listing was partial.
 
@@ -230,8 +242,8 @@ Still true, and still the things that catch people out:
 If `claude agents --json` fails, stop with the error. Do not fall back to name matching.
 ```
 
-If Task 1 found that `--cwd` scoping misses worktree sessions, add the union it recorded in the spec
-instead of the bare `--cwd` call.
+The union above is the measured outcome of Task 1 — transcribe it as written.
+
 
 - [ ] **Step 2: Verify against the live machine**
 
