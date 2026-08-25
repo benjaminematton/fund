@@ -212,6 +212,17 @@ MASTER_REGRESSION_CASES = [
         def pause():
             time.sleep(1)
     """, RULE_CLOCK_REF),
+    # D5. Master flags this by source text; the branch launders it through the
+    # star import. Resolvable WITHIN the file — a star import means the name
+    # could have come from anywhere, so an otherwise-unbound `datetime.now`
+    # under one must stay a candidate. No cross-module following required.
+    ("star-import laundering of datetime.now()", """
+        from state.helpers import *
+
+
+        def stamp():
+            return datetime.now()
+    """, RULE_CLOCK_REF),
 ]
 
 # An import binding rebound in the SAME scope is incoherent code, not a shadow.
@@ -329,6 +340,76 @@ CLOCK_SPELLING_CASES = [
         def stamp():
             return time.gmtime()
     """, RULE_CLOCK_REF),
+    # --- round three: the docstring says "the time module's clock and sleep
+    # functions"; these are all of that and all currently clean. The three
+    # no-arg formatters read the wall clock; their with-argument forms are
+    # pure and are guarded in CLEAN_CASES.
+    ("time.clock_gettime()", """
+        import time
+
+
+        def stamp():
+            return time.clock_gettime(0)
+    """, RULE_CLOCK_REF),
+    ("time.clock_gettime_ns()", """
+        import time
+
+
+        def stamp():
+            return time.clock_gettime_ns(0)
+    """, RULE_CLOCK_REF),
+    ("time.thread_time()", """
+        import time
+
+
+        def stamp():
+            return time.thread_time()
+    """, RULE_CLOCK_REF),
+    ("time.thread_time_ns()", """
+        import time
+
+
+        def stamp():
+            return time.thread_time_ns()
+    """, RULE_CLOCK_REF),
+    ("time.strftime() with no time tuple reads localtime", """
+        import time
+
+
+        def stamp():
+            return time.strftime("%Y-%m-%d")
+    """, RULE_CLOCK_REF),
+    ("time.asctime() with no argument", """
+        import time
+
+
+        def stamp():
+            return time.asctime()
+    """, RULE_CLOCK_REF),
+    ("time.ctime() with no argument", """
+        import time
+
+
+        def stamp():
+            return time.ctime()
+    """, RULE_CLOCK_REF),
+    # pandas is a real dependency of fundbt/. Verified 2026-08-25: the real
+    # tree contains ZERO Timestamp.now() call sites, so adding this reddens
+    # nothing that exists.
+    ("pd.Timestamp.now()", """
+        import pandas as pd
+
+
+        def stamp():
+            return pd.Timestamp.now()
+    """, RULE_CLOCK_REF),
+    ("from pandas import Timestamp, then Timestamp.now()", """
+        from pandas import Timestamp
+
+
+        def stamp():
+            return Timestamp.now()
+    """, RULE_CLOCK_REF),
 ]
 
 # Rebindings of the dynamic-import builtins. Master misses these too — they are
@@ -400,10 +481,129 @@ CALLABLE_CAPTURE_CASES = [
     """, RULE_CLOCK_REF),
 ]
 
+# --- round three ------------------------------------------------------------
+
+# DELIBERATE ASSERTION INVERSION — approved 2026-08-25, ruled by the
+# coordinator, recorded here so nobody later mistakes it for the forbidden move.
+#
+# These three cases asserted CLEAN in rounds two and three-minus-one. They now
+# assert a VIOLATION. That is a TIGHTENING — a new, stricter claim about what
+# the lint must catch — not a weakening to make a failing test pass, which is
+# what CLAUDE.md's test invariants forbid. No expected value was edited to
+# match an implementation's output; the rule the tests encode changed.
+#
+# Why: the shadow rule is being deleted. Ablation showed it protects nothing —
+# monkeypatching `_bound_names` to return set() left every injected-Clock shape
+# clean, including orchestrator/clock.py verbatim, because the real mechanism
+# is that `self` is unresolvable, not that shadowing is tracked. A sweep of all
+# 45 pure-package files found ZERO parameters or locals named time/date/
+# datetime/asyncio/importlib. It protected nothing, cost ~10 looser-than-master
+# rows, and enabled a regression.
+#
+# The rule is now uniform: a rebinding that collides with an import binding is
+# an error at ANY scope. A rebinding with no colliding import binds nothing and
+# stays clean — that hinge is unchanged, and the CLEAN_CASES entries for files
+# that never import the shadowed name are still correct and still green.
+INVERTED_SHADOW_CASES = [
+    ("import time + a parameter named `time`", """
+        import time
+
+
+        def elapsed(time):
+            return time.perf_counter()
+    """, RULE_COLLISION),
+    ("import time + `except TimeoutError as time`", """
+        import time
+
+
+        def deadline(fn):
+            try:
+                return fn()
+            except TimeoutError as time:
+                return time.time
+    """, RULE_COLLISION),
+    ("import time + a match/case capture named `time`", """
+        import time
+
+
+        def handle(event):
+            match event:
+                case {"clock": time}:
+                    return time.monotonic()
+            return None
+    """, RULE_COLLISION),
+]
+
+# Positions evaluated in the ENCLOSING scope, where a later rebinding does not
+# shadow the import. The earlier ruling — "a function-local rebinding makes the
+# name local for the whole body, so it can never silently resolve to the
+# stdlib" — is true for function bodies ONLY. Class bodies compile to LOAD_NAME
+# with a global fallback, and defaults/annotations/base lists are evaluated
+# where the statement sits, not inside the new scope. Each was confirmed by
+# executing it.
+ENCLOSING_SCOPE_CASES = [
+    ("class body: LOAD_NAME falls back to the global import", """
+        import time
+
+
+        class C:
+            # C.clock() really returns the wall clock: the class-level
+            # `time = None` below has not executed yet at this point.
+            clock = staticmethod(time.time)
+            time = None
+    """, RULE_CLOCK_REF),
+    ("default argument is evaluated in the enclosing scope", """
+        from datetime import datetime
+
+
+        def stamp(datetime=datetime):
+            # The default IS the datetime class, so this reads the wall clock.
+            return datetime.now()
+    """, RULE_COLLISION),
+    ("class nested in a function", """
+        import time
+
+
+        def make():
+            class C:
+                clock = staticmethod(time.time)
+                time = None
+            return C
+    """, RULE_CLOCK_REF),
+    ("class nested in a class", """
+        import time
+
+
+        class Outer:
+            class Inner:
+                clock = staticmethod(time.time)
+                time = None
+    """, RULE_CLOCK_REF),
+    ("annotation is evaluated in the enclosing scope", """
+        import time
+
+
+        class C:
+            clock: time.time = None
+            time = None
+    """, RULE_CLOCK_REF),
+    # The base list resolves to the module attribute, which is not itself
+    # forbidden — so what must fire here is the collision on the class-body
+    # rebinding, which the shadow rule currently swallows.
+    ("base-class list is evaluated in the enclosing scope", """
+        import datetime
+
+
+        class Stamp(datetime.datetime):
+            datetime = None
+    """, RULE_COLLISION),
+]
+
 EVASION_CASES = (DYNAMIC_IMPORT_CASES + ALIASED_BINDING_CASES
                  + UNLISTED_CLOCK_CALL_CASES + MASTER_REGRESSION_CASES
                  + COLLISION_CASES + CLOCK_SPELLING_CASES
-                 + DYNAMIC_IMPORT_SPELLING_CASES + CALLABLE_CAPTURE_CASES)
+                 + DYNAMIC_IMPORT_SPELLING_CASES + CALLABLE_CAPTURE_CASES
+                 + INVERTED_SHADOW_CASES + ENCLOSING_SCOPE_CASES)
 
 # Already caught today. These must survive the rewrite.
 DETECTED_CASES = [
@@ -427,6 +627,36 @@ DETECTED_CASES = [
 
         def pause():
             time.sleep(1)
+    """, RULE_CLOCK_REF),
+    # --- round three: enclosing-scope shapes ALREADY caught. Measured, not
+    # assumed — these three of the nine positions need no new work, and
+    # locking them in stops the shadow-rule deletion from disturbing them.
+    ("decorator in a class body, rebind after", """
+        import time
+
+
+        class C:
+            @time.sleep
+            def pause(self):
+                pass
+
+            time = None
+    """, RULE_CLOCK_REF),
+    ("comprehension's outermost iterable", """
+        import time
+
+
+        class C:
+            vals = [x for x in time.time()]
+            time = None
+    """, RULE_CLOCK_REF),
+    ("lambda default argument", """
+        import time
+
+
+        class C:
+            f = lambda _t=time.time: _t()
+            time = None
     """, RULE_CLOCK_REF),
 ]
 
@@ -467,40 +697,18 @@ CLEAN_CASES = [
             return feed.now()
     """),
     # --- round two ---
-    # The hinge of the collision rule: a shadow is legitimate precisely when
-    # the name is bound by something other than an import. The two cases above
-    # (`def elapsed(time)`, `datetime = Formatter(rows)`) are green because
-    # their files never import the shadowed name at all. This one is green for
-    # the harder reason — the file DOES import `time`, and the parameter is a
-    # different scope, which Python resolves to the parameter. Delete the
-    # scope/shadow logic and this case goes red, which is the point of it.
-    ("module-level `import time` + a parameter named `time` (different scope)", """
-        import time
-
-
-        def elapsed(time):
-            # The caller's Timer. Python binds this to the parameter inside
-            # this scope; the module-level import is not visible here.
-            return time.perf_counter()
-    """),
-    ("match/case capture pattern is a binding", """
-        import time
-
-
-        def handle(event):
-            match event:
-                case {"clock": time}:
-                    # `time` is the captured dict value, not the module.
-                    return time.monotonic()
-            return None
-    """),
-    # Comprehension scoping, guarded from the other side. The violation table
-    # has `[None for time in ()]` silencing a module, which the collision rule
-    # also happens to catch — so these are what actually pin the comprehension
-    # branch of _SCOPE_NODES. A comprehension target is scoped to the
+    # Comprehension scoping. A comprehension target is scoped to the
     # comprehension in Python 3: it rebinds nothing outside, so reusing an
-    # imported name is legal and must not read as a same-scope collision.
-    # The name is genuinely imported in the file — that is the hinge.
+    # imported name is legal. The `time` case below is the one that PINS the
+    # comprehension branch of _SCOPE_NODES under round three's rules — `time`
+    # is a watched base, so if the target folded into module scope the
+    # narrowed collision rule would fire. The `json` cases cover the same
+    # shape on an unwatched name.
+    ("comprehension target reusing an imported WATCHED name (pins the block)", """
+        import time
+
+        _UNUSED = [None for time in ()]
+    """),
     ("comprehension target reusing an imported name — list", """
         import json
 
@@ -521,21 +729,6 @@ CLEAN_CASES = [
 
         _KEYS = tuple(json for json in ("a", "b"))
     """),
-    # Same shape as the comprehension pair above, for two more blocks that the
-    # violation tables were catching by a different route and so left unpinned.
-    ("`except ... as time` binds the caught exception, not the module", """
-        import time
-
-
-        def deadline(fn):
-            try:
-                return fn()
-            except TimeoutError as time:
-                # The caught exception carries its own .time; the module is
-                # shadowed inside this handler. A nested scope, so not a
-                # collision — and not the stdlib clock either.
-                return time.time
-    """),
     ("a name bound to a local must not fall through to a star-import", """
         from time import *
 
@@ -545,6 +738,85 @@ CLEAN_CASES = [
             # would have supplied. Resolving to nothing must mean nothing —
             # never "guess the star module".
             sleep(1)
+    """),
+    # --- round three: the narrowed collision rule -------------------------
+    # The collision rule fires only when the rebound name's resolved target is
+    # a forbidden-import root, or the base of a FORBIDDEN_CALLS pattern
+    # (datetime.now, date.today, time.sleep, ...). NOT "came from a watched
+    # module" — `from datetime import UTC` resolves to `datetime.UTC`, which
+    # IS under `datetime`, so the loose wording reddens the first case below
+    # while passing all the others. That case is this rule's ablation, the
+    # same role `slackkit.realtime` plays for the dotted-prefix matcher.
+    #
+    # Every one of these is ordinary defensive Python whose rebound name can
+    # reach nothing forbidden. The current error text claims the rebinding
+    # "disables the purity check silently", which is false for all five — a
+    # rule whose own message is false on most of its firings is over-firing
+    # by construction.
+    ("`from datetime import UTC` + fallback rebind (rule ablation)", """
+        try:
+            from datetime import UTC
+        except ImportError:
+            from datetime import timezone
+            UTC = timezone.utc
+    """),
+    ("TYPE_CHECKING import with a runtime fallback", """
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            from decimal import Decimal
+        else:
+            Decimal = float
+    """),
+    ("`import logging` then `logging = logging.getLogger(__name__)`", """
+        import logging
+
+        logging = logging.getLogger(__name__)
+    """),
+    ("`from __future__ import annotations` + a variable named annotations", """
+        from __future__ import annotations
+
+        annotations = {"a": 1}
+    """),
+    ("optional dependency: `import numpy` / `numpy = None`", """
+        try:
+            import numpy
+        except ImportError:
+            numpy = None
+    """),
+    # --- round three: arity discriminates a clock read from a formatter ----
+    # time.strftime/asctime/ctime read the wall clock ONLY in their no-arg
+    # form. Given a time tuple or an epoch they are pure formatters, and
+    # flagging those would forbid ordinary rendering code. This is the
+    # ablation for the arity check: an implementation that adds the names to
+    # FORBIDDEN_REFS without looking at the call reddens all three.
+    ("time.strftime WITH a time tuple is a pure formatter", """
+        import time
+
+
+        def render(struct):
+            return time.strftime("%Y-%m-%d", struct)
+    """),
+    ("time.asctime WITH a time tuple is a pure formatter", """
+        import time
+
+
+        def render(struct):
+            return time.asctime(struct)
+    """),
+    ("time.ctime WITH an epoch argument is a pure formatter", """
+        import time
+
+
+        def render(secs):
+            return time.ctime(secs)
+    """),
+    ("pd.Timestamp(value) constructs, it does not read the clock", """
+        import pandas as pd
+
+
+        def at(value):
+            return pd.Timestamp(value)
     """),
 ]
 
@@ -621,6 +893,26 @@ SLACKKIT_REAL_VIOLATIONS = [
     ("slack_sdk imported by slackkit/outbox.py", {
         "slackkit/__init__.py": "",
         "slackkit/outbox.py": "import slack_sdk\n",
+    }, RULE_FORBIDDEN_IMPORT),
+    # D1 — prioritised. check_file skips `node.level != 0`, so a RELATIVE
+    # import of .real is exempt. Every intra-package import in the real
+    # slackkit/ is relative (outbox.py:13-14, fake.py:6, real.py:10), so the
+    # exempted spelling is the only one a contributor would actually write.
+    # A rule that catches the form nobody writes and misses the form everybody
+    # writes has never been tested against the code it guards.
+    ("D1: `from .real import RealSlack` inside slackkit/", {
+        "slackkit/__init__.py": "",
+        "slackkit/outbox.py": "from .real import RealSlack\n",
+    }, RULE_FORBIDDEN_IMPORT),
+    ("D2: `import slackkit` then slackkit.real.RealSlack()", {
+        "slackkit/__init__.py": "",
+        "orchestrator/daily.py": """
+            import slackkit
+
+
+            def post():
+                return slackkit.real.RealSlack()
+        """,
     }, RULE_FORBIDDEN_IMPORT),
 ]
 
@@ -784,6 +1076,19 @@ def test_captured_callables_are_flagged():
     """Capturing the function instead of calling it. Reads as careful seam
     code; is the banned dependency."""
     _assert_all_flagged(CALLABLE_CAPTURE_CASES, "callable capture")
+
+
+def test_shadowing_an_import_is_a_collision_at_any_scope():
+    """Assertions here were deliberately INVERTED from clean to violation on
+    2026-08-25 — see the note on INVERTED_SHADOW_CASES. A tightening, ruled
+    and approved, not a weakening to make a test pass."""
+    _assert_all_flagged(INVERTED_SHADOW_CASES, "inverted shadow")
+
+
+def test_enclosing_scope_positions_are_flagged():
+    """Class bodies, defaults, annotations and base lists are evaluated in the
+    enclosing scope, so a later rebinding does not shadow the import."""
+    _assert_all_flagged(ENCLOSING_SCOPE_CASES, "enclosing scope")
 
 
 def test_slackkit_init_must_stay_import_free():
