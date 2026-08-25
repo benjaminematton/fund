@@ -76,8 +76,22 @@ sequence into the map issue's child order and its `blocked_by` edges, which are 
 
 ### Phase 0 — Board
 
-Frontier query: open sub-issues of the phase map, minus any with `issue_dependencies_summary.blocked_by
+**Finding the map issue.** It is the issue labelled `wayfinder:map` — the convention already written in
+`docs/agents/issue-tracker.md`, reused rather than duplicated with a second one of our own. Exactly one
+match is required: zero matches or several both mean the board cannot be read deterministically, and
+both degrade to human-named lanes rather than to a guess.
+
+```bash
+gh issue list --state open --label wayfinder:map --json number,title,body
+```
+
+Frontier query: open sub-issues of that map, minus any with `issue_dependencies_summary.blocked_by
 > 0`, minus any already claimed in `map.md`, in map order. These are the **candidate lanes**.
+
+**Each candidate lane carries a region**, read from its issue body — Phase 4's collision check compares
+that region against what each session says it owns, so a lane without one cannot be reconciled. An
+issue that names no region produces a lane flagged *region undeclared*: it is reported, and it is never
+assigned on a guess about what it touches.
 
 Read a plan file only when a candidate lane names one, and only as the how.
 
