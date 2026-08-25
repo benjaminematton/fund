@@ -109,8 +109,14 @@ surface-pin: deps
 # the eval suite is not — a live DB the code cannot run against should stop
 # the deploy before ~$$0.31 of real LLM turns, not after. Same uid and
 # EnvironmentFile as step 2: FUND_DB comes from /etc/fund/env, and the live DB
-# is owned by `fund`. Exit codes: 0 ok, 1 migrations pending, 2 unexplained
-# divergence, 3 cannot determine. Only 0 continues.
+# is owned by `fund`.
+#
+# The STEP's exit codes are 0 ok, 1 migrations pending, 2 unexplained
+# divergence, 3 cannot determine, and only 0 continues to step 2. They are not
+# this target's: make collapses any failed recipe line to its own exit 2, so
+# read which of the four it was off the step's stderr, never off `make`'s
+# status — a target exit 2 is make reporting failure, not "unexplained
+# divergence".
 preflight:
 	systemd-run --uid=fund --pipe --wait --quiet \
 	  --property=WorkingDirectory=/opt/fund \

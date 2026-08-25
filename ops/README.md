@@ -425,9 +425,13 @@ Take a fresh backup immediately before the pull.
 **`make preflight` does NOT run the migration.** It now *reports* on the live
 DB — `scripts/preflight_schema.py` opens `$FUND_DB` read-only (never
 `connect()`, which would apply the migration it is reporting on) and exits 0
-ok, 1 migrations pending, 2 unexplained divergence, 3 cannot determine. So a
-green preflight is now evidence the schema is current, and a red one names
-which of those three it is. Until 2026-08-25 it drove `eval_suite.py` alone,
+ok, 1 migrations pending, 2 unexplained divergence, 3 cannot determine. Read
+which one off that step's stderr, not off `make`'s status: make collapses any
+recipe failure to its own exit 2. A green preflight is now evidence that every
+table and column `state/schema.sql` declares is present — **names only**, so
+types, `NOT NULL`, `CHECK` and `UNIQUE` are not compared and a constraint lost
+in a hand-edited table still reads green. Until 2026-08-25 it drove
+`eval_suite.py` alone,
 which builds a fresh per-trial DB under `evals/traces/` and never opened
 `$FUND_DB`: measured on 2026-08-19, after a clean pull and a green preflight,
 the live DB still had zero of the six new columns. Left there, the first

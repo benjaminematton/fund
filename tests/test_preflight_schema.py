@@ -21,8 +21,16 @@ Two things are load-bearing here and both are tested rather than commented:
      migration explains is a real failure. They get distinct exit codes so the
      operator does not have to read the source to tell them apart.
 
-Ambiguity — FUND_DB unset, file missing, not a database, a WAL that needs
-recovery — is RED, never green (invariant 4).
+Ambiguity — FUND_DB unset, file missing, not a database, holding none of the
+expected tables, an unwritable directory, or preflight crashing — is RED, never
+green (invariant 4). A crash must be red as CANNOT_DETERMINE specifically: an
+unhandled exception exits 1, which is the MIGRATIONS_PENDING code, and telling
+an operator to run a migration off a traceback is the mislabelling this script
+exists to end.
+
+What is compared is NAMES ONLY — tables and columns, never types or
+constraints. test_only_column_names_are_compared pins that limit, and pins that
+the OK message admits it.
 
 Fully offline: every DB here is a temp file built from state/schema.sql.
 """
@@ -30,10 +38,12 @@ Fully offline: every DB here is a temp file built from state/schema.sql.
 from __future__ import annotations
 
 import importlib.util
+import io
 import os
 import sqlite3
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -71,6 +81,35 @@ def _live_db(path: Path, drop_columns=(), drop_tables=()) -> Path:
     return path
 
 
+def _drop_sidecars(db: Path) -> None:
+    """Remove -wal/-shm so the next open has to recreate them."""
+    for suffix in ("-wal", "-shm"):
+        sidecar = db.with_name(db.name + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+
+
+def _wal_only_db(path: Path) -> Path:
+    """A DB whose schema lives entirely in an uncheckpointed `-wal`.
+
+    Built in a child that exits via os._exit, so SQLite never checkpoints on
+    close — the shape a live droplet DB has between commits, and the one that
+    separates mode=ro from immutable=1.
+    """
+    child = path.parent / "_build_wal.py"
+    child.write_text(textwrap.dedent(f"""
+        import os, sqlite3, pathlib
+        conn = sqlite3.connect({str(path)!r})
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(pathlib.Path({str(SCHEMA)!r}).read_text())
+        conn.commit()
+        os._exit(0)
+    """))
+    subprocess.run([sys.executable, str(child)], check=True)
+    child.unlink()
+    return path
+
+
 def _columns(path: Path, table: str) -> set[str]:
     conn = sqlite3.connect(path)
     try:
@@ -101,10 +140,53 @@ def test_a_current_db_is_green(tmp_path):
     assert "OK" in proc.stdout
 
 
-def test_green_requires_every_table_in_schema_sql(tmp_path):
-    """11 tables today. The count is read from schema.sql, not restated, so
-    adding a table to that file extends the check with no second edit."""
+def test_the_expected_table_count_is_pinned(tmp_path):
+    """11 tables today. expected_schema() reads state/schema.sql, so a table
+    added there is checked with no edit to the script — this assertion is the
+    tripwire that makes such an addition deliberate. It IS a second edit, on
+    purpose: bump it in the same commit that adds the table."""
     assert len(preflight.expected_schema()) == 11
+
+
+def test_only_column_names_are_compared(tmp_path):
+    """The limit, stated by a test so nobody has to trust the docstring.
+
+    A `tickets` rebuilt without `UNIQUE (decision_id)` — schema.sql:79, the
+    constraint behind invariant 5's order idempotency — is GREEN here.
+    Comparing constraints is a separate, deferred decision; what is not
+    optional is that the OK message admits the limit instead of claiming a
+    match it never tested.
+    """
+    db = _live_db(tmp_path / "fund.sqlite")
+    conn = sqlite3.connect(db)
+    conn.execute("DROP TABLE tickets")
+    conn.execute("CREATE TABLE tickets (id TEXT PRIMARY KEY,"
+                 " decision_id INTEGER NOT NULL, ticker TEXT NOT NULL,"
+                 " side TEXT NOT NULL, max_qty INTEGER NOT NULL,"
+                 " stop_price REAL, expires_at TEXT NOT NULL,"
+                 " status TEXT NOT NULL DEFAULT 'open', reason TEXT,"
+                 " created_at TEXT NOT NULL)")   # same names, no UNIQUE
+    conn.commit()
+    conn.close()
+
+    code, report = preflight.check(str(db))
+    assert code == preflight.OK
+    assert "Names only" in report
+    assert "UNIQUE" in report
+
+
+def test_a_db_ahead_of_the_repo_is_green(tmp_path):
+    """One-directional on purpose: `git checkout <previous-sha>` for a code
+    rollback (ops/README.md § Rollback) leaves a DB that already ran the newer
+    migration, and that must not read as a failure."""
+    db = _live_db(tmp_path / "fund.sqlite")
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE signals ADD COLUMN from_the_future TEXT")
+    conn.execute("CREATE TABLE a_later_table (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    assert _run(db).returncode == preflight.OK
 
 
 # --- RED: migrations pending -------------------------------------------------
@@ -202,20 +284,114 @@ def test_a_file_that_is_not_a_database_cannot_determine(tmp_path):
     assert _run(db).returncode == preflight.CANNOT_DETERMINE
 
 
-def test_a_wal_needing_recovery_cannot_determine(tmp_path, monkeypatch):
-    """The live DB runs in WAL. A read-only open of a DB whose -wal must be
-    replayed fails with SQLITE_READONLY_RECOVERY rather than reading a torn
-    snapshot, and that is 'cannot determine' — red, not green."""
+def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
+    """Zero of the 11 tables is a wrong FUND_DB or a database nothing has
+    initialized — not drift. Reporting UNEXPLAINED DIVERGENCE would send an
+    operator hunting a schema change that never happened."""
+    db = tmp_path / "fund.sqlite"
+    db.touch()                                    # zero bytes, valid to open
+    proc = _run(db)
+
+    assert proc.returncode == preflight.CANNOT_DETERMINE
+    assert "none of the 11 tables" in proc.stderr
+
+
+def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
+    """e.g. FUND_DB pointing at fundbt's separate trial-registry DB."""
+    db = tmp_path / "registry.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE trial_registry (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    proc = _run(db)
+    assert proc.returncode == preflight.CANNOT_DETERMINE
+    assert "trial_registry" in proc.stderr        # names what it did find
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory mode")
+def test_an_unwritable_directory_cannot_determine(tmp_path):
+    """The REAL failure mode of a read-only open, measured rather than
+    assumed. A WAL database needs its `-shm` sidecar beside the main file and
+    a read-only open still has to create it, so an unwritable DIRECTORY blocks
+    the read. This test replaces one that monkeypatched sqlite3.connect to
+    raise 'attempt to write a readonly database' and attributed it to WAL
+    recovery — the code never had that behaviour, so the test pinned a
+    fiction and could not have caught this."""
+    home = tmp_path / "locked"
+    home.mkdir()
+    db = _live_db(home / "fund.sqlite")
+    _drop_sidecars(db)
+    home.chmod(0o555)
+    try:
+        proc = _run(db)
+    finally:
+        home.chmod(0o755)                         # so tmp_path can be cleaned
+
+    assert proc.returncode == preflight.CANNOT_DETERMINE
+    assert "not writable" in proc.stderr
+
+
+def test_a_wal_holding_the_only_copy_of_the_schema_is_read(tmp_path):
+    """Why mode=ro and not immutable=1, pinned. With the DDL still in an
+    uncheckpointed `-wal`, mode=ro reads all 11 tables; immutable=1 skips the
+    WAL and sees the stale snapshot behind it, which would report a fully
+    migrated database as empty. It also documents that a `-wal` needing replay
+    does NOT fail the open — the old comment claimed it did."""
+    db = _wal_only_db(tmp_path / "fund.sqlite")
+    assert db.with_name(db.name + "-wal").exists()
+
+    assert _run(db).returncode == preflight.OK
+
+    stale = sqlite3.connect(
+        f"file:{db}?immutable=1", uri=True)
+    try:
+        found = {r[0] for r in stale.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        stale.close()
+    assert "events" not in found, "immutable=1 would have seen the WAL"
+
+
+def test_a_crash_is_cannot_determine_not_migrations_pending(tmp_path,
+                                                            monkeypatch):
+    """An unhandled exception used to exit 1 — the MIGRATIONS_PENDING code —
+    so a broken state/schema.sql told the operator to run a migration. Still
+    red either way, but the wrong red, and distinguishable outcomes are the
+    whole point of this script."""
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("incomplete input")
+
+    monkeypatch.setattr(preflight, "expected_schema", boom)
+    monkeypatch.setenv("FUND_DB", str(_live_db(tmp_path / "fund.sqlite")))
+    out = io.StringIO()
+    monkeypatch.setattr(preflight.sys, "stderr", out)
+
+    assert preflight.main() == preflight.CANNOT_DETERMINE
+    assert "preflight itself failed" in out.getvalue()
+    assert "incomplete input" in out.getvalue()   # nothing swallowed
+    assert "Traceback" in out.getvalue()
+
+
+def test_a_broken_schema_sql_exits_cannot_determine(tmp_path):
+    """End to end, through the real process: the reviewer's reproduction."""
+    broken = tmp_path / "schema.sql"
+    broken.write_text("CREATE TABLE oops (")
     db = _live_db(tmp_path / "fund.sqlite")
 
-    def boom(*a, **kw):
-        raise sqlite3.OperationalError(
-            "attempt to write a readonly database")
+    env = {**os.environ, "FUND_DB": str(db)}
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "import runpy, sys, pathlib;"
+         f" sys.argv=['preflight_schema'];"
+         f" import importlib.util;"
+         f" spec=importlib.util.spec_from_file_location('pf', {str(SCRIPT)!r});"
+         " m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m);"
+         f" m.SCHEMA=pathlib.Path({str(broken)!r}); sys.exit(m.main())"],
+        capture_output=True, text=True, env=env, cwd=str(ROOT))
 
-    monkeypatch.setattr(preflight.sqlite3, "connect", boom)
-    code, report = preflight.check(str(db))
-    assert code == preflight.CANNOT_DETERMINE
-    assert "readonly" in report
+    assert proc.returncode == preflight.CANNOT_DETERMINE, proc.stderr
+    assert proc.returncode != preflight.MIGRATIONS_PENDING
 
 
 # --- the four outcomes are distinguishable -----------------------------------

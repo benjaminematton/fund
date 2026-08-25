@@ -40,8 +40,15 @@ _ATTRIBUTION = (
 # The one list of what each migration adds. Both the writer (apply) and the
 # reader (pending) consume it, so a migration cannot be applied by one and
 # invisible to the other — which is exactly how a preflight comes back green
-# against a database that is behind. Adding a migration means adding an entry
-# here and nothing else.
+# against a database that is behind.
+#
+# THE LIMIT OF THIS MAP. It holds column NAMES, so an entry can only describe
+# one shape of migration: ADD COLUMN ... TEXT NOT NULL DEFAULT 'unknown',
+# which is what apply() hardcodes below. A migration of any other shape — a
+# new table, another type, a backfill, anything destructive — needs code here
+# AND a matching change in scripts/preflight_schema.py, which reports a
+# missing column from this map as closable by that exact ALTER. Adding a
+# tuple is enough only while the new migration is that one shape.
 MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "0001_attribution": _ATTRIBUTION,
 }
