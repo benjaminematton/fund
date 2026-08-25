@@ -1,5 +1,16 @@
 # Critic Seat Implementation Plan
 
+<!-- plan-status -->
+> **Status: DELIVERED, follow-up active — 2026-08-25.** `agents/config/critic.yaml` is on `master` and `state/schema.sql` carries `strategy_critiques`.
+>
+> A session is working this area now — check `~/.claude/align/fund/map.md` for the current owner before editing anything it touches.
+>
+> **Checkbox state is not a progress signal and nothing reads it.** Measured 2026-08-24 across
+> every plan file in this directory: 359 unchecked boxes, zero checked, including plans whose work
+> demonstrably shipped. Ticking them is friction for the ticker and invisible to everyone else.
+> Work in flight lives on the board — the `wayfinder:map` issue and its children. This plan is the
+> *how*, referenced from an issue; it is never read as state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stand up the Critic seat with a **measured** G1 mechanism-alignment capability, so the G1 alignment gate has both a seat to run in and a number saying whether an LLM reviewer can actually do the job.

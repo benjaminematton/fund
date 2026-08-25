@@ -1,5 +1,16 @@
 # Morning-standup dispatch Implementation Plan
 
+<!-- plan-status -->
+> **Status: DELIVERED — 2026-08-25.** Artifact A (the rewritten `~/.claude/skills/morning-standup/SKILL.md`) is deployed. Artifact B (this repo's board) landed 2026-08-25: label `wayfinder:map`, map issue #49, 16 children in priority order, `blocked_by` edges, and a declared region on every child.
+>
+> Caution from the design's §10: Phases 2, 4, 5 and the Phase 6 broadcast have **never executed**. The first real dispatch is their first true test and should be run with a human watching.
+>
+> **Checkbox state is not a progress signal and nothing reads it.** Measured 2026-08-24 across
+> every plan file in this directory: 359 unchecked boxes, zero checked, including plans whose work
+> demonstrably shipped. Ticking them is friction for the ticker and invisible to everyone else.
+> Work in flight lives on the board — the `wayfinder:map` issue and its children. This plan is the
+> *how*, referenced from an issue; it is never read as state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rewrite `~/.claude/skills/morning-standup/SKILL.md` so the daily standup ends in lanes owned — polling whoever is live, computing lanes from a GitHub issue board, and dispatching the remainder — instead of stopping at a digest.

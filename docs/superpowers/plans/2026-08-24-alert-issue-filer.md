@@ -1,5 +1,16 @@
 # Alert Identity and Issue Filer Implementation Plan
 
+<!-- plan-status -->
+> **Status: DELIVERED — 2026-08-25.** `scripts/file_alert_issues.py`, `scripts/check_alert_codes.py` and `tests/test_alert_codes_lint.py` are on `master`.
+>
+> This plan closed the first arrow of the alert -> issue -> standup loop. The last arrow is what the board itself now provides.
+>
+> **Checkbox state is not a progress signal and nothing reads it.** Measured 2026-08-24 across
+> every plan file in this directory: 359 unchecked boxes, zero checked, including plans whose work
+> demonstrably shipped. Ticking them is friction for the ticker and invisible to everyone else.
+> Work in flight lives on the board — the `wayfinder:map` issue and its children. This plan is the
+> *how*, referenced from an issue; it is never read as state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give every alert a stable machine identity, then file an unmatched alert as a GitHub issue so it becomes tracked work.

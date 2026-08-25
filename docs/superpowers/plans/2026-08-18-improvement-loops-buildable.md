@@ -1,5 +1,16 @@
 # Improvement Loops (buildable half) Implementation Plan
 
+<!-- plan-status -->
+> **Status: DELIVERED, one task outstanding — 2026-08-25.** `build_trace()` (`evals/live.py`), `scripts/score_day.py` and `reflection_frame()` (`orchestrator/reflect.py`) are all on `master`.
+>
+> Follow-up on the board: #4 — the daily cycle still has no reflection *stage*, so `resolutions.reflection` has no writer. Filed from this plan's Task 5.
+>
+> **Checkbox state is not a progress signal and nothing reads it.** Measured 2026-08-24 across
+> every plan file in this directory: 359 unchecked boxes, zero checked, including plans whose work
+> demonstrably shipped. Ticking them is friction for the ticker and invisible to everyone else.
+> Work in flight lives on the board — the `wayfinder:map` issue and its children. This plan is the
+> *how*, referenced from an issue; it is never read as state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make a trading day reviewable — persist every seat turn as a trace, attribute every graded call to a charter version, and produce a daily severity-ranked scorecard of the turns worth reading.

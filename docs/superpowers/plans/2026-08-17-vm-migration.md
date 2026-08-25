@@ -1,5 +1,16 @@
 # VM Migration Implementation Plan
 
+<!-- plan-status -->
+> **Status: DELIVERED — 2026-08-25.** `ops/fund-daily.service` and the rest of the unit set are on `master`; the droplet runs the schedule.
+>
+> Follow-up on the board: #17 (`make preflight` never opens the live DB, so a pending migration gets a false green).
+>
+> **Checkbox state is not a progress signal and nothing reads it.** Measured 2026-08-24 across
+> every plan file in this directory: 359 unchecked boxes, zero checked, including plans whose work
+> demonstrably shipped. Ticking them is friction for the ticker and invisible to everyone else.
+> Work in flight lives on the board — the `wayfinder:map` issue and its children. This plan is the
+> *how*, referenced from an issue; it is never read as state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move the fund's two scheduled jobs from launchd on a Pacific Mac to systemd on a DigitalOcean Debian 13 droplet set to `America/New_York`, without ever letting two hosts hold a live schedule.
