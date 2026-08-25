@@ -116,20 +116,23 @@ assigned on a guess about what it touches.
 Read a plan file only when a candidate lane names one, and only as the how.
 
 **Degradation is mandatory, and it has two shapes.** A repo with no `wayfinder:*` label at all is not on
-the convention: say so in one line and stop there — never ask the human to name lanes for it, today or
-on any later morning, since there is no board to have an opinion about. A repo that uses the convention
-but currently shows zero-with-label or several map-issue matches: say so in one line, skip the frontier
-query, and ask the human to name the lanes. **That ask does not block the run, and the run does not
-invent lanes to fill the gap.** It reports the board, states plainly that lanes are unnamed and why, and
-continues through Phase 1's roster and Phase 3's digest exactly as written. The run ends having asked;
-an answer that never arrives is a reported state, not a failure. Never invent a priority order from an
-unordered issue list; never read a plan checkbox as state.
+the convention: state that once, flatly, as a fact — never re-litigate it as a question, morning to
+morning. That fact is not a reason to stop: it folds into the same open-issues report and lane-naming
+offer as the other shape, below. A repo that uses the convention but currently shows zero-with-label or
+several map-issue matches: say so in one line, skip the frontier query, and ask the human to name the
+lanes. **That ask does not block the run, and the run does not invent lanes to fill the gap.** It reports
+the board, states plainly that lanes are unnamed and why, and continues through Phase 1's roster and
+Phase 3's digest exactly as written. The run ends having asked; an answer that never arrives is a
+reported state, not a failure. Never invent a priority order from an unordered issue list; never read a
+plan checkbox as state.
 
-**Neither shape of degradation is "no work."** A repo with open issues always has work to report,
-whether or not a map issue exists. Both shapes above still list the open issues, name the ones nobody is
-assigned to, and lead with anything the repo's own labels mark as high severity, ahead of everything
-else. A morning is "quiet" only when there are no open issues and no live sessions (§6) — a repo that is
-off the board convention, or between maps, can still be loud.
+**Neither shape of degradation is "no work," and neither forecloses naming lanes.** A repo with open
+issues always has work to report, whether or not a map issue exists, and whether or not it has ever
+adopted the convention. Both shapes list the open issues, name the ones nobody is assigned to, lead with
+anything the repo's own labels mark as high severity ahead of everything else, and let the human name
+today's lanes from that list if they choose to — non-blocking, same rule as above: silence continues the
+run with lanes reported unnamed, never invented. A morning is "quiet" only when there are no open issues
+and no live sessions (§6) — a repo that is off the board convention, or between maps, can still be loud.
 
 **No confirmation gate.** The candidate lanes go straight into the poll. Priority was decided when the
 map issue's children were ordered; re-asking every morning re-asks a settled question. The human's
@@ -310,7 +313,7 @@ human. Its sibling table row changes from *"Nothing happens afterwards"* to *"En
 | No sessions, board has work | Skip the poll entirely. Report the lanes, say "open N". This is now the normal empty-roster path, not a degenerate one |
 | No sessions, no open issues at all | Say so, write nothing, stop. The only "quiet" run: no work and no one active |
 | No map issue in this repo, or several | Say so in one line, fall back to human-named lanes, continue without blocking, reconcile normally. Still report open issues; never call this quiet |
-| No `wayfinder:*` label in this repo at all | Say so once, in one line — not a daily question. Still report open issues |
+| No `wayfinder:*` label in this repo at all | Say so once, flatly — not a daily question. Report open issues, criticals first, and let the human name today's lanes from them if they want to |
 | Fewer chats opened than asked | Bind what appeared, name the unbound lanes, wait |
 | Capacity yes but region collides | Flag → `/get-aligned`. No assignment |
 | Fleet grew mid-run | Re-check the roster immediately before dispatch; state coverage |
