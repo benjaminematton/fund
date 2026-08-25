@@ -34,13 +34,17 @@ Three Claude Code surfaces overlap this and none covers it:
 - **Agent teams** — a lead spawns teammates who share a file-locked task list. Cannot adopt chats the
   human already opened; one team per session; the lead is fixed for its lifetime; teammates are not
   worktree-isolated. Experimental and off by default.
-- **Agent view** (`claude agents`) — a dashboard over *background-dispatched* sessions. Human-opened
-  interactive sessions appear only after `/bg` backgrounds them.
+- **Agent view** (`claude agents`) — built for dispatching and monitoring *background-dispatched*
+  sessions; its interactive dashboard surfaces a human-opened session only after `/bg` backgrounds it.
+  Its `--json` listing is not so limited: it lists every local session, human-opened interactive ones
+  included, distinguished by a `kind` field (`"interactive"` vs `"background"`). It has no poll, no
+  digest, no board, and no lane assignment.
 - **Cross-session messaging** — the `ListAgents`/`SendMessage` transport this skill already runs on.
   Transport, explicitly not coordination.
 
 The gap is a fleet of long-lived, human-opened, worktree-spread sessions working a board that outlives
-any one session. That is what this skill owns.
+any one session. Agent view's JSON listing can see such a fleet; nothing in it polls, reads a board, or
+assigns lanes. That is what this skill owns.
 
 Two mechanisms are worth taking from those surfaces, and §4 does: `notify_when_idle`, and an explicit
 claim-release step.
@@ -97,7 +101,10 @@ git worktree list --porcelain
 every session sitting in a worktree, which is most of this repo's live sessions. So Phase 1 calls
 `claude agents --json` unscoped and keeps only rows whose `cwd` equals `<repo-root>` or is under one
 of the paths `git worktree list --porcelain` reports for this repo (which includes `<repo-root>`
-itself plus every registered worktree, in or out of tree).
+itself plus every registered worktree, in or out of tree). This is exact-path equality or containment
+under `path + "/"`, never a bare string-prefix test: siblings like `fund-probes/`, `fund-worktrees/`,
+and `fundablePlayground/` share a string prefix with the repo root without being under it, and
+`cwd.startswith(repo_root)` would wrongly sweep their sessions into the roster.
 
 Each surviving row carries `name`, `sessionId`, `cwd`, `kind`, `startedAt` — **including the calling
 session**, which is identified by matching its own `sessionId` and then **excluded from the poll**
