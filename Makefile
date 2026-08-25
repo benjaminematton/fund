@@ -102,7 +102,23 @@ surface-pin: deps
 # evals/traces/ is tracked in git, so leftovers dirty the droplet checkout.
 # No `deps` prerequisite: this runs /opt/fund/.venv as the fund user, and
 # `deps` would sync the invoking user's checkout instead.
+#
+# Step 1 opens the LIVE database at $$FUND_DB and reports its schema state.
+# Read-only: it never calls state.db.connect(), which would APPLY the pending
+# migration it exists to report (#17). It runs FIRST because it is free and
+# the eval suite is not — a live DB the code cannot run against should stop
+# the deploy before ~$$0.31 of real LLM turns, not after. Same uid and
+# EnvironmentFile as step 2: FUND_DB comes from /etc/fund/env, and the live DB
+# is owned by `fund`. Exit codes: 0 ok, 1 migrations pending, 2 unexplained
+# divergence, 3 cannot determine. Only 0 continues.
 preflight:
+	systemd-run --uid=fund --pipe --wait --quiet \
+	  --property=WorkingDirectory=/opt/fund \
+	  --property=EnvironmentFile=/etc/fund/env \
+	  --property=Environment=PATH=/home/fund/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin \
+	  --property=Environment=HOME=/home/fund \
+	  --property=TimeoutStartSec=1min \
+	  /opt/fund/.venv/bin/python3 scripts/preflight_schema.py
 	systemd-run --uid=fund --pipe --wait --quiet \
 	  --property=WorkingDirectory=/opt/fund \
 	  --property=EnvironmentFile=/etc/fund/env \

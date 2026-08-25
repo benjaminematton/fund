@@ -37,24 +37,44 @@ _ATTRIBUTION = (
     ("critiques", "model_id"),
 )
 
+# The one list of what each migration adds. Both the writer (apply) and the
+# reader (pending) consume it, so a migration cannot be applied by one and
+# invisible to the other — which is exactly how a preflight comes back green
+# against a database that is behind. Adding a migration means adding an entry
+# here and nothing else.
+MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "0001_attribution": _ATTRIBUTION,
+}
+
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def apply(conn: sqlite3.Connection) -> list[str]:
-    """Bring `conn` up to date. Returns the migrations applied, [] if current.
+def pending(conn: sqlite3.Connection) -> list[str]:
+    """Migrations `conn` has not had applied. Reads only — writes nothing.
+
+    The seam scripts/preflight_schema.py needs: it must report whether the
+    live database is behind WITHOUT bringing it up to date. connect() applies
+    migrations, so asking that question through connect() answers it by
+    changing it.
 
     Reported per migration, not per column: a partially-migrated database (one
-    table done, one not) completes and says "0001_attribution" once, because
-    what the caller wants to know is whether the schema moved.
+    table done, one not) says "0001_attribution" once, because what the caller
+    wants to know is whether the schema is current.
     """
-    applied: list[str] = []
-    missing = [(t, c) for t, c in _ATTRIBUTION if c not in _columns(conn, t)]
-    if missing:
-        for table, column in missing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column}"
-                         " TEXT NOT NULL DEFAULT 'unknown'")
+    return [name for name, columns in MIGRATIONS.items()
+            if any(c not in _columns(conn, t) for t, c in columns)]
+
+
+def apply(conn: sqlite3.Connection) -> list[str]:
+    """Bring `conn` up to date. Returns the migrations applied, [] if current."""
+    applied = pending(conn)
+    for name in applied:
+        for table, column in MIGRATIONS[name]:
+            if column not in _columns(conn, table):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column}"
+                             " TEXT NOT NULL DEFAULT 'unknown'")
+    if applied:
         conn.commit()
-        applied.append("0001_attribution")
     return applied
