@@ -8,20 +8,157 @@ Update it when a milestone lands or an open item closes — not per commit.
 
 ---
 
-## Status — 2026-08-19
+## Status — 2026-08-25
 
 The following table summarizes where the fund stands:
 
 | Item | Value |
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
-| **Live since** | 2026-08-17 — first clean end-to-end day |
-| **Tests** | 955 offline green at `51bc7eb`, identical on macOS arm64, linux/amd64 and linux/arm64 |
-| **CI** | runs all 909 (was 36); **first green run in the repo's history on 2026-08-19** |
-| **Seats** | PM, exec, and **two** analysts — `analyst` (price/fundamentals) and `news` (news/sentiment, read-only, blind to the book). The `news` seat is deployed but **defective**, see #6 |
+| **Live since** | 2026-08-17 — first clean end-to-end day; **seven sessions run**, 08-17 through 08-25, every one completing all seven checkpoints |
+| **Tests** | 1180 offline green (1 skipped, 7 deselected) at `11dcb9a` on macOS arm64 |
+| **CI** | green on `2f8a046`, installing `requirements.lock` — the same resolved versions the droplet trades on |
+| **Seats** | PM, exec, and **two** analysts — `analyst` (price/fundamentals) and `news` (news/sentiment, read-only, blind to the book; **#6 still open**, though it has cited real headlines every day since 08-21). The **Critic is built, eval-gated, and not in the daily cycle**: `orchestrator/daily.py:200` still pre-inserts `clear`/`no_critic_seat`, and did so again on 2026-08-25 |
 | **Watchlist** | NVDA, MSFT, AAPL |
-| **Open position** | NVDA 80 @ 227.09, stop 215 gtc (expires 2026-11-17) — **hand-placed 2026-08-19 11:46 PDT** after two sessions unprotected (see below) |
-| **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
+| **Open position** | **NVDA 40** at the broker, avg entry 227.09, `qty_available` 0. The fund's own records account for **80** and hold no exit row — see the 08-21 → 08-24 entry |
+| **Protection** | `manual-protective-stop-nvda-2026-08-24`, sell 40 stop **200** gtc, expires 2026-11-23 — placed by hand 2026-08-25 04:00 ET. The fund's record promises **215**; nothing compares the two |
+| **Audits** | FAILED 08-20, 08-21 and 08-24, clean 08-25. Every failure is one thread: the NVDA position |
+| **Open work** | on the board — GitHub issue **#49**, 16 children in severity-then-dependency order |
+| **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18, deployed at `c4d8e87` |
+
+### 2026-08-25 — an external audit, and where open work now lives
+
+An external audit filed **#38–#46**, two of them `severity:critical`, and none
+of them a run failure — they are all conditions that would be silent until they
+bit:
+
+- **#39** — a lost positions payload makes the gate maximally permissive *and*
+  blocks every sell.
+- **#38** — sector and cash caps are computed per ticket against a snapshot
+  frozen once per day, so three individually correct approvals can breach the
+  cap.
+- **#40** — an order can fill while SQLite permanently records that nothing
+  traded (submit-then-write in the PostToolUse hook).
+- **#41** — the eval suite is saturated: 124 of 127 committed trials pass, the
+  blocking invariants have never once fired, and injected-defect ablations
+  caught **1 of 3**. The measurement that matters most to the "trusted enough
+  for real money" claim, and it says the current evidence is thin.
+
+**Open work now lives on the board, not in this file.** Issue **#49** is the
+map: 16 children ordered severity-then-dependency, each declaring a region.
+Two rules from it are worth repeating here, both measured rather than asserted:
+plan files are the inside of a lane and never state (359 unchecked boxes across
+seven plans, including plans whose work shipped), and a GitHub assignee cannot
+identify a session, since every session authenticates as the same user.
+
+The "Open items" section below is now a pointer plus the few things that are
+not issues — a human reconciliation, and the real-money decision.
+
+### 2026-08-21 → 08-24 — the stop fired, and the fund's books never learned
+
+Read from the broker on 2026-08-25 (read-only), which is the only place this
+chain is legible — the fund's `orders` table shows one row, the 08-17 buy:
+
+```
+910638b1-…                                 sell 80 STOP 215 day  EXPIRED  08-17 20:00Z   ← the 08-19 incident
+manual-protective-stop-nvda-2026-08-19     sell 80 STOP 215 gtc  REPLACED
+manual-protective-stop-nvda-2026-08-20-40  sell 40 STOP 215 gtc  FILLED   08-21 14:24:35Z @ 214.85
+manual-protective-stop-nvda-2026-08-24     sell 40 STOP 200 gtc  OPEN     submitted 08-25 08:00:25Z
+```
+
+The 80-share hand-placed stop was replaced by a 40-share one, by hand and
+outside the gate. This file records that it happened, not that it was ruled:
+`~/.claude/align/fund/decisions.md` still lists "the NVDA stop's disposition —
+cancel, resize 80→40, or leave" under *not yet decided* as of 2026-08-20.
+
+**That 40-share stop then filled at 214.85 on 08-21 at 10:24 ET**, 47 minutes
+after that morning's run had already checked. So the day's protection
+assertion saw the pre-fill account and reported it exactly right — "the broker
+covers only 40 of 80 shares" — and was stale by lunchtime. The remaining 40
+shares were then unprotected from 08-21 10:24 ET until 08-25 04:00 ET: the rest
+of Friday, the weekend, and all of Monday's session.
+
+**08-24 is the first firing of `assert_positions_accounted`** (`26db893`,
+merged 08-20), and it named the fault precisely: *the fund's own orders account
+for 80 shares but the broker holds 40 — no recorded order explains the
+difference*. This is the hole the 08-19 entry predicted in writing ("if that
+hand-placed stop fills, the fund's database will go on believing it holds NVDA
+80 while the broker is flat"), built before it happened and correct on its
+first live encounter.
+
+**It is still open.** No exit row exists, so the fund's trade history omits a
+realized loss of 40 × (227.09 − 214.85) = **$489.60**, and `_recorded_holdings`
+will keep answering 80. The alert is deliberately raised **once per distinct
+discrepancy** (`orchestrator/protection.py:315-333` reads the last finding
+rather than any finding), so 08-25's silence is the design working, not the
+condition clearing. Reconciling it needs a human: the fund has no code path
+that writes an order it did not place.
+
+**Today is quiet for a second reason worth stating plainly.** The 08-25 stop
+covers 40 of 40 shares, so the protection check passes — and it passes on share
+count alone (`covered >= held`, `protection.py:_covering_qty`). The promised
+price is read only to compose the alert text. The record promises a stop at
+**215** and the live order sits at **200**; nothing in the system compares
+those two numbers, so a stop moved to any level satisfies the assertion. Not
+tracked on the board yet.
+
+### 2026-08-20 — the sell the fund could not execute
+
+The PM decided NVDA sell 40 (analyst 55% bearish, unrebutted), the gate
+approved it, and ticket `c0a9ae97` expired unexecuted. The audit failed with
+"decision NVDA stuck at approved". The cause is already recorded as a
+limitation below — a full-size GTC stop reserves the whole position, the broker
+reports `qty_available` 0, and a partial sell is refused — but this is the day
+it stopped being theoretical: **the fund has now been unable to act on a
+decision it made correctly.** `ADR-0003 reducing-a-stopped-position` (amend the
+stop down, then sell) remains unmerged and unimplemented, and the position
+still shows `qty_available` 0 today.
+
+### 2026-08-20 → 08-25 — the plumbing that landed while the book held
+
+Six sessions of holds bought six sessions of hardening. None of it changed a
+trading decision; all of it changed what the fund can see.
+
+- **One lock for three hosts** (`78e2174`). `CLAUDE.md` said the SDK and
+  `slack_bolt` were "pinned in `pyproject.toml`"; both were ranges, so local,
+  CI and the droplet each resolved whatever was newest on the day their venv
+  was built — **20 packages differed**, `mcp` among them, the transport every
+  order rides. Local had never run `make test` against the versions that trade.
+  `requirements.lock` is seeded from the droplet's live set, so production
+  changed nothing and the other two converged onto it. This closes the "pin the
+  SDK exactly?" item that stood here — the answer was that there had never been
+  a pin to loosen.
+- **The gate's account preconditions get a baseline** (PR #31). The gate's
+  arithmetic assumes settings — multiplier, shorting, day-trade status — that
+  nothing ever read back. A drift check now compares the live paper account
+  against a pinned baseline and **stops the day if the baseline is unreadable**,
+  because an unreadable baseline is not evidence of no drift.
+- **Alerts carry codes, and a code becomes an issue** (PR #48). `append_alert`
+  is the only way to write a `kind='alert'` row and takes a stable `code`; an
+  AST lint in `make lint` keeps it that way. `scripts/file_alert_issues.py`
+  turns those codes into GitHub issues, one issue per condition however the
+  prose changed. **Built, not scheduled** — it is a hand-run script and dry-run
+  by default; no unit invokes it, so nothing files issues unattended yet.
+- **The watchdog can tell a dead box from a failed run** (`d955a68`). The
+  heartbeat was `ExecStartPost`, which runs only on success — so a *failed* day
+  and a *powered-off droplet* both produced no ping and the same alert.
+  `ExecStopPost=` with `${EXIT_STATUS}` distinguishes them.
+- **The improvement loops are live in production** (PR #7). Since 08-20 every
+  `signals` and `decisions` row carries `charter_version` and `model_id` —
+  `v2`/haiku for both analysts, `v6`/sonnet for the PM, verified in the live DB
+  — one trace per seat turn is written and rides the nightly backup, and a
+  `scorecard` event ranks which turns are worth reading. The pre-inserted
+  critique rows record `none` for both, which is the honest value: no seat ran.
+- **The Critic seat is built, and its gate did not pass** (PRs #21, #22).
+  Advisory on trades, blocking at G1, with an alignment eval that can veto it —
+  and the eval vetoed it: 37 live trials and $2.20 across three rounds, and
+  **none measured the shipped configuration**. Detection under the shipped
+  charter was never observed once; the only uncontaminated evidence is six
+  trials, in which one aligned archetype held and one produced a false alarm.
+  *Untested, not refuted* — and the holdout is unspent, which is what keeps a
+  future measurement honest. G1 does not ship on this evidence. The seat is not
+  wired into the daily cycle and `strategy_specs`/`strategy_critiques` hold
+  **zero rows** in production.
 
 ### 2026-08-19 — the stop that expired at the bell
 
@@ -150,6 +287,12 @@ database will go on believing it holds NVDA 80 while the broker is flat. The
 protection assertion does not catch it either: it iterates broker *positions*,
 and a closed position produces none. Not solved on this branch.
 
+**That is exactly what happened, on 2026-08-21** — the stop (resized to 40 by
+hand in the interim) filled, and the 80-vs-40 gap is still open. See the
+08-21 → 08-24 entry above. The order's `expires_at` no longer applies either:
+that order is `REPLACED`, and its successor expires 2026-11-23. Still nothing
+watches for a gtc expiry.
+
 ### 2026-08-19 — the check that had never passed
 
 `ci` was red on `tests/test_golden.py::test_golden_pass_path`. The prior
@@ -259,6 +402,20 @@ reads as diligence and passes into the PM's evidence unchallenged.
 
 `max_turns: 16` for this seat remains **unmeasured**: the staging figures
 (8 of 16 turns, $0.0301/day) measured a seat doing nothing useful.
+
+**Update — it produces signals now.** Both defects were fixed in the charter
+(`8cbaa1e`, v2): call `get_news` with symbols only, since the tool's own default
+window is the current day, and report an empty or errored call as *data
+unavailable* rather than as measured silence. v2 has been the deployed version
+since 2026-08-21, and from that day the live rows cite specific stories with
+timestamps — BMO's NVDA initiation at 10:56 UTC, Apple's Irish tax payment at
+12:37 UTC — and the seat has disagreed with the price analyst rather than
+echoing it (bullish 70 on NVDA against the analyst's bearish 60, 08-24).
+
+**#6 stays open on purpose**: the fix is prompt wording, and nothing tests
+prompt wording. The regression that would re-break it is invisible to the whole
+offline suite. That is #18 (no eval seat for news), which #41 now says would
+need a suite with teeth to be worth anything.
 
 ### 2026-08-18 — the feedback loop closed, and the crossing that nearly emptied it
 
@@ -421,18 +578,26 @@ hosts means genuine duplicate orders that `client_order_id` cannot dedupe.
 | unit | fires | does |
 |---|---|---|
 | `fund-daily.timer` | 09:35 ET Mon–Fri | full trading day, self-audits |
-| `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY |
-| `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY, **then writes the nightly `resolutions`** (two `ExecStart=` lines, in that order) |
+| `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot — DB, journals and traces |
 | `fund-alert@.service` | on any of the preceding three timers failing | posts the failure to `#risk`, mentioning the operator |
-| healthchecks.io `fund-daily` | **when a 09:35 ping does not arrive** | alerts `#risk` + email at 10:20 ET |
+| healthchecks.io `fund-daily` | **when a 09:35 ping does not arrive, or arrives non-zero** | alerts `#risk` + email at 10:20 ET |
 
 The watchdog is off-box on purpose: a dead droplet cannot run its own. It is fed
-by `ExecStartPost` on `fund-daily.service`, so a ping means the day *completed*;
-the `-` prefix is fail-safe in the right direction — a failed ping cannot fail
-the trading day it reports on, and a ping that never lands makes the watchdog
-alert. Errors there can only cause a false alarm, never silence. The check must
-be in **cron** mode (`35 9 * * 1-5`); the default simple period mode would make
-Friday's ping set Saturday's deadline and page every weekend.
+by `ExecStopPost=` on `fund-daily.service` — **not `ExecStartPost=`**, which
+runs only on success and therefore made a failed run and a powered-off droplet
+look identical (both silent). `${EXIT_STATUS}` now travels with the ping, so
+the watchdog can tell them apart (`d955a68`). The `-` prefix is fail-safe in the
+right direction — a failed ping cannot fail the trading day it reports on, and a
+ping that never lands makes the watchdog alert. Errors there can only cause a
+false alarm, never silence. The check must be in **cron** mode
+(`35 9 * * 1-5`); the default simple period mode would make Friday's ping set
+Saturday's deadline and page every weekend.
+
+**Nothing else is scheduled.** `scripts/file_alert_issues.py` turns alert codes
+into GitHub issues but no unit invokes it — it is hand-run and dry-run by
+default. So an alert reaches Slack unattended and becomes a tracked issue only
+when a human runs the filer.
 
 The timezone is pinned **in the `OnCalendar` expression** as well as on the
 host, so the schedule survives a host timezone change. `Persistent=false`
@@ -499,6 +664,15 @@ either.
 | 2026-08-19 | clean run; **found the NVDA stop had expired at the 08-17 bell** — two sessions unprotected, never breached; stop re-placed by hand at 11:46 PDT |
 | 2026-08-19 | the `news` seat's first live signals asserted "No news published" on a day with 30 articles — zero-width query, and a charter that licensed it (#6) |
 | 2026-08-20 | missing-stop class closed: the gate requires `gtc`, and the day asserts every position is protected (`51bc7eb`) — leg inheritance and leg visibility both measured live |
+| 2026-08-20 | **first decision the fund could not execute** — NVDA sell 40 approved, ticket `c0a9ae97` expired: a full-size stop reserves the position |
+| 2026-08-20 | improvement loops live in production — traces per seat turn, `charter_version` + `model_id` on every row, a daily scorecard (PR #7) |
+| 2026-08-20 | one `requirements.lock` for local, CI and the droplet; 20 packages had differed, `mcp` among them (`78e2174`) |
+| 2026-08-20 | the Critic seat merged — advisory on trades, blocking at G1, eval-gated; **not wired into the daily cycle** (PRs #21, #22) |
+| 2026-08-21 | the hand-placed NVDA stop, resized to 40, **filled at 214.85** — position 80 → 40 |
+| 2026-08-21 | the gate's account preconditions get a pinned baseline; an unreadable baseline stops the day (PR #31) |
+| 2026-08-24 | `assert_positions_accounted` fires for the first time: records say 80, broker holds 40 — still unreconciled |
+| 2026-08-24 | alerts carry stable codes and can be filed as issues; the watchdog can tell a dead box from a failed run (PRs #47, #48) |
+| 2026-08-25 | an external audit files **#38–#46**, two critical; open work moves onto the board (**#49**) |
 
 ### The stop-leg shape the broker never accepted
 
@@ -518,22 +692,39 @@ move.
 
 ## Open items
 
-**Now**
+**Coded work lives on the board — GitHub issue #49**, 16 children in
+severity-then-dependency order, each with a region. Do not re-derive priority
+from this file; reorder the children instead. What follows is only what is *not*
+an issue.
 
-- [ ] **Decide whether to pin `claude-agent-sdk` exactly.** CI now resolves the
-      SDK and `mcp` fresh on every run, so a future release can break the build.
-      That is deliberate — it surfaces where it previously hid — but it is a
-      standing exposure, and `~=0.2.116` is what let `mcp` 2.0 in via a cap the
-      SDK widened underneath it. Pinning reaches the droplet, so it needs a human
-      commit either way. Not urgent while the break is test-only.
+**Now — needs a human, not a branch**
+
+- [ ] **Reconcile the NVDA position.** The broker holds 40; `orders` accounts
+      for 80 and has no exit row, so the fund's trade history is missing a
+      realized loss of $489.60. No code path writes an order the fund did not
+      place, and building one would alert on every hand-placed intervention
+      these alerts exist to request. The 08-24 alert has already fired and will
+      not repeat for this discrepancy.
+- [ ] **Rule the NVDA stop's disposition.** Still listed *not yet decided* in
+      `~/.claude/align/fund/decisions.md`, while the position has since been
+      halved by a fill and re-covered by hand at a different price (200 vs the
+      215 on record).
+- [ ] **A promised stop is checked in shares, not in price** — measured
+      2026-08-25, see the 08-21 → 08-24 entry. Not on the board; decide whether
+      it belongs there or is deliberate.
 
 **Next branches** — each belongs in a **new chat**, per the standing rule that
 new implementation branches get fresh context.
 
 - [ ] **Agent eval.** Scoped: see the "Eval scoping" section. Start with the
-      injection case at the PM boundary.
+      injection case at the PM boundary. **#41 raises the stakes**: the existing
+      suite passes 124 of 127 trials, its blocking invariants have never fired,
+      and ablations caught 1 injected defect in 3.
 - [ ] **Union asymmetry** in the price-history exclusion (ledgered ruling,
       2026-08-17)
+- [x] ~~**Decide whether to pin `claude-agent-sdk` exactly.**~~ Answered by
+      `78e2174`: there had never been a pin to loosen. `requirements.lock` now
+      installs one resolution on local, CI and the droplet.
 - [x] ~~**Resolutions and reflection loop**~~ — **half done.** `resolutions` is
       written nightly (`3ff004e`) and `calibration/rows.py` grades it. What
       remains is the reflection stage that would write `resolutions.reflection`;
@@ -588,11 +779,26 @@ new implementation branches get fresh context.
 
 ## Known limitations — stated plainly
 
-- **No agent judgment is tested.** The whole suite (see the Tests row above)
-  covers plumbing. Edit `charters/pm.md` or `charters/analyst.md` right now and
-  every test stays green. This is the gap the eval closes — and #6 is what it
-  costs: two prompt-level defects shipped to production and went two live days
+- **Agent judgment is barely tested, and the eval that tests it is saturated.**
+  The offline suite (see the Tests row above) covers plumbing: edit
+  `charters/pm.md` or `charters/analyst.md` right now and every test stays
+  green. There is an eval rig — PM and Critic case sets, graded traces — but
+  #41 measured it: 124 of 127 committed trials pass, the blocking invariants
+  have **never fired**, and injected-defect ablations caught **1 of 3**. A
+  suite that nothing fails is not evidence. #6 is what the gap costs so far:
+  two prompt-level defects shipped to production and went two live days
   unnoticed. `evals/seats/` still holds only `pm.yaml` (#18).
+- **The fund stores no positions table.** What it holds is *implied* by its
+  filled `orders` rows (`protection.py:_recorded_holdings` — the seam is marked
+  there). Any exit it did not place is therefore invisible to its own
+  accounting until a check compares it to the broker, which is exactly the
+  2026-08-21 fill.
+- **The daily scorecard's `model_fallback_used` row is a known false positive.**
+  The SDK routes an auxiliary Haiku call on every turn of a **Sonnet-configured
+  seat**, so the check fires for the PM and is correctly silent for the
+  haiku-configured analysts and exec. It has appeared on every scorecard since
+  08-20. `decisions.model_id` is unaffected — it records `claude-sonnet-5`
+  correctly for every live PM turn.
 - **`mcp_servers` is hardcoded** at `agents/seats.py:61` — the Alpaca server is
   always `uvx` at `ALPACA_MCP_SPEC` with real credentials. Market data and news
   cannot be faked without adding a seam.
@@ -605,7 +811,11 @@ new implementation branches get fresh context.
   undecided.
 - **Research side is unwired.** `fundbt/`, `stratgate/`, `calibration/` are
   built and tested but the daily cycle does not call them.
-- **One decision-maker.** No debate, no second opinion, no dissent.
+- **One decision-maker.** No debate, no second opinion, no dissent. The Critic
+  seat exists in code, its G1 alignment gate **did not pass**, and the daily
+  cycle still pre-inserts `clear`/`no_critic_seat` before every PM turn — so no
+  live decision has ever been reviewed. The second analyst adds a voice to
+  research, not to the decision.
 - **A stopped position cannot be trimmed — only exited whole.** A full-size GTC
   stop reserves the entire position at the broker, which reports
   `qty_available` 0, so a partial sell is refused. The one size that works is a
@@ -652,17 +862,19 @@ new implementation branches get fresh context.
 
 ## Eval scoping
 
-The following table lists the three seats, what each can reach, and what each writes:
+What each seat may reach is no longer restated here: `SEAT_CAPS` in
+`agents/tools/fund_server.py` is the single source (ADR-0002), and
+`specs/design.md` §2 holds the seat table. The eval-relevant shape of the four
+seats that run daily:
 
-| | analyst | pm | exec |
-|---|---|---|---|
-| charter | `charters/analyst.md` | `charters/pm.md` | `charters/exec.md` |
-| model | Haiku 4.5 | Sonnet 5 | Haiku 4.5 |
-| fund tools | `get_stage_brief`, `submit_signal` | `get_stage_brief`, `submit_decision` | `list_open_tickets` |
-| alpaca toolsets | `stock-data, news, account` | `account, stock-data` | `account, trading, stock-data` |
-| writes | `signals` | `decisions` | `orders` |
-| judgment? | yes | yes | none — the ticket fixes every field |
-| measured | 7 turns, ~$0.05 | 5 turns, ~$0.12 | 3 turns, ~$0.03 |
+| | analyst | news | pm | exec |
+|---|---|---|---|---|
+| charter | `charters/analyst.md` | `charters/news.md` | `charters/pm.md` | `charters/exec.md` |
+| model | Haiku 4.5 | Haiku 4.5 | Sonnet 5 | Haiku 4.5 |
+| alpaca toolsets | `stock-data, news, account` | `news, stock-data` — no account, blind to the book | `account, stock-data` | `account, trading, stock-data` |
+| writes | `signals` | `signals` | `decisions` | `orders` |
+| judgment? | yes | yes | yes | none — the ticket fixes every field |
+| measured | 7 turns, ~$0.05 | 8 of 16 turns, ~$0.03 — **measured on a seat doing nothing useful** (#6) | 5 turns, ~$0.12 | 3 turns, ~$0.03 |
 
 **Injectable today**, all already parameters of `build_seat_options`:
 `db_path` (so the PM's input signals are writable rows), `snapshot`
