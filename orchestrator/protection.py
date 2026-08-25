@@ -270,13 +270,18 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
 # --- the mirror: shares the records account for that the broker does not hold -
 
 
-def _recorded_holdings(conn: sqlite3.Connection) -> dict[str, int]:
+def recorded_holdings(conn: sqlite3.Connection) -> dict[str, int]:
     """Net shares per symbol the fund's OWN order records account for.
 
     THE SEAM. The fund stores no position — `state/schema.sql` has no positions
     table — so what it holds is *implied* by its filled orders. If a later
     design stores that fact directly, swap this one read; nothing above it
     changes.
+
+    Public because orchestrator/ingest_guard.py reads it too: the same seam
+    answers "is the fund's book empty?" at ingestion and "does the broker
+    still hold what we opened?" at the close. Two readers of one seam is the
+    point of naming it a seam.
 
     `filled_qty > 0` rather than `status = 'filled'`, for the same reason
     _promised_stop does it: reconcile.py records a timed-out partial as
@@ -377,7 +382,7 @@ def assert_positions_accounted(conn: sqlite3.Connection, *, broker,
         append_alert(conn, "accounting_unverified", text, now_iso=now_iso)
         return 1
 
-    recorded = {s: q for s, q in _recorded_holdings(conn).items() if q > 0}
+    recorded = {s: q for s, q in recorded_holdings(conn).items() if q > 0}
     if not recorded:
         return 0
 
