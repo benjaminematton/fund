@@ -5,11 +5,27 @@ canonical; `state/schema.sql` is the DDL that actually runs. Nothing else
 compares them, so a column added to one side alone drifts silently.
 
 Both sides are PARSED, never restated: a column list typed out here would be
-a third source of truth. The comparison is structural (names, types, NOT
-NULL, DEFAULT, CHECK, UNIQUE, PRIMARY KEY, REFERENCES), not textual, so
-reformatting, `--` and `/* */` comments and `CREATE TABLE IF NOT EXISTS` are
-all invisible to it. `PRAGMA table_info()` is not usable here: it does not
-expose CHECK constraints, which is exactly where the allowed-value lists live.
+a third source of truth. Parsing is deliberately deferred out of the module
+body into `_contract()`, so that DDL this file cannot parse fails THIS
+file's tests instead of erroring pytest's collection and taking all ~1200
+tests in the repo down with it. Nothing at import time reads either source.
+
+What the comparison actually compares, precisely. Table and column NAMES,
+and the three booleans NOT NULL / PRIMARY KEY / UNIQUE, are structural:
+case, whitespace, `--` and `/* */` comments, `CREATE TABLE IF NOT EXISTS`
+and constraint-clause order are all invisible to them. But `type`,
+`default`, `checks`, `references` and every table constraint are compared as
+NORMALIZED TEXT — the tokens joined by single spaces, uppercased outside
+string literals. Two sides that mean the same thing but spell it differently
+therefore FAIL: `CHECK (qty >= 0)` vs `CHECK (0 <= qty)`, `<>` vs `!=`,
+`DEFAULT 0` vs `DEFAULT 0.0`, `INT` vs `INTEGER`, and a renamed table-level
+`CONSTRAINT` (a column-level one raises instead — `Column` has no field for
+it). That is a deliberate trade, not an oversight: such a failure
+prints both sides and is one rename from green, whereas an expression
+comparator that called those pairs equal would be a fourth source of truth
+about what the DDL means. `PRAGMA table_info()` is not usable here either:
+it does not expose CHECK constraints, which is exactly where the
+allowed-value lists live.
 
 Nothing carrying a `TABLE` keyword is skipped. Inside a `CREATE TABLE`, an
 unknown column constraint, a `PRIMARY KEY` modifier (`ASC`/`DESC`/
@@ -24,8 +40,21 @@ by a missing `;` above or by a `(` left open across it, and would be
 compared by nothing. Only statements with no `TABLE` keyword in them at all
 (`CREATE INDEX`, `CREATE TRIGGER`, `PRAGMA`, ...) are skipped, by design.
 
-DDL outside a §2 fence is not seen, and a fence inside §2 whose info string
-is not `sql` or `sqlite` raises rather than being passed over.
+DDL outside §2 is not seen. Inside §2, ALL THREE CommonMark code-block
+forms are accounted for — backtick fences and tilde fences are READ,
+4-space-indented blocks RAISE — because each renders as code to whoever
+reads the spec and so is a plausible home for canonical DDL. Keying on the
+backtick character alone
+left `~~~sql` and indented DDL invisible to every guard here at once. A
+fence whose info string is not `sql`/`sqlite` raises, and any block count
+other than one per section raises; no form is passed over. `CREATE TABLE`
+written into §2 PROSE is still not seen — prose renders as prose, so it is
+not a plausible canonical-DDL home.
+
+Each section's block is also executed against an in-memory SQLite by
+`test_spec_ddl_executes`, off the same block discovery. Read that test's
+docstring for the narrow class it closes; it is not cover for relaxing any
+guard here.
 
 The failure mode this file dies of quietly is under-extraction — a spec fence
 that stops yielding tables leaves a green test comparing almost nothing — so
@@ -35,7 +64,9 @@ and every table is pinned from both directions.
 
 from __future__ import annotations
 
+import functools
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,7 +75,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "state" / "schema.sql"
 # (spec file, §2 heading). The heading is followed by prose in at least one of
-# them, so the DDL is located as "the sql fence inside §2", not "the next line".
+# them, so the DDL is located as "the code block inside §2", not "the next line".
 SPEC_SECTIONS = (
     (ROOT / "specs" / "contracts.md", "## 2. SQLite DDL"),
     (ROOT / "specs" / "strategy-contracts.md", "## 2. DDL"),
@@ -68,8 +99,12 @@ _PUNCT = "(),;"
 # `Column`, so each one raises rather than being dropped — see `_parse_column`.
 _PK_MODIFIERS = frozenset({"ASC", "DESC", "AUTOINCREMENT"})
 # Fence info strings inside a spec §2 that hold DDL, matched case-insensitively.
-# Anything else fenced in §2 raises — see `_section_sql`.
+# Anything else fenced in §2 raises — see `_section_blocks`.
 _DDL_FENCE_TAGS = frozenset({"sql", "sqlite"})
+# A CommonMark fence line, backtick OR tilde. Up to 3 leading spaces still opens
+# a fence; at 4 or more it is no longer a fence, and if a blank line precedes it
+# it is an indented code block, which `_section_blocks` raises on.
+_FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 
 
 # --------------------------------------------------------------------------
@@ -199,6 +234,34 @@ class Table:
 
 
 def _parse_column(table: str, toks: list[str]) -> Column:
+    """One column definition -> `Column`. Anything it cannot represent raises.
+
+    Why column-level `PRIMARY KEY ASC/DESC/AUTOINCREMENT` RAISES here while
+    the table-level spelling `PRIMARY KEY (a, b DESC)` is merely COMPARED, as
+    normalized text, by `_is_table_constraint`. The asymmetry is measured, not
+    stylistic. Inserting a row with no explicit id, SQLite 3.53.2:
+
+        col-level  INTEGER PRIMARY KEY         stored id=1
+        col-level  INTEGER PRIMARY KEY DESC    stored id=None   <-- the hazard
+        col-level  INTEGER PRIMARY KEY ASC     stored id=1
+        tbl-level  PRIMARY KEY (id)            stored id=1
+        tbl-level  PRIMARY KEY (id DESC)       stored id=1      <-- NOT a hazard
+        tbl-level  PRIMARY KEY (id, v)         stored id=None   (composite:
+        tbl-level  PRIMARY KEY (id, v DESC)    stored id=None    never a rowid
+                                                                 alias either way)
+
+    `DESC` silently stops a column aliasing the rowid ONLY in the column-level
+    position; in the table-level single-column form it is ignored and the alias
+    survives, and a composite PK is never a rowid alias with or without it. So
+    the column-level modifier is a real semantic difference that `Column` has
+    no field to carry, hence the raise; the table-level one carries no
+    equivalent hazard and normalized-text comparison is the right treatment.
+
+    If anyone later unifies the two, UNIFY TOWARD COMPARING: give `Column` a
+    field for the modifier so it is compared like every other clause. Do not
+    unify toward raising on the table-level form — that punishes a construct
+    measured to be benign.
+    """
     name = toks[0]
     where = f"{table}.{name}"
     i, type_toks = 1, []
@@ -370,22 +433,66 @@ def _parse_tables(sql: str) -> dict[str, Table]:
                 constraints.append(_norm(item))
             else:
                 columns.append(_parse_column(name, item))
+        # Both sides of the comparison key columns by name and constraints by
+        # normalized text, so a duplicate of either COLLAPSES: two identical
+        # `qty` columns compare equal to one, and the second copy of a table
+        # constraint disappears into `_diff`'s set(). SQLite rejects the
+        # duplicate column itself, but nothing executes the markdown, so on the
+        # spec side the collapse is invisible in both directions. Raise instead.
+        dupe_cols = sorted({c.name for c in columns
+                            if [x.name for x in columns].count(c.name) > 1})
+        if dupe_cols:
+            raise ValueError(
+                f"{name}: column(s) {dupe_cols} declared more than once — the"
+                " comparison keys columns by name, so the duplicate would"
+                " collapse into the first and never be compared. Remove it.")
+        dupe_cons = sorted({c for c in constraints if constraints.count(c) > 1})
+        if dupe_cons:
+            raise ValueError(
+                f"{name}: identical table constraint(s) {dupe_cons} declared"
+                " more than once — the comparison holds constraints in a set,"
+                " so the duplicate would collapse and never be compared."
+                " Remove it.")
         if name in tables:
             raise ValueError(f"{name}: declared twice in the same source")
         tables[name] = Table(name, tuple(columns), tuple(sorted(constraints)))
     return tables
 
 
-def _section_sql(path: Path, heading: str) -> str:
-    """The one DDL fence inside `path`'s `heading` section.
+def _section_blocks(path: Path, heading: str) -> list[str]:
+    """Every code block inside `path`'s `heading` section, in document order.
 
-    EVERY fence in the section is looked at, and one whose info string is not
-    a known DDL tag raises. Matching the literal "```sql" instead meant a
-    fence tagged ```` ```sqlite ````, ```` ```SQL ```` or nothing at all was
-    not a fence as far as this function was concerned: a whole table could
-    sit in one inside §2, be compared by nothing, and never even reach the
-    one-fence guard below. Unlike the buried-`CREATE TABLE` route this needs
-    no malformed SQL — a mistagged fence is a plausible typo.
+    THE ONE code-block finder in this file. `_contract()` parses what it
+    returns and `test_spec_ddl_executes` executes the same strings; a second
+    finder would be a second source of truth about where the canonical DDL
+    lives, and would drift precisely here.
+
+    All three CommonMark code-block forms are recognised, because each one
+    renders as code and so is a plausible home for canonical DDL:
+
+      * backtick fences  ```sql ... ```   (any run of >= 3 backticks)
+      * tilde fences     ~~~sql ... ~~~   (any run of >= 3 tildes)
+      * 4-space (or tab) indented blocks  -> RAISE, see below
+
+    An earlier version keyed on the literal "```sql", so a fence tagged
+    ```` ```sqlite ````, ```` ```SQL ```` or nothing at all was not a fence to
+    it at all; the round that fixed that keyed on the BACKTICK CHARACTER, which
+    left `~~~sql` and indented DDL invisible to the tag check, to the
+    one-block guard and to `_CREATE_TABLE_LINE` alike. Neither route needs
+    malformed SQL — both are plausible typos, and both render as SQL to a
+    human reading the spec.
+
+    A fence's info string must be a `_DDL_FENCE_TAGS` tag or this raises; a
+    fence closes on a line of >= as many of the SAME character with nothing
+    after it, per CommonMark. An indented block — a non-blank line indented
+    4+ spaces or a tab, after a blank line, which is CommonMark's rule and is
+    what keeps this off wrapped prose — raises rather than being read:
+    reading it would mean guessing whether the indentation is DDL or an
+    example, and silently ignoring it is the failure this function exists to
+    prevent.
+
+    What it does NOT see: `CREATE TABLE` in §2 prose, and code blocks in a
+    section other than `heading`. Neither renders as canonical §2 DDL.
     """
     lines = path.read_text().splitlines()
     try:
@@ -395,60 +502,151 @@ def _section_sql(path: Path, heading: str) -> str:
     end = next((i for i in range(start, len(lines))
                 if re.match(r"^##(?!#)\s", lines[i])), len(lines))
 
-    fences = []
-    i = start
+    blocks: list[str] = []
+    i, prev_blank = start, True
     while i < end:
-        stripped = lines[i].strip()
-        if stripped.startswith("```"):
-            tag = stripped[3:].strip()
+        line = lines[i]
+        opener = _FENCE_RE.match(line)
+        if opener:
+            char, width = opener["fence"][0], len(opener["fence"])
+            tag = opener["info"].strip()
             if tag.lower() not in _DDL_FENCE_TAGS:
                 raise ValueError(
-                    f"{path.name}: fence tagged {tag!r} inside {heading!r} —"
-                    f" only {sorted(_DDL_FENCE_TAGS)} are read as DDL, so"
-                    " anything in this fence is compared by nothing. Retag it,"
-                    " move it out of the section, or add its tag to"
+                    f"{path.name}: code fence tagged {tag!r} inside"
+                    f" {heading!r} — only {sorted(_DDL_FENCE_TAGS)} are read as"
+                    " DDL, so anything in this fence is compared by nothing."
+                    " Retag it, move it out of the section, or add its tag to"
                     " _DDL_FENCE_TAGS")
-            close = next((j for j in range(i + 1, end)
-                          if lines[j].strip() == "```"), None)
+            close = None
+            for j in range(i + 1, end):
+                shut = _FENCE_RE.match(lines[j])
+                if (shut and shut["fence"][0] == char
+                        and len(shut["fence"]) >= width
+                        and not shut["info"].strip()):
+                    close = j
+                    break
             if close is None:
                 raise ValueError(
-                    f"{path.name}: unclosed ```{tag} fence in {heading!r}")
-            fences.append("\n".join(lines[i + 1:close]))
-            i = close
+                    f"{path.name}: unclosed {char * width}{tag} fence in"
+                    f" {heading!r}")
+            blocks.append("\n".join(lines[i + 1:close]))
+            i, prev_blank = close + 1, False
+            continue
+        if prev_blank and line.strip() and (line.startswith("    ")
+                                            or line.startswith("\t")):
+            raise ValueError(
+                f"{path.name}: indented code block at line {i + 1} of"
+                f" {heading!r} ({line.strip()[:40]!r}...) — it renders as code"
+                " but this file will not read it as DDL, so anything in it is"
+                " compared by nothing. Put the DDL in a ```sql fence, or"
+                " unindent the prose.")
+        prev_blank = not line.strip()
         i += 1
-    if len(fences) != 1:
+    return blocks
+
+
+def _section_ddl(path: Path, heading: str) -> str:
+    """The one DDL block inside `path`'s `heading` section."""
+    blocks = _section_blocks(path, heading)
+    if len(blocks) != 1:
         raise ValueError(
-            f"{path.name}: expected 1 sql fence in {heading!r}, found"
-            f" {len(fences)}")
-    return fences[0]
+            f"{path.name}: expected 1 DDL code block in {heading!r}, found"
+            f" {len(blocks)}")
+    return blocks[0]
 
 
 # --------------------------------------------------------------------------
 # the contract
 
-SCHEMA_TABLES = _parse_tables(SCHEMA.read_text())
-SPEC_TABLES: dict[str, Table] = {}
-SPEC_SOURCE: dict[str, str] = {}
-# label -> (raw fence text, names parsed out of it). Kept so the extraction can
-# be audited as its own claim, not inferred from the comparison it feeds.
-SPEC_EXTRACTION: dict[str, tuple[str, tuple[str, ...]]] = {}
-for _path, _heading in SPEC_SECTIONS:
-    _label = f"{_path.parent.name}/{_path.name} §2"
-    _raw = _section_sql(_path, _heading)
-    _parsed = _parse_tables(_raw)
-    SPEC_EXTRACTION[_label] = (_raw, tuple(_parsed))
-    for _name, _table in _parsed.items():
-        if _name in SPEC_TABLES:
-            raise ValueError(f"{_name}: declared in two spec files")
-        SPEC_TABLES[_name] = _table
-        SPEC_SOURCE[_name] = _label
+@functools.cache
+def _spec_ddl_blocks() -> tuple[tuple[str, str], ...]:
+    """`(label, DDL text)` for each spec §2, off the one block finder.
 
-BOUND = sorted(set(SPEC_TABLES) - NO_SCHEMA_HOME)
+    Both consumers of the spec DDL start here: `_contract()` parses these
+    strings, `test_spec_ddl_executes` executes them. Deliberately independent
+    of the PARSER, so that a construct the parser cannot represent does not
+    also make the smoke test report a syntax problem the SQL does not have.
+    """
+    return tuple((f"{path.parent.name}/{path.name} §2",
+                  _section_ddl(path, heading))
+                 for path, heading in SPEC_SECTIONS)
 
 
-def _diff(name: str) -> list[str]:
-    spec, got = SPEC_TABLES[name], SCHEMA_TABLES[name]
-    src = SPEC_SOURCE[name]
+@dataclass(frozen=True)
+class _Contract:
+    schema_tables: dict[str, Table]
+    spec_tables: dict[str, Table]
+    spec_source: dict[str, str]
+    # label -> (raw block text, names parsed out of it). Kept so the extraction
+    # can be audited as its own claim, not inferred from the comparison it feeds.
+    spec_extraction: dict[str, tuple[str, tuple[str, ...]]]
+    bound: tuple[str, ...]
+
+
+@functools.cache
+def _contract() -> _Contract:
+    """Read and parse both sides. Raises `ValueError` on anything unparseable.
+
+    CALLED FROM INSIDE TESTS, NEVER AT IMPORT — that placement is the whole
+    point of this function, not an accident of style. Every `raise ValueError`
+    above is deliberate and loud, but when the parse ran in the module body
+    those raises fired during pytest's COLLECTION: `make test` reported
+    `Interrupted: 1 error during collection`, ran ZERO of the repo's ~1200
+    tests, and told whoever hit it to extend a parser. An ordinary, drift-free
+    DDL edit applied correctly to BOTH sides was enough to do it — measured on
+    nine: `ON DELETE CASCADE`, `COLLATE NOCASE`, a COLUMN-level named
+    `CONSTRAINT`, `GENERATED ALWAYS AS`, `) STRICT`, a quoted identifier, a
+    ```text fence in §2, an untagged fence, a second ```sql fence, and
+    retitling the §2 heading. (A TABLE-level named `CONSTRAINT` parses fine;
+    that one does not reproduce.) Since `CLAUDE.md` requires `make test` green
+    before every commit, that made one unparsed token a repo-wide stop-work
+    whose cheapest fix is deleting this file. Deferred here, the identical
+    raise is one failing test file: `make test` on the `ON DELETE CASCADE`
+    edit reports `7 failed, 1180 passed, 1 skipped` — every test outside this
+    file still runs and still passes. (1180 rather than 1190 because the 11
+    per-table cases below collapse to one sentinel when there is no parsed
+    table list to parametrize over.)
+
+    The messages are unchanged and must stay loud: the defect was WHERE they
+    fired, never THAT they fired. `functools.cache` memoizes only success —
+    Python does not cache exceptions — so on a parse failure every test in
+    this file re-runs the parse and fails with the same full message.
+    """
+    schema_tables = _parse_tables(SCHEMA.read_text())
+    spec_tables: dict[str, Table] = {}
+    spec_source: dict[str, str] = {}
+    spec_extraction: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for label, raw in _spec_ddl_blocks():
+        parsed = _parse_tables(raw)
+        spec_extraction[label] = (raw, tuple(parsed))
+        for name, table in parsed.items():
+            if name in spec_tables:
+                raise ValueError(f"{name}: declared in two spec files")
+            spec_tables[name] = table
+            spec_source[name] = label
+    return _Contract(
+        schema_tables=schema_tables, spec_tables=spec_tables,
+        spec_source=spec_source, spec_extraction=spec_extraction,
+        bound=tuple(sorted(set(spec_tables) - NO_SCHEMA_HOME)))
+
+
+# `parametrize` is evaluated at import, so it may not be allowed to raise
+# either. On a parse failure it yields this single id instead; the test body
+# then calls `_contract()`, re-raises, and reports the real message as an
+# ordinary failure of this file.
+_PARSE_FAILED = "<spec/schema DDL did not parse>"
+
+
+def _bound_or_sentinel() -> list[str]:
+    try:
+        return list(_contract().bound)
+    except ValueError:
+        return [_PARSE_FAILED]
+
+
+def _diff(con: _Contract, name: str) -> list[str]:
+    spec, got = con.spec_tables[name], con.schema_tables[name]
+    src = con.spec_source[name]
     out: list[str] = []
 
     spec_cols = {c.name: c for c in spec.columns}
@@ -479,7 +677,7 @@ def _diff(name: str) -> list[str]:
     return out
 
 
-# Independent of the parser: raw-text CREATE ... TABLE lines in a fence. Used
+# Independent of the parser: raw-text CREATE ... TABLE lines in a block. Used
 # only as a LOWER bound on how many statements the text declares — it is
 # `^`-anchored per line, so it undercounts a `CREATE` and `TABLE` split across
 # two lines, and it counts two statements sharing one line as one. The
@@ -498,11 +696,16 @@ def test_parsers_found_the_ddl():
     source was extracted. That job belongs to
     `test_spec_extraction_did_not_come_up_short` and to the two existence
     tests, which pin every known table from both directions.
+
+    Also the first place a parse failure lands, now that `_contract()` runs
+    inside the tests: it raises here with its own message instead of at
+    collection time.
     """
-    assert SCHEMA_TABLES, "no CREATE TABLE parsed from state/schema.sql"
-    assert BOUND, "no CREATE TABLE parsed from the spec §2 sections"
-    for src, tables in (("state/schema.sql", SCHEMA_TABLES),
-                        ("spec §2", SPEC_TABLES)):
+    con = _contract()
+    assert con.schema_tables, "no CREATE TABLE parsed from state/schema.sql"
+    assert con.bound, "no CREATE TABLE parsed from the spec §2 sections"
+    for src, tables in (("state/schema.sql", con.schema_tables),
+                        ("spec §2", con.spec_tables)):
         empty = [t for t, tbl in tables.items() if not tbl.columns]
         assert not empty, f"{src}: parsed no columns for {empty}"
 
@@ -548,10 +751,10 @@ def test_spec_extraction_did_not_come_up_short():
     `CREATE TABLE` raises), not in this operator: `==` would not have caught
     the third row either, and it would fire on a legitimate reformat.
     """
-    for label, (raw, names) in SPEC_EXTRACTION.items():
+    for label, (raw, names) in _contract().spec_extraction.items():
         assert names, (
             f"spec extraction came up short: parsed 0 CREATE TABLE statements"
-            f" out of {label} — its sql fence is empty, or its DDL moved out of"
+            f" out of {label} — its DDL block is empty, or its DDL moved out of"
             " §2. Every table it used to declare has silently stopped being"
             " compared.")
         declared = len(_CREATE_TABLE_LINE.findall(raw))
@@ -565,15 +768,16 @@ def test_spec_extraction_did_not_come_up_short():
 def test_every_spec_table_is_declared_in_schema():
     """Also the schema side's under-extraction alarm, so it needs no floor of
     its own: a table that stops parsing out of `state/schema.sql` drops out of
-    SCHEMA_TABLES and lands here. Verified by swallowing `signals` in
-    schema.sql behind a `/* */` comment plus a `CREATE`/`TABLE` line split —
+    the parsed schema tables and lands here. Verified by swallowing `signals`
+    in schema.sql behind a `/* */` comment plus a `CREATE`/`TABLE` line split —
     this test failed with "signals ... absent from state/schema.sql" while the
     rest of the suite stayed green.
     """
-    missing = [t for t in BOUND if t not in SCHEMA_TABLES]
+    con = _contract()
+    missing = [t for t in con.bound if t not in con.schema_tables]
     assert not missing, (
         "declared in a canonical spec §2 but absent from state/schema.sql: "
-        + ", ".join(f"{t} ({SPEC_SOURCE[t]})" for t in missing)
+        + ", ".join(f"{t} ({con.spec_source[t]})" for t in missing)
         + " — add it to schema.sql, or to NO_SCHEMA_HOME with a reason in"
           " issue #50")
 
@@ -581,7 +785,8 @@ def test_every_spec_table_is_declared_in_schema():
 def test_every_schema_table_is_declared_in_a_spec():
     """The reverse direction: schema.sql may not grow a table the specs
     never declared, and a spec may not drop one schema.sql still runs."""
-    undeclared = sorted(set(SCHEMA_TABLES) - set(SPEC_TABLES))
+    con = _contract()
+    undeclared = sorted(set(con.schema_tables) - set(con.spec_tables))
     assert not undeclared, (
         "in state/schema.sql but declared in no canonical spec §2: "
         + ", ".join(undeclared)
@@ -593,20 +798,73 @@ def test_every_schema_table_is_declared_in_a_spec():
 
 def test_allowlisted_tables_still_have_no_schema_home():
     """Keeps NO_SCHEMA_HOME honest in both directions."""
-    landed = sorted(NO_SCHEMA_HOME & set(SCHEMA_TABLES))
+    con = _contract()
+    landed = sorted(NO_SCHEMA_HOME & set(con.schema_tables))
     assert not landed, (f"{landed} now exist in state/schema.sql — remove them"
                         " from NO_SCHEMA_HOME so they are compared")
-    unknown = sorted(NO_SCHEMA_HOME - set(SPEC_TABLES))
+    unknown = sorted(NO_SCHEMA_HOME - set(con.spec_tables))
     assert not unknown, (f"{unknown} are in NO_SCHEMA_HOME but no longer"
                          " declared in any spec §2 — drop the stale entries")
 
 
-@pytest.mark.parametrize("table", BOUND)
+def test_spec_ddl_executes():
+    """Each spec §2 DDL block is valid SQL: SQLite accepts it as written.
+
+    Runs on the SAME strings `_contract()` parses: both come from
+    `_spec_ddl_blocks()`, which is the sole consumer of `_section_blocks`, the
+    sole code-block finder in this file. A second finder here would be a
+    second source of truth about where the canonical DDL lives and would drift
+    exactly where the backtick-only finder already drifted once. It does NOT
+    go through the parser, so a construct the parser cannot represent — which
+    is a separate, loud failure of the tests above — is not also reported here
+    as a syntax problem the SQL does not have.
+
+    SCOPE, DELIBERATELY NARROW. This closes the MALFORMED-SQL CLASS ONLY: DDL
+    that SQLite itself would reject, which nothing in this repo executed
+    before — the missing `;` and the unbalanced-paren burials earlier rounds
+    found are both syntactically invalid, so `executescript` rejects them.
+
+    What it does NOT reach, and may never be cited as covering:
+
+      * SEMANTIC hazards. `INTEGER PRIMARY KEY DESC` is valid SQL, executes
+        without complaint, and silently nulls every id (measured — see
+        `_parse_column`). Every parser guard that raises on a construct it
+        cannot COMPARE is unaffected by this test; none may be relaxed
+        because "the SQL executes".
+      * Block-discovery failures. DDL this file never finds is DDL this test
+        never runs. `_section_blocks` is what stands there.
+      * Drift. Executing cleanly says nothing about whether the two sides
+        agree; that is `test_schema_matches_spec`.
+
+    Each block gets its own connection, and foreign keys are not resolved:
+    SQLite accepts a REFERENCES naming a table that does not exist (measured,
+    even with `PRAGMA foreign_keys=ON`), so a block that came to reference a
+    table declared in the other spec file would still execute. Neither block
+    does so today.
+    """
+    for label, raw in _spec_ddl_blocks():
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.executescript(raw)
+        except sqlite3.Error as exc:
+            raise AssertionError(
+                f"{label}: SQLite rejected the canonical DDL — {exc}. The spec"
+                " block is not valid SQL, so it cannot be what `state/`"
+                " actually runs; fix the DDL in the spec.") from None
+        finally:
+            conn.close()
+
+
+@pytest.mark.parametrize("table", _bound_or_sentinel())
 def test_schema_matches_spec(table):
     """state/schema.sql and the canonical spec §2 declare the same structure."""
-    if table not in SCHEMA_TABLES:
+    con = _contract()  # re-raises a parse failure as a failure of THIS test
+    assert table != _PARSE_FAILED, (
+        "the DDL failed to parse at collection but parses now — a source file"
+        " changed mid-run. Re-run the suite; do not read this as a pass.")
+    if table not in con.schema_tables:
         pytest.skip("covered by test_every_spec_table_is_declared_in_schema")
-    problems = _diff(table)
+    problems = _diff(con, table)
     assert not problems, (f"{table}: state/schema.sql has drifted from"
-                          f" {SPEC_SOURCE[table]}\n  "
+                          f" {con.spec_source[table]}\n  "
                           + "\n  ".join(problems))
