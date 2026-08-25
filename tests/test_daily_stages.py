@@ -830,3 +830,22 @@ def test_a_resumed_execution_stage_does_not_expire_the_ticket(fund_db, sim_clock
         "SELECT status FROM decisions WHERE ticker='NVDA'"
     ).fetchone()["status"] == "approved"
     assert len(_alert_texts(fund_db)) == 1
+
+
+def test_execution_is_silent_when_the_ticket_was_past_ttl_on_entry(fund_db, sim_clock):
+    """Pins the ORDER of the two statements in the body. _alert_unexecuted_tickets
+    is clock-free, which is only safe because expire_open_tickets runs FIRST and
+    has already swept every ticket whose TTL passed before the stage started —
+    yesterday's included. Run the alert pass first and each of those stale open
+    tickets fires a spurious ticket_open_after_exec, reddening the audit and
+    paging a human for a ticket that was never this stage's to place. A false
+    positive is how people learn to ignore the alert."""
+    tid = _open_ticket(fund_db, sim_clock)
+    fund_db.execute("UPDATE decisions SET status='approved' WHERE ticker='NVDA'")
+    fund_db.commit()
+    sim_clock.advance(minutes=46)          # TTL passed BEFORE the stage runs
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    assert run_execution(ctx, lambda: None) == "done"
+    assert _alert_texts(fund_db) == []
+    assert fund_db.execute("SELECT status FROM tickets WHERE id=?",
+                           (tid,)).fetchone()["status"] == "expired"
