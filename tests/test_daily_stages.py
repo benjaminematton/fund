@@ -789,3 +789,22 @@ def test_execution_alert_is_not_reposted_on_a_resume(fund_db, sim_clock):
     run_execution(ctx, lambda: None)
     run_execution(ctx, lambda: None)
     assert len(_alert_texts(fund_db)) == 1
+
+
+def test_execution_alerts_when_the_turn_overran_the_tickets_ttl(fund_db, sim_clock):
+    """Issue #40's TTL hole. The turn burns past the 45-minute TTL and places
+    nothing, so the ticket is still 'open' when the alert pass runs — expiry
+    already swept at the start of the body, before the overrun. The old pass
+    asked open_tickets, whose clock filter dropped precisely this ticket, so
+    the loudest no-order day was the one that alerted least. Same code, same
+    text: the alert is about status, not about the clock."""
+    _open_ticket(fund_db, sim_clock)
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+
+    def overrunning_turn() -> None:
+        sim_clock.advance(minutes=46)          # past expires_at, nothing placed
+
+    assert run_execution(ctx, overrunning_turn) == "done"
+    assert _alert_texts(fund_db) == [
+        f"ticket {TID[:8]} open after exec turn — no order"]
+    assert _codes(fund_db) == ["ticket_open_after_exec"]

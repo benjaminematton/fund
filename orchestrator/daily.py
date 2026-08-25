@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Callable
 
 from gate.risk import Approved, Rejected, size
-from gate.tickets import create_ticket, expire_open_tickets, open_tickets
+from gate.tickets import (create_ticket, expire_open_tickets, open_tickets,
+                          open_tickets_without_orders)
 from orchestrator.clock import Clock, et_hhmm, iso
 from orchestrator.protection import (assert_positions_accounted,
                                      assert_positions_protected)
@@ -321,23 +322,25 @@ def run_gate(ctx: StageCtx) -> None:
 
 
 def _alert_unexecuted_tickets(ctx: StageCtx) -> None:
-    """D2: a ticket the gate approved that is STILL open and unexpired after
-    the trader turn, with no order row keyed by it (invariant 5:
-    orders.client_order_id IS the ticket id), means the turn produced nothing.
-    That is exactly the 2026-08-17 failure — turn billed, no order placed,
-    stage 'done', day reported a success. Alerting (not raising) is
-    deliberate: default HOLD stands, the day still finishes, and the alert
-    plus the reddened audit are the signal. Zero open tickets stays silent —
-    a hold day is normal."""
+    """D2: a ticket the gate approved that is STILL open after the trader
+    turn, with no order row keyed by it (invariant 5: orders.client_order_id
+    IS the ticket id), means the turn produced nothing. That is exactly the
+    2026-08-17 failure — turn billed, no order placed, stage 'done', day
+    reported a success. Alerting (not raising) is deliberate: default HOLD
+    stands, the day still finishes, and the alert plus the reddened audit are
+    the signal. Zero open tickets stays silent — a hold day is normal.
+
+    Keyed on STATUS, never on the clock (issue #40). Expiry sweeps at the
+    start of the body, before the turn, so the only way a past-TTL ticket is
+    still 'open' here is that its TTL passed DURING the turn — a turn that
+    overran its whole 45-minute budget and placed nothing. That is the loudest
+    case there is, and the clock filter in open_tickets silently deleted
+    exactly it from the answer."""
     now = iso(ctx.clock.now())
-    for ticket in open_tickets(ctx.conn, now):
-        placed = ctx.conn.execute(
-            "SELECT 1 FROM orders WHERE client_order_id = ?",
-            (ticket["id"],)).fetchone()
-        if placed is None:
-            append_alert(ctx.conn, "ticket_open_after_exec",
-                         f"ticket {ticket['id'][:8]} open after exec"
-                         " turn — no order", now_iso=now)
+    for ticket in open_tickets_without_orders(ctx.conn):
+        append_alert(ctx.conn, "ticket_open_after_exec",
+                     f"ticket {ticket['id'][:8]} open after exec"
+                     " turn — no order", now_iso=now)
 
 
 def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> str:
