@@ -63,13 +63,19 @@ def charter_text_for(cfg: dict) -> str:
 
 
 def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
-                       snapshot=None, journals_root=None) -> ClaudeAgentOptions:
+                       snapshot=None, journals_root=None,
+                       expected_decision_id: int | None = None
+                       ) -> ClaudeAgentOptions:
     """Build one seat's ClaudeAgentOptions from its yaml config.
     `snapshot` (zero-arg -> {cash, positions, allowed_actions}) and
     `journals_root` are this day's stage-brief providers, injected the same
     way the DB and the clock are. Unbound (the default) is legal and safe:
     get_stage_brief then reports the section as unavailable instead of
-    inventing one. Both are ignored by seats without the tool."""
+    inventing one. Both are ignored by seats without the tool.
+
+    `expected_decision_id` binds the reflect seat's submit_reflection call to
+    the decision this turn was launched for (see handle_submit_reflection).
+    None (the default) means no binding — every other seat, unaffected."""
     conn_factory = lambda: connect(db_path)
     charter = CHARTERS_DIR / f"{cfg['seat']}.md"
     options = dict(
@@ -96,7 +102,8 @@ def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
                                       snapshot=snapshot,
                                       journals_root=journals_root,
                                       charter_version=charter_version_for(cfg),
-                                      model_id=cfg.get("model", "unknown")),
+                                      model_id=cfg.get("model", "unknown"),
+                                      expected_decision_id=expected_decision_id),
         },
         allowed_tools=["mcp__alpaca__*", "mcp__fund__*"],
         # A second guard over the toolset restriction (invariant 2): every

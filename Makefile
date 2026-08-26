@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve schema-pin surface-pin score-day preflight
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight
 .PHONY: staging-day staging-reset eval eval-report
 .PHONY: eval-critic-dev eval-critic-holdout
 
@@ -163,6 +163,12 @@ score-day: deps
 # safe to re-run — a decision that already resolved is not selected again.
 resolve: deps
 	$(PYTHON) scripts/resolve_day.py
+
+# Nightly reflection: resolutions with no reflection yet -> one seat turn each
+# (design §3, §7). Rides the same 16:35 timer, third, after close-pnl and
+# resolve — nothing is reflectable until resolve has written the outcome.
+reflect: deps
+	$(PYTHON) scripts/reflect_day.py
 
 # Eval suite: REAL LLM turns against the REAL charters, 6 cases x 3 trials.
 # Needs .env loaded. MEASURED 2026-08-17: 18 trials, $0.81 est., ~7 minutes.

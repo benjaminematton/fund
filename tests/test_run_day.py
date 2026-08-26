@@ -486,6 +486,73 @@ def test_a_turn_whose_tools_were_never_captured_says_so(capsys):
     assert "tools=n/a" in out and "tools=[]" not in out
 
 
+# --- _seat_session: the id-binding leg above make_turn --------------------
+
+def test_seat_session_threads_the_bound_id_to_build_seat_options(monkeypatch):
+    """The middle leg of the id-binding chain that scripts/reflect_day.py's
+    submit_reflection fix depends on end-to-end: _seat_session must forward
+    expected_decision_id into build_seat_options, not just accept it as a
+    parameter and drop it. ClaudeSDKClient and run_seat_turn are faked — a
+    live SDK session is exactly what this offline suite must never open."""
+    import asyncio
+
+    import claude_agent_sdk
+
+    seen = {}
+
+    def _fake_build_seat_options(cfg, db_path, clock, *, snapshot=None,
+                                 journals_root=None,
+                                 expected_decision_id=None):
+        seen["expected_decision_id"] = expected_decision_id
+        return object()          # opaque; only ClaudeSDKClient below sees it
+
+    class _FakeClient:
+        def __init__(self, options):
+            self.options = options
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_run_seat_turn(client, prompt, required):
+        return ([], None)
+
+    monkeypatch.setattr(run_day_script, "build_seat_options",
+                        _fake_build_seat_options)
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setattr(run_day_script, "run_seat_turn", _fake_run_seat_turn)
+
+    asyncio.run(run_day_script._seat_session(
+        {"seat": "reflect"}, ":memory:", SimClock(START), "p", None, None,
+        expected_decision_id=42))
+
+    assert seen["expected_decision_id"] == 42
+
+
+def test_make_turn_threads_the_bound_id_to_seat_session(wired, monkeypatch):
+    """The fourth leg of the id-binding chain, above _seat_session:
+    make_turn's own run() must forward expected_decision_id into the
+    _seat_session call. test_seat_session_threads_the_bound_id_to_
+    build_seat_options (above) calls _seat_session directly and so never
+    exercises this call site — deleting expected_decision_id from make_turn's
+    _seat_session call left that test, and all its siblings, green."""
+    conn, _, clock = wired
+    seen = {}
+
+    async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
+                                 journals_root, expected_decision_id=None):
+        seen["expected_decision_id"] = expected_decision_id
+        return ([], _Result(turns=1))
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _fake_seat_session)
+
+    _turn(conn, clock, seat="reflect", expected_decision_id=99)()
+
+    assert seen["expected_decision_id"] == 99
+
+
 # --- make_turn: a seat failure degrades to HOLD, it does not abort the day --
 
 def _turn(conn, clock, seat="analyst", **over):

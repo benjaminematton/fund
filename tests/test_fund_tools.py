@@ -374,6 +374,105 @@ def test_the_wrapper_stamps_the_run_date_from_the_injected_clock(fund_db,
         "run_date"] == RUN
 
 
+def _reflectable_decision(conn, sim_clock, ticker="NVDA"):
+    now = iso(sim_clock.now())
+    cur = conn.execute(
+        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+        " invalidation, status, created_at) VALUES"
+        " ('2026-07-06',?,'buy',96,'t','i','executed',?)", (ticker, now))
+    did = cur.lastrowid
+    conn.execute(
+        "INSERT INTO resolutions (decision_id, horizon_days, realized_return,"
+        " alpha_vs_spy, invalidated, resolved_at)"
+        " VALUES (?, 5, 0.0614, 0.0504, 0, ?)", (did, now))
+    conn.commit()
+    return did
+
+
+def test_submit_reflection_wrapper_refuses_an_unbound_turn(fund_db,
+                                                            sim_clock):
+    """build_fund_server's submit_reflection wrapper must forward
+    expected_decision_id to the handler. The schema carries no decision_id
+    argument any more (change A: the seat passes only prose), so an unbound
+    turn — the default — is the only way a wrapper-level call can be refused
+    for the wrong row: there is no id left in `args` to get wrong."""
+    import asyncio
+
+    from agents.tools.fund_server import build_fund_server
+
+    did = _reflectable_decision(fund_db, sim_clock)
+
+    server = build_fund_server(lambda: fund_db, sim_clock,
+                               "reflect")["instance"]
+    _, call_tool = _handlers(server)
+    result = asyncio.run(call_tool("submit_reflection", {"prose": "noted"}))
+
+    assert _is_error(result) is True
+    assert fund_db.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (did,)).fetchone()["reflection"] is None
+
+
+def test_submit_reflection_wrapper_writes_the_row_it_is_bound_to(fund_db,
+                                                                  sim_clock):
+    """The write half of the same seam: a server built bound to one decision
+    writes a prose-only call to exactly that row."""
+    import asyncio
+
+    from agents.tools.fund_server import build_fund_server
+
+    did = _reflectable_decision(fund_db, sim_clock)
+
+    server = build_fund_server(lambda: fund_db, sim_clock, "reflect",
+                               expected_decision_id=did)["instance"]
+    _, call_tool = _handlers(server)
+    result = asyncio.run(call_tool("submit_reflection", {"prose": "noted"}))
+
+    assert _is_error(result) is False
+    # N3: charters/reflect.md tells the seat it is never told a decision id —
+    # the success message must not hand the surrogate id back, or a per-run
+    # identifier re-enters the seat's transcript (replay determinism).
+    assert result.content[0].text == "reflection recorded"
+    assert str(did) not in result.content[0].text
+    assert fund_db.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (did,)).fetchone()["reflection"].endswith("noted")
+
+
+def test_build_seat_options_threads_the_bound_id_to_the_constructed_server(
+        tmp_path, sim_clock):
+    """The leg above the wrapper: build_seat_options must forward
+    expected_decision_id into build_fund_server's constructed server, not
+    just accept it and drop it. Built through the real composition root
+    (agents.seats.build_seat_options) against a real on-disk db — this is
+    the leg the wrapper-level tests above cannot see, since they call
+    build_fund_server directly."""
+    import asyncio
+
+    from agents.seats import build_seat_options, load_seat_config
+    from state.db import connect
+
+    db_path = tmp_path / "fund.sqlite"
+    conn = connect(db_path)
+    did = _reflectable_decision(conn, sim_clock)
+    conn.close()
+
+    cfg = load_seat_config("agents/config/reflect.yaml")
+    options = build_seat_options(cfg, db_path, sim_clock,
+                                 expected_decision_id=did)
+    server = options.mcp_servers["fund"]["instance"]
+    _, call_tool = _handlers(server)
+    result = asyncio.run(call_tool("submit_reflection", {"prose": "noted"}))
+
+    assert _is_error(result) is False
+    conn = connect(db_path)
+    stored = conn.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (did,)).fetchone()["reflection"]
+    conn.close()
+    assert stored.endswith("noted")
+
+
 # --- seat capability table (ADR-0002) ---------------------------------------
 
 def test_news_seat_can_signal_and_brief_but_not_see_the_book():
