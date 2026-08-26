@@ -167,3 +167,18 @@ def test_journals_warn_when_a_participant_did_not_write():
     f = _only(evaluate(s), "journals")
     assert f.severity == "warn"
     assert "analyst" in f.detail
+
+
+def test_reflection_ok_when_nothing_is_due():
+    """2026-08-21: resolutions empty, nothing past horizon. Correct, silent."""
+    assert _only(evaluate(_snap(due_unresolved=[])), "reflection").severity == "ok"
+
+
+def test_reflection_alerts_when_something_is_due_and_unresolved():
+    """2026-08-24: same empty table, decisions now past horizon. Dead job.
+
+    This pair is the point of the check — identical `resolutions` content,
+    opposite verdicts, distinguished only by whether anything is due."""
+    f = _only(evaluate(_snap(due_unresolved=[1, 2])), "reflection")
+    assert f.severity == "alert"
+    assert "2" in f.detail

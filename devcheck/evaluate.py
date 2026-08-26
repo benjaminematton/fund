@@ -15,6 +15,7 @@ CHECKS = (
     checks.check_degradations,
     checks.check_checkpoints,
     checks.check_journals,
+    checks.check_reflection,
 )
 
 

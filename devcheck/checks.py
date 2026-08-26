@@ -124,3 +124,22 @@ def check_journals(s: Snapshot) -> Finding:
         "warn",
         f"participated but wrote no journal entry: {', '.join(missing)}",
     )
+
+
+def check_reflection(s: Snapshot) -> Finding:
+    """Phase 2 acceptance — the nightly job writes `resolutions` at horizon.
+
+    An empty resolutions table is correct until a decision passes its horizon
+    and a dead job afterwards. The snapshot carries the decisions that are
+    already due, so the two cases cannot be confused: this is the shape that
+    fooled a session on 2026-08-21, which read the empty table as a failure.
+    """
+    if not s.due_unresolved:
+        return Finding("reflection", "ok", "no decision is past its horizon and unresolved")
+    ids = ", ".join(str(i) for i in s.due_unresolved)
+    return Finding(
+        "reflection",
+        "alert",
+        f"{len(s.due_unresolved)} decision(s) past horizon with no resolutions row "
+        f"(ids: {ids}) — the nightly reflection job is not landing",
+    )
