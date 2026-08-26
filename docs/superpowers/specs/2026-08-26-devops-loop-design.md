@@ -1,311 +1,242 @@
-# The devops loop: one tracked condition, two producers
+# The devops loop: invoke the filer, observe, then decide
 
-Design spec. Supersedes nothing; **extends** `docs/agents/devops.md`, which stays the
-canonical statement of the loop. Where this file and that one disagree after the doc PR
-lands, the doc wins.
+Design spec, **cut back after adversarial review**. Extends `docs/agents/devops.md`, which
+stays the canonical statement of the loop. Where this file and that one disagree after the
+doc PR lands, the doc wins.
 
-Derived from a measurement of the loop as implemented on `origin/master` at `116242d`
-(2026-08-26) and a grilling session that settled thirteen decisions. Every measured claim
-below is marked **[M]** (observed — command run, output read) or **[R]** (reasoned from
-code that has never executed).
+Claims are marked **[M]** (observed — a command was run and its output read), **[R]**
+(reasoned from code that has never executed), or **[X]** (asserted in review and since
+falsified — kept only where the correction is instructive).
 
-## 1. What was measured
+**Revision history.** The first draft carried thirteen binding decisions. An adversarial
+review in a fresh context found six resting on premises the repo contradicts, two of them
+false outright, and made the scope argument below. Five decisions are deferred, three are
+amended, three defects were split out as issues (#110, #111, #112). What that review
+falsified is recorded here rather than deleted — a spec that hides its own corrections
+teaches nothing.
+
+## 1. Scope, and why it shrank
+
+**The measured defect is one line: nothing invokes `scripts/file_alert_issues.py` [M].**
+
+It is 213 lines with a 376-line suite. It already dedupes by label, refuses to retry, and
+handles a missing `gh`, an unreadable DB, malformed payloads, clearing alerts, and the
+audit rollup. It has executed zero times against production.
+
+The first draft answered that by designing a unified label namespace, reopen semantics,
+shared suppression, a sweep check, and a liveness stamp — five mechanisms, none of them
+informed by a single observed run. The review's scope finding stands: that adds a failure
+surface plausibly larger than the eight-hour incident it removes. Two of its examples are
+enough to make the point — a suppression namespace that could silently swallow real
+`gate_error` alerts, and a staleness check inert in every shell anyone would run it from.
+
+**So: ship the smallest thing that produces data. Run it two weeks. Let observed behavior
+adjudicate the rest.** Decisions D3, D8, D9, D10, D11 and D14 are deferred to §4, each with
+the evidence that would settle it.
+
+## 2. What was measured
 
 The detection layer devops.md describes is real, deployed, and exercised: `audit_day`,
-`OnFailure=fund-alert@`, the `ExecStopPost` heartbeat, and `gate/` all ran today
+`OnFailure=fund-alert@`, the `ExecStopPost` heartbeat and `gate/` all ran today
 (`run_day: AUDIT CLEAN 2026-08-26`, `Result=success`, `curl: OK`) **[M]**.
 
-The loop that hangs off it does not turn:
+The loop hanging off it does not turn. Two implementations of "an untracked condition dies"
+exist, two days apart, in different namespaces:
 
-| Edge | State |
-|---|---|
-| alert fires → GitHub issue | Two implementations. Neither is what the doc describes **[M]** |
-| issue → standup shows it | Filed issues land in `morning-standup`'s "unattached" bucket — reported, never dispatched **[R]** |
-| work → closed | Manual; nothing links a close back to the condition **[M]** |
-| EOD sweeps what is still open | Not implemented. `eod-digest` sweeps sessions, not the tracker — zero `gh issue` calls **[M]** |
-
-**The duplicate edge is the finding that reshaped this design.** Two files implement "an
-untracked condition dies," two days apart, in different namespaces:
-
-- `scripts/file_alert_issues.py` — source: `events` rows `kind='alert'` from the trading
-  run. Labels `alert:<code>`. Files automatically. **Has never run**: no `alert:*` label
-  has ever existed on the repo, and the script calls `ensure_label` before every create
-  **[M]**. Nothing invokes it — not `ops/`, the Makefile, a unit, or CI; its only
-  references in production code are comments **[M]**.
+- `scripts/file_alert_issues.py` — source: `events` rows `kind='alert'`. Labels
+  `alert:<code>` **and `ticker:<t>`**, so a condition is keyed per `(code, ticker)` —
+  pinned by `test_two_tickers_of_one_code_are_two_issues` **[M]**. Files automatically.
+  Never run: no `alert:*` label has ever existed, and it calls `ensure_label` before every
+  create **[M]**.
 - `devcheck.check_issue_coverage` — source: on-demand production checks. Labels
-  `check:<name>`. Nags a human to file. **In use**: #102 carries
-  `check:db_broker_agreement` **[M]**.
+  `check:<name>`. Nags a human. In use: #102 carries `check:db_broker_agreement` **[M]**.
 
-Both articulate the same rule in nearly the same words ("an alert nobody files disappears
-when the window closes" / "an alert that does not become an issue dies in Slack"). The
-wired one is not the one the doc describes.
+Both state the same rule in nearly the same words. The wired one is not the one the doc
+describes.
 
-Two further measurements shaped the answers: **`gh` is not installed on the droplet**
-(`command -v gh` empty; `su - fund -c "gh auth status"` fails) **[M]**, and
+Two facts shaped the answers: **`gh` is not installed on the droplet** **[M]**, and
 `ops/pull-backups.sh` already rsyncs `/var/lib/fund/backups/` to this machine on a launchd
 timer at 19:00, where `gh` is authenticated **[M]**.
 
-## 2. Decisions
+**A correction to the first draft.** It claimed filed issues land in `morning-standup`'s
+"unattached" bucket **[X]**. That bucket is defined by a `Part of #<n>` line in the issue
+body — which D2 forbids the filer from writing. Filed issues land in the general
+open-issues report instead. The conclusion (reported, never dispatched) is unchanged; the
+mechanism given for it was wrong and was checkable in one file read.
 
-Thirteen, in the order settled. Each is binding on the implementation; a change needs a
-new round, not a judgement call at the keyboard.
+## 3. Decisions that survive
 
-**D1 — Both producers survive.** They are not duplicates. Run alerts fire when nobody is
-looking; devcheck findings exist only because a human ran `dev-status`. That asymmetry is
-precisely why the run-alert side must not depend on someone looking — that dependency is
-the eight-hour failure. Keep both, share one tracking rule, and name both edges in the doc.
+**D1 — Both producers survive.** Run alerts fire when nobody is looking; devcheck findings
+exist only because a human ran `dev-status`. That asymmetry is why the run-alert side must
+not depend on someone looking. Keep both. **Amended:** the first draft added a unified
+`condition:` namespace to stop them disagreeing. The review found the two producers' subject
+sets are disjoint by construction — devcheck never reads `events.kind='alert'` rows **[M]**
+— and the spec named no condition both emit. Unification is deferred (§4, D9) until an
+actual overlap is observed.
 
-**D2 — Filed issues are reported, never dispatched.** An auto-filed issue is a *receipt*
-that a condition exists, not a scoped work item: its title is alert text truncated at 110
-chars. Boarding stays a human ordering decision — `morning-standup` is right, and the one
-time a lane boarded itself the attach was reverted in 68 seconds. The filer stamps no
-`Part of #<map>`. It **does** stamp a `severity:` label so the standup's report can rank.
+**D2 — Filed issues are receipts, reported and never dispatched.** An auto-filed issue's
+title is alert text truncated at 110 chars; boarding stays a human ordering decision. The
+filer stamps no `Part of #<map>`. **Amended: it stamps no `severity:` label either.** The
+first draft required one; `append_alert`'s payload has no severity field **[M]**, so the
+filer would need a code→tier table — the same "second place to forget" the draft rejected
+elsewhere — and stamping an existing label would trip #111. Filed issues carry
+`alert:<code>` and `ticker:<t>` only.
 
-**D3 — Recurrence: comment and reopen.** A re-fire after close means the fix did not work,
-and it is the one case the current design guarantees a reader sees as a brand-new problem.
-One comment **per filer run-window**, carrying the occurrence count — never one per firing,
-which trades "30 firings look like 1" for a thread nobody reads. The body already
-aggregates "occurrences in window", so this is wiring.
-
-**D4 — The loop's input widens.** devops.md starts at "alert fires" and describes 13 alerts
-in 8 days, while the board runs on ~50 issues dominated by `audit:*` and `severity:*`
+**D4 — The doc's stated input widens.** devops.md starts at "alert fires" and describes 13
+alerts in 8 days, while the board runs on ~50 issues dominated by `audit:*` and `severity:*`
 findings **[M]**. The edges are identical for every source; only the producer differs. The
-doc covers run alerts, devcheck findings, audit findings, and peer discoveries.
+doc covers run alerts, devcheck findings, audit findings and peer discoveries.
 
-**D5 — The ratchet edge, quoted not promised.** Nothing in the loop compounds. The
-compounding mechanism exists — `docs/agents/regression-ratchet.md` — and devops.md never
-mentions it **[M]**. Add a `closed → permanent eval case` edge **conditionally**, quoting
-the ratchet's own eligibility rule (only failures fully determined by a recorded trace,
-which excludes most droplet/systemd/broker alerts), plus one line saying devops is a loop,
-not a flywheel, and that the fund's flywheels are the ratchet and calibration.
+**D5 — The ratchet edge, named as near-empty.** Nothing in the loop compounds;
+`docs/agents/regression-ratchet.md` is the compounding mechanism and devops.md never
+mentions it **[M]**. **Amended after review:** the draft added `closed → permanent eval
+case` as a *conditional* edge quoting the eligibility rule. A quoted condition still implies
+a live edge. The ratchet grades seat-turn traces through `evals/grade.py`; droplet, systemd
+and broker alerts are not narrowly excluded but categorically outside its domain **[M]**.
+So the doc says the edge exists and almost never fires, and keeps the line that matters:
+devops is a loop, not a flywheel — the fund's flywheels are the ratchet and calibration.
 
-**D6 — "Do not add a detector" gets the boundary it never stated, in two clauses.**
-devcheck landed two days after that doctrine and re-derives invariants `audit_day` also
-asserts **[M]**. It is not a violation, but the line has to be written down:
+(The review argued the ratchet's arrow points the other way, since its own text says an
+ineligible failure means "write an issue instead." That gates *ineligible* failures to
+issues; it does not forbid an eligible one the edge. The reframe above is adopted; the
+reversal is not.)
 
-1. **Authority.** `audit_day` asserts in-run and fails the day. devcheck renders findings
-   for a human and has no authority over the run. Two things that can disagree is fine when
-   exactly one of them can stop a trade.
-2. **Source of truth.** Both derive from `specs/contracts.md` §6, never from `CLAUDE.md`'s
-   invariants. Two checkers reading different rulebooks can disagree about *what the rule
-   is*, not merely about state — which is the disagreement the doctrine actually guards
-   against.
+**D6 — The detector doctrine gets its authority clause only.** `audit_day` asserts in-run
+and fails the day; devcheck renders findings for a human and has no authority over the run.
+Two instruments that can disagree is fine when exactly one can stop a trade. **The draft's
+second clause — "both derive from `specs/contracts.md` §6" — is dropped as false [X]:**
+eleven of devcheck's thirteen checks derive from CLAUDE.md invariants or `acceptance.md` by
+name, §6 is a stage×failure table that could not ground them, and the doctrine's own
+rationale (invariants are "already enforced in `make test`") argues the opposite way for an
+instrument whose stated purpose is asserting against the running host. Filed as **#112**;
+the doc PR says only what is true.
 
-**D7 — The automated filer runs locally, chained to the backup pull.** Not on the droplet:
-that would put a repo-write token on the box that also holds broker keys — the box whose
-entire alert path is built around not leaking credentials off it. Not on a second launchd
-timer either: a 5-minute offset is a race against a slow rsync. Invoke it from the **end of
-`ops/pull-backups.sh`**, so "backup pulled" implies "filer ran" and there is one fewer clock
-to drift.
+**D7 — The filer runs locally, chained to the backup pull.** Not on the droplet: that puts a
+repo-write token on the box holding broker keys — the box whose entire alert path is built
+around not leaking credentials off it, and which has no `gh` **[M]**. Not on a second
+launchd timer: a clock offset is a race against a slow rsync. Invoke it from the **end of
+`ops/pull-backups.sh`**, so "backup pulled" implies "filer ran".
 
 The dry-run default is a CLI safety for humans, **not a policy against automation** — the
 doc must say so, or a future session reads the docstring as forbidding the chained run.
 
-*Stated cost, precisely:* launchd has no `OnFailure`, so a filer that stops filing is
-silent. `issue_coverage` is a **partial** backstop, and D14 covers the rest. Two limits,
-both measured:
-
-- It only fires when `dev-status` runs, and `dev-status` runs when standup does. **That much
-  of filer silence is covered by the standup cadence, not by machinery** — worst case a
-  one-standup delay rather than eight hours of nobody-owns-it, and if standup lapses both
-  producers go silent together.
-- It can only nag about conditions devcheck **independently re-derives**. devcheck reads
-  persistent state — paper mode, position coverage, outbox, services, checkpoints — and
-  never reads `events.kind='alert'` rows **[M]**. A run-alert-only condition, transient and
-  visible solely in the events table, has no coverage here at all: devcheck cannot see it,
-  so there is nothing for it to report as untracked.
-
-devcheck's one attempt to read that table is itself broken, which is why the gap is total
-rather than partial: `_scorecard_codes()` selects `events.kind` where its docstring promises
-the payload `code`, so `check_degradations` is dead-green against every kind production
-writes, and suppression hides that **[M]**. Filed as **#107** with the evidence. Out of
-scope here (§6) — this spec changes tracking, never detection.
-
-**D8 — Rolling 7-day window; reopen only on a firing after the close.** A today-only window
-misses any day the pull did not run (a sleeping laptop). Rolling makes missed runs
-self-healing, since label dedupe makes re-scans free. But rolling alone plus D3 is a nightly
-reopen bot: a 5-day-old firing would reopen an issue a human closed yesterday. The
-close-timestamp rule is what makes the window safe.
-
-**Compare in UTC explicitly.** The droplet writes ET-clocked rows; GitHub's `closed_at` is
-UTC. A naive comparison reopens or skips wrongly for firings inside the offset.
-
-**D9 — One canonical `condition:<id>` label, emitted by both producers.** `alert:` and
-`check:` are demoted to *source* labels, kept so you can still tell who filed it. A mapping
-table was rejected as a second place to forget to update; per-namespace lookup was rejected
-as the disagreement D1 exists to design out.
-
-**Migration is part of the change, not a follow-up.** #102 already carries
-`check:db_broker_agreement`, and any other open issue carries an old namespace. Until they
-are relabelled the shared lookup cannot see them, and the first automated run double-files
-every condition that is already tracked.
-
-**D10 — Suppression is shared; `accepted` suppresses the reopen, not the record.** Both
-producers read `suppress:` from `.claude/health.md` front matter, which `dev_status`
-already parses with hand-rolled stdlib **[M]** — so the filer can import it without
-breaking its zero-dependency rule. A close carrying `accepted` stops the reopen
-permanently, distinct from an ordinary close, which stays reopen-on-refire.
-
-The filer **still appends its occurrence-count comment to an accepted issue.** An accepted
-condition that recurs 100× worse would be invisible under a pure opt-out; a silently
-accruing count costs nothing, nags nobody, and leaves a re-promotion trail.
-
-**D11 — The EOD sweep is a devcheck check.** Open `condition:` issues, oldest first, folded
-into `make dev-status`. In-repo, testable, no cross-repo skill edit — and both
-`morning-standup` and `eod-digest` already fold `health_command` output in, so one check
-lights up both ends of the day. It sits inside D6's boundary exactly: renders findings for a
-human, no authority over the run.
+*Stated cost:* launchd has no `OnFailure`, so a filer that stops filing is silent.
+`issue_coverage` does not cover it — devcheck cannot see run-alert-only conditions **[M]**,
+and its one attempt to read that table is broken (#107). **This is the observation window's
+main risk and is accepted deliberately for two weeks**, not solved: §5's output line is what
+makes it detectable by a human reading the log, and D14 is the machinery that would close
+it, deferred until the window shows whether it is needed.
 
 **D12 — The root checkout is out of scope.** `Developer/fund` sits on a detached HEAD
-predating devops.md, the filer, and devcheck, and three live sessions (`fund-28`,
-`fund-34`, `fund-e5`) have it as their cwd **[M]**. File an issue with the evidence and
-raise it at the next standup. Do **not** reconcile it here: moving HEAD under three working
-sessions is the `git branch -f` failure one level up.
+predating devops.md, the filer and devcheck, and live sessions have it as their cwd **[M]**.
+File an issue, raise it at standup. Moving HEAD under working sessions is the `git branch -f`
+failure one level up.
 
 **D13 — Doc PR first, with per-edge status markers.** The doc is correct whether or not the
-timer ships, and every session started before it lands operates without it. But round 1's
-core finding was *a doc describing an edge that was not wired* — and a doc-only PR
-describing `condition:` labels, reopen semantics and a chained filer recreates that failure
-for the window between the two PRs, in a repo whose new rule is explicitly hostile to it
-("a dated filename is a snapshot of the moment it was written, never current state").
+chained run ships, and every session started before it lands operates without it. But the
+core finding was *a doc describing an edge that was not wired*, and a doc-only PR describing
+machinery that does not exist recreates that for the window between PRs — in a repo whose
+new rule is explicitly hostile to it. So every edge carries its status: **exists today**
+versus **specced, landing in the code PR**, and the code PR flips the markers.
 
-So every edge in the revised doc carries its status: **exists today** (devcheck nag, manual
-filer) versus **specced, landing in the code PR** (chained run, reopen, `condition:`
-labels). The code PR's diff includes flipping those markers. The doc is then true on both
-sides of the gap instead of aspirational in the middle of it.
+*Unenforced, and known:* the flip is discipline across two PRs. If it drifts, the doc lies in
+the other direction. A grep-based test pinning the markers to the presence of
+`file_alert_issues` in `pull-backups.sh` would cost almost nothing and is worth doing if the
+markers survive the observation window.
 
-**D14 — The filer stamps its own liveness; a devcheck check reports staleness.** D7's
-backstop does not reach run-alert-only conditions, so without this the filer is a signal
-that can stop arriving with nothing watching — the exact shape devops.md names: *"a signal
-that stops arriving is invisible to any threshold check — absence reads as health."*
-Building a second alerter would violate D6, so the cheap form stays inside its boundary:
+## 4. Deferred — decided by observation, not by argument
 
-- On a successful run the filer writes a stamp to `$FUND_LOCAL_BACKUPS/.filer-last-run`
-  (the env var `pull-backups.sh` already requires), containing the window it covered.
-- A devcheck check reads it and reports `warn` when the stamp is older than **3 days** —
-  long enough to tolerate a laptop off over a long weekend, short enough to catch a stopped
-  filer inside one work week. An absent stamp or unset env var reports `unknown`, never a
-  crash, per devcheck's house rule that a descriptor problem cannot stop the checks.
+Each names the evidence that would settle it. None is a rejection.
 
-Pure function over `Snapshot`, renders for a human, no authority over the run. It converts
-filer silence from invisible to a finding, and it is what makes §5's criterion 8 concrete:
-the stamp not advancing *is* the report.
-
-## 3. The design
-
-### 3.1 Label taxonomy
-
-| Label | Meaning | Who sets it |
+| # | Deferred | What would settle it |
 |---|---|---|
-| `condition:<id>` | The canonical condition. **The only key any lookup uses.** | Both producers |
-| `alert:<code>` | Source: a run alert, `events.kind='alert'` | The filer |
-| `check:<name>` | Source: a devcheck finding | The human, prompted by `issue_coverage` |
-| `severity:<tier>` | Existing taxonomy, so the standup can rank a report | The filer (D2) |
-| `accepted` | Declared known; suppresses reopen, not the comment (D10) | Human only |
+| D3 | Comment-and-reopen on recurrence | Whether any condition actually recurs after a close in the window. Blocked anyway: the comment path has no dedupe key, so a second run over one window double-comments |
+| D8 | Rolling window + close-timestamp rule | Whether missed runs actually happen. **Its stated premise was false [X]** — `events.created_at` is ISO-8601 **UTC** (`clock.iso()`), not ET; only `--since` is ET, and `audit_day` already converts it. An implementer following the draft would have shifted every firing by the offset. The real fragility is smaller: `+00:00` versus GitHub's `Z`, so parse both rather than string-compare |
+| D9 | Unified `condition:` namespace | An observed condition both producers emit. None is known. Note any such id must carry the ticker, or an MSFT exposure dedupes against an open NVDA issue |
+| D10 | Shared suppression, `accepted` opt-out | Whether a filed condition is ever declared noise. Blocked anyway: `read_suppressed` returns devcheck **check ids**, and the live entry is `degradations` — mapping it to its codes would silently stop `pm_timeout` and `gate_error` from ever being filed |
+| D11 | The EOD sweep as a devcheck check | Whether open receipts actually go unread. `_tracked_checks`'s `--limit 100` against a growing board needs solving first |
+| D14 | Filer liveness stamp | Whether the filer ever silently stops. Blocked anyway: `FUND_LOCAL_BACKUPS` is set nowhere but inside the launchd plist **[M]**, so the check reports `unknown` in every shell a human would run it from — and with `rsync --ignore-existing` the stamp would advance daily against a dead backup (#110) |
 
-### 3.2 The tracking rule, stated once
+## 5. The design that ships
 
-> A condition is tracked **iff** an open issue carries its `condition:<id>` label.
+One line added to `ops/pull-backups.sh`, plus three fixes to the filer it invokes.
 
-One helper, imported by both producers. Any `gh` failure resolves to "nothing is tracked",
-which over-reports — the safe direction, and the rule `_tracked_checks` already follows.
+**Invocation.** After the rsync succeeds, run the filer with `--apply` against the newest
+snapshot. `set -eu` is in force and `main()` returns 1 on a *malformed payload* — a routine
+data condition, not a failure **[M]** — so a bare call fails the pull job and `|| true`
+would swallow the tracker-unavailable case too. Capture the return code, report it, exit 0
+regardless.
 
-### 3.3 Filer behavior
+**Which snapshot.** Newest `fund-<date>.sqlite`, explicitly **excluding `fund-predeploy-*`**,
+which sorts lexically after the dated snapshots and would otherwise win a naive `tail -1`.
 
-Invoked from the end of `ops/pull-backups.sh`, after the rsync succeeds, against the
-freshly pulled backup DB. The window start is computed **in the shell** and passed as
-`--since`, keeping the script argv-driven and free of a wall clock — which is what makes it
-testable.
+**Print the snapshot's date.** The filer takes the DB path; it prints which file and what
+date it read. `pull-backups.sh` reports an inventory count that only grows, so a stalled
+droplet backup is indistinguishable from a healthy one (#110) — and a two-week observation
+run against a silently stale snapshot observes nothing. This is not D14's machinery; it is
+making the human-read output falsifiable, which is the whole theory of a minimal ship.
 
-**Precedence, stated once because the rows below overlap:** suppression is evaluated first
-and wins outright — a suppressed condition produces nothing, whatever the tracker holds.
-Then `accepted`, which downgrades reopen to comment-only. Then the open/closed state
-machine. An implementer resolving these in a different order is the failure this line
-exists to prevent.
+**Read-only DB open.** `sqlite3.connect(args.db)` opens read-write **[M]**. `dev_status.py`
+documents at length why every production read uses `file:{db}?mode=ro` — a read-write open
+applies a pending migration as a side effect. The local mirror already carries `-wal`/`-shm`
+sidecars from past read-write opens; chaining a nightly one makes it routine. Use
+`sqlite3.connect(f"file:{db}?mode=ro", uri=True)`.
 
-Per condition in the window:
+**Labels.** `alert:<code>` + `ticker:<t>`, as the code already does. Nothing new, so #111 is
+not triggered by this change — but it should be fixed before any future decision has the
+filer stamp a human-curated label.
 
-| Tracker state | Action |
-|---|---|
-| No issue | Create: `condition:` + source + `severity:`; body aggregates occurrences |
-| Open issue | Comment once per run-window with the occurrence count (D3) |
-| Closed, no firing after `closed_at` | Nothing |
-| Closed, firing after `closed_at` (UTC) | Reopen + comment (D3, D8) |
-| Closed with `accepted` | Comment only, never reopen (D10) |
-| Suppressed in `health.md` | Nothing |
-| Clearing alert only | Existing `comment` action; never file to announce a fix |
-
-### 3.4 Sweep behavior
-
-A devcheck check reporting open `condition:` issues oldest-first. Severity `warn`, not
-`alert` — an open tracked issue is the system working, and a check that nags daily about
-correctly-tracked work is what `check_issue_coverage`'s own docstring warns against.
-
-Beside it, D14's staleness check: `warn` when `.filer-last-run` is older than 3 days,
-`unknown` when the stamp or `FUND_LOCAL_BACKUPS` is absent. Two checks, one fold-in — the
-sweep says what is still open, the stamp says whether anything is still filing.
-
-## 4. Test seams
-
-Named here because the spec gate exists to check them before code is written.
+## 6. Test seams
 
 1. **`plan_filings(conn, since, tracker, db_path)`** — already the seam; `tracker` is
-   injected, and `tests/test_file_alert_issues.py` (376 lines) already drives it with a
-   fake. It extends: the tracker protocol grows `issue_state(condition_id) -> (number,
-   state, closed_at, labels)`. Two adapters exist (`GhTracker`, the test fake), so this
-   clears the real-seam bar.
-2. **devcheck checks are pure functions over `Snapshot`** — the sweep check takes tracker
-   rows through `Snapshot`, and D14's staleness check takes the stamp's age the same way.
-   `dev_status.py` stays the only place doing I/O. Existing pattern; `tracked_checks` is the
-   precedent. Both new checks are testable without a tracker, a clock, or a filesystem.
-3. **Totality test for D9** — every alert code (collected the way `check_alert_codes.py`
-   already collects them, by AST) and every devcheck check name resolves to exactly one
-   `condition:` id. Total by construction, not by discipline.
-4. **UTC comparison (D8)** — table-driven cases at the ET/UTC boundary: a firing inside the
-   offset on either side of `closed_at`.
-5. **Migration (D9)** — a dry-run assertion that every currently-open issue carrying an old
-   namespace maps to a `condition:` id before the first `--apply`.
+   injected and the suite drives it with a fake. Two adapters (`GhTracker`, the fake), so
+   this clears the real-seam bar, and `test_gh_tracker_queries_only_open_issues` already
+   pins the real argv.
+2. **`ops/pull-backups.sh`** — `tests/test_ops_pull_backups.py` already stubs `rsync` via
+   `FUND_RSYNC`. The filer gets the same treatment: an injectable command, so the chaining,
+   the return-code handling and the snapshot-selection rule are testable without a network,
+   a database or `gh`.
+3. **Read-only enforcement** — assert the connect string, not the behavior. A test that
+   writes to the DB to prove it cannot is a test that corrupts a snapshot when it fails.
 
-## 5. Acceptance
+## 7. Acceptance
 
-Per edge, in the shape `specs/acceptance.md` uses. Tests first, then code until green.
+1. A run alert with no open issue for its `(code, ticker)` produces exactly one issue.
+2. The same condition firing again the next day produces no second issue.
+3. `ops/pull-backups.sh` invokes the filer only after a successful rsync; a filer return
+   code of 1 does not fail the pull, and is printed.
+4. The snapshot selection picks the newest dated snapshot and never a `fund-predeploy-*`
+   file, asserted against a fixture directory containing both.
+5. The filer's output names the snapshot file and its date.
+6. The filer opens the database read-only.
 
-1. A run alert with no tracked condition produces exactly one issue carrying
-   `condition:`, a source label, and `severity:`.
-2. The same condition firing again the next day produces **no second issue** and exactly
-   one new comment.
-3. A condition whose issue was closed, firing again after `closed_at`, reopens that issue.
-   Firing again *before* `closed_at` does not.
-4. A condition suppressed in `health.md` produces nothing — **including when an open issue
-   already tracks it**, which is the precedence case implementers will otherwise split on.
-5. A closed issue labelled `accepted`, firing again, gains a comment and stays closed.
-6. `make dev-status` lists open `condition:` issues oldest-first at severity `warn`.
-7. Both producers, given the same condition, resolve to the same `condition:` id — asserted
-   by the totality test, not by inspection.
-8. `ops/pull-backups.sh` invokes the filer only after a successful rsync, and a filer
-   failure does not fail the pull. **The report surface is D14's stamp**: a failed run does
-   not advance `.filer-last-run`, so the staleness check fires at the next `dev-status`.
-   Stderr into a launchd log is not a report — nobody reads it.
-9. A stamp older than 3 days makes `make dev-status` report filer staleness at `warn`; an
-   absent stamp reports `unknown` rather than crashing or reading as healthy.
+**Runtime evidence, not a green suite — this ships unattended.** Before the code PR is
+called done: one real dry run against a pulled backup, output pasted. **Run it twice and
+paste both** — identical output is the only cheap evidence the run is idempotent, and
+non-idempotency is what killed D3.
 
-**Runtime evidence, not a green suite (this ships unattended).** Before the code PR is
-called done: one real dry run against a pulled backup DB, output pasted, showing what it
-would file against the live tracker.
+## 8. Out of scope
 
-## 6. Out of scope
-
-- Reconciling the root checkout (D12) — issue + standup.
+- #107 (`check_degradations` cannot fire), #110 (pull freshness), #111 (label vandalism),
+  #112 (the doctrine question). Each is true on `master` independent of this spec.
+- Reconciling the root checkout (D12).
 - Installing `gh` on the droplet. D7 exists so this never has to happen.
-- Any change to what an alert *is*, or to `check_alert_codes.py`'s literal-code rule. This
-  spec changes tracking, never detection — D6's whole point.
-- Auto-attaching anything to the board (D2).
+- Any change to what an alert *is*. This spec changes invocation, never detection.
 
-## 7. Landing order
+## 9. Landing order
 
-1. **Doc PR** against `master`: `docs/agents/devops.md` revised per D1, D4, D5, D6, D7,
-   D13, with per-edge status markers.
-2. **Code PR**: `condition:` namespace + migration, shared lookup, reopen/comment/suppress
-   behavior, sweep check, `pull-backups.sh` chaining — and the marker flips from step 1.
+1. **Doc PR** against `master`: `docs/agents/devops.md` per D4, D5, D6 (authority clause
+   only), D7, D13, with per-edge status markers.
+2. **Code PR**: the chained invocation and the three filer fixes, plus the marker flips.
+3. **Two weeks of observation**, then revisit §4 against what actually happened.
 
-Both against `master` via PR, never a direct edit to a shared checkout.
+Both PRs against `master`, never a direct edit to a shared checkout.
+
+## 10. On "binding"
+
+The first draft said its decisions were binding and that changing one needed a new round.
+Six of thirteen did not survive one careful reading of `clock.py`, `contracts.md` §6 and
+`checks.py`. Thirteen decisions settled in a single session, about a script that had never
+run, were not a set anything should have been bound to. The decisions here are the ones that
+survived review; §4's are open questions with named evidence. Treat both as revisable by the
+next person who reads the code more carefully than we did.
