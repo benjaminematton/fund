@@ -140,6 +140,16 @@ valuable part was a finding. #43's best output was *"a generated gate measures i
 no PR contains. **The ledger counts PRs; it must never read PR count as a lane's worth**, or it
 undercounts the finding lane and overcounts the mechanical one.
 
+**Land candidates come from the ledger's `unlanded` set, and this is the only thing that derives one.**
+A branch has no issue body, so it has neither a declared region nor a `blocked_by` — the candidate
+filters do not reach it. Its **region is computed from the branch's own content**
+(`git diff --name-only origin/master...<branch>`), never from a title or a label. Its **owner is
+whichever session claims it in the poll's `stranded` field** — authorship is never inferred from branch
+names or `git log`, because every session commits as the same identity. A branch nobody claims is an
+**orphan**, and orphans drain at one sweep lane per run; **the sweep is the one lane that goes to a
+non-author.** Candidates are computed before the poll and bound after it, so Phase 2 lists them **by
+branch, not by owner** — listing by owner first would require knowing the answer the poll exists to ask.
+
 ### The split
 
 **There is no quota, no ratio, and no cap.** Every candidate that survives the filters is dispatched.
@@ -321,6 +331,11 @@ needing one, not a claim to precedence. State it rather than leaving it to which
 returned first.
 
 **A rider older than two standups is a flag `→ the human`**, or a long-running lane makes its whole
+region invisible to dispatch. **Its age comes from the decision list**, where every rider is named with
+how many days it has been open and that count carries forward the same way a decision's does — not from
+a stamp nothing writes.
+
+The rest of that rule:
 region invisible to dispatch.
 
 **A region is claimed when either test holds, and both run every time: a live lane holds it, or a lane
@@ -400,8 +415,7 @@ to have labelled anything.
 > carry-forward reads that heading in the previous digest, so it must be spelled the same every
 > morning — a rule that finds a section by prose inspection is a consumer with an unreliable writer.
 
-> **No human-bound decision leaves the run except in that list.** It is assembled once and reported
-> once; an item discovered mid-run joins the list rather than getting its own message.
+> **No human-bound decision leaves the run except in that list.** It is assembled once and reported once. **It is assembled here and completed after Phase 5**, because two of its inputs do not exist yet: `held-in-region` resolutions come from Phase 4 and unbound lanes from Phase 5. Phase 3 holds a draft; Phase 6 writes the finished list. It is still reported exactly once — an item discovered mid-run joins the list rather than getting its own message.
 >
 > **Technical rulings are not batched and stay serial with the overseer.**
 

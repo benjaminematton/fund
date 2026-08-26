@@ -380,6 +380,11 @@ needing one, not a claim to precedence. State it rather than leaving it to which
 returned first.
 
 **A rider older than two standups is a flag `→ the human`**, or a long-running lane makes its whole
+region invisible to dispatch. **Its age comes from the decision list**, where every rider is named with
+how many days it has been open and that count carries forward the same way a decision's does — not from
+a stamp nothing writes.
+
+The rest of that rule:
 region invisible to dispatch.
 
 **Why the second test exists**, since it is the one an implementer will be tempted to drop: without
@@ -564,6 +569,25 @@ Expected: either a match — the previous run recorded harm that was *occurring*
 - [ ] **Step 3: Insert the precedence order at the end of Phase 0, after the ledger**
 
 ```markdown
+**Land candidates come from the ledger's `unlanded` set, and this is the only thing that derives one.**
+A branch has no issue body, so it has neither a declared region nor a `blocked_by`; the candidate
+filters above do not reach it. Each unlanded branch is a candidate **land lane**:
+
+- **Its region is computed from the branch's own content** — `git diff --name-only
+  origin/master...<branch>` — never from a title, a label, or a guess. That is a region derived from
+  what the work touches, which is why it does not offend the rule against inventing an order.
+- **Its owner is whichever session claims it in the poll's `stranded` field.** Authorship is not
+  inferred from branch names or `git log` — every session commits as the same identity, so neither can
+  distinguish one from another.
+- **A branch no session claims is an orphan.** Orphans drain at **one sweep lane per run**, taking
+  every orphan whose region does not intersect a claimed one and naming the ones it dropped. **The
+  sweep is the one lane that goes to a non-author**, and it is briefed as such.
+
+**Land candidates are computed before the poll and bound after it.** The `stranded` answers are what
+establish authorship, so Phase 2 lists them **by branch, not by owner** — *these branches are
+unlanded; if one is yours, say so in `stranded`* — and Phase 4 binds each to whoever claimed it.
+Listing them by owner before the poll would require knowing the answer the poll exists to ask.
+
 **The split is a precedence order, not a quota, a ratio, or a cap.** Every candidate that survives the
 filters is dispatched. Urgency does exactly one thing: it decides which stream draws first.
 
@@ -657,10 +681,10 @@ Replace with:
 > package and no code; a land lane produces a PR, an obituary, or a named blocker, and may not extend
 > its branch.>
 >
-> **A `land` lane is named by the session whose branch it is, and by nobody else.** Each is listed
-> beside the session it belongs to; if none of them is yours, none of them is yours to take.
-> Reconstructing another session's intent from a diff is the most expensive guess available, and
-> Phase 4 will refuse the binding anyway — so this saves you the round trip rather than adding a rule.
+> **`land` lanes are listed by branch, not by owner, because who owns them is what this field asks.**
+> Each line is a branch ahead of `origin/master`: *if one of these is yours, say so in `stranded` and
+> it becomes yours.* Do not claim a branch you did not write — reconstructing another session's intent
+> from a diff is the most expensive guess available, and Phase 4 refuses a non-author's claim anyway.
 ```
 
 - [ ] **Step 4: Update the capacity field's parenthetical**
@@ -728,8 +752,7 @@ Build the digest:
    morning. A rule that has to find a section by prose inspection is a consumer with an unreliable
    writer — the same defect as a marker nothing produces.
 
-   **No human-bound decision leaves the run except in this list.** It is assembled once and reported
-   once; an item discovered mid-run joins the list rather than getting its own message.
+   **No human-bound decision leaves the run except in this list.** It is assembled once and reported once. **It is assembled here and completed after Phase 5**, because two of its inputs do not exist yet: `held-in-region` resolutions come from Phase 4 and unbound lanes from Phase 5. Phase 3 holds a draft; Phase 6 writes the finished list. It is still reported exactly once — an item discovered mid-run joins the list rather than getting its own message.
 
    **Mark a standing item `⚠️ LIVE`, and this is the only thing that produces one.** Where the run
    records harm that is *occurring* — wrong output reaching production now, not a defect that could
