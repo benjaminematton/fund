@@ -72,6 +72,7 @@ from market.features import (build_market_inputs, unmapped_holdings,  # noqa: E4
 from orchestrator.clock import et_run_date, iso                    # noqa: E402
 from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
                                 run_day)
+from orchestrator.ingest_guard import account_snapshot             # noqa: E402
 from orchestrator.preconditions import assert_account_config_unchanged  # noqa: E402
 from slackkit.outbox import append_alert, drain                    # noqa: E402
 from state.db import connect                                       # noqa: E402
@@ -520,7 +521,21 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
 
     watchlist = load_watchlist(WATCHLIST_YAML)
     sectors = yaml.safe_load(SECTORS_YAML.read_text()) or {}
-    account = source.account_state()
+    # The gate sizes the ENTIRE day from this one payload, so it is validated
+    # before anything reads it: an empty positions list does not fail
+    # downstream, it sizes (held_qty 0 blocks every sell, the empty book takes
+    # the permissive correlation tier). None means the payload could not be
+    # trusted; the alert is already appended and no stage may run.
+    account = account_snapshot(conn, source=source, now_iso=iso(clock.now()),
+                               sleep=time.sleep)
+    if account is None:
+        # Drained here because run_day drains per stage and no stage will run,
+        # so the alert would otherwise sit in the outbox until the next day —
+        # the same reason the account-config precondition drains explicitly.
+        log("ALERT positions_payload_lost — the broker's positions payload"
+            " could not be trusted; no stages run, nothing traded (exit 1)")
+        drain(conn, slack, iso(clock.now()))
+        return 1
     universe = sorted(set(watchlist) | set(account.get("positions") or {}))
     close_df = source.close_frame(universe, end=pd.Timestamp(clock.now()))
     alert_missing_price_history(conn, clock, close_df,
