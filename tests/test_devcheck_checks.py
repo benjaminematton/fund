@@ -321,3 +321,41 @@ def test_issue_coverage_does_not_nag_about_a_suppressed_check():
         tracked_checks=frozenset(),
     )
     assert _only(evaluate(s), "issue_coverage").severity == "ok"
+
+
+def test_unreadable_database_alerts_once_and_marks_its_checks_unknown():
+    """A failed DB read must not render as five green rows.
+
+    Found live: the script queried a path that existed as a 0-byte file, so
+    every query returned no rows with exit 0 and `order_idempotency`,
+    `outbox`, `checkpoints`, `journals` and `reflection` all printed 🟢. One
+    root cause alerts; the checks it starved say they were never checked,
+    rather than claiming health nobody measured.
+    """
+    findings = evaluate(_snap(db_read_ok=False))
+    assert _only(findings, "database").severity == "alert"
+    for check in ("order_idempotency", "outbox", "checkpoints", "journals", "reflection"):
+        f = _only(findings, check)
+        assert f.severity == "warn", f"{check} claimed {f.severity} off an unread database"
+        assert "not read" in f.detail
+
+
+def test_readable_database_is_ok_and_leaves_its_checks_alone():
+    """Negative control: the same checks keep their real verdicts."""
+    findings = evaluate(_snap())
+    assert _only(findings, "database").severity == "ok"
+    assert _only(findings, "outbox").severity == "ok"
+
+
+def test_unread_book_names_why_it_could_not_be_read():
+    """A red row whose cause is "no credentials in this shell" and one whose
+    cause is "the broker is down" must not look identical.
+
+    Without the distinction every local run shows a red top row for a local
+    setup reason, and a reader learns to skip the most important check in the
+    report inside a week — the same trained blindness suppression exists for.
+    """
+    f = _only(evaluate(_snap(positions=None, broker_error="no ALPACA_API_KEY in this shell")),
+              "position_coverage")
+    assert f.severity == "alert"
+    assert "no ALPACA_API_KEY in this shell" in f.detail

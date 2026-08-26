@@ -21,6 +21,8 @@ wrong host and always agree with the suite that just went green.
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -41,7 +43,12 @@ HEALTH = ROOT / ".claude" / "health.md"
 
 DROPLET = "root@138.197.47.97"
 REMOTE_ROOT = "/opt/fund"
-REMOTE_DB = "/var/lib/fund/fund.db"
+# NOT a constant: the path is read from the droplet's own FUND_DB, because a
+# hardcoded guess is silently wrong rather than loudly wrong. The first guess
+# here was /var/lib/fund/fund.db, which EXISTS on the box as a 0-byte stray
+# file — so every query returned no rows with exit 0 and five checks rendered
+# green against an empty database.
+_ENV_CACHE: dict[str, str | None] = {}
 UNITS = ("fund-daily", "fund-pnl")
 SEATS = ("exec", "pm", "analyst", "news", "critic")
 
@@ -93,29 +100,63 @@ def _ssh(cmd: str, timeout: int = 15) -> str | None:
     return out.stdout if out.returncode == 0 else None
 
 
-def _sql(query: str) -> list[list[str]] | None:
-    """One read-only SQLite query on the droplet's live database.
+def _droplet_var(name: str) -> str | None:
+    """One variable from the droplet's own environment files.
 
-    `mode=ro` is load-bearing: opening the live DB read-write would apply a
-    pending migration as a side effect of a health check (issue #17's shape).
+    Every path this script reads comes from here rather than a constant. Both
+    hardcoded guesses in the first draft — the database and the journals root
+    — resolved to real but empty locations on the box, so the checks that
+    depended on them rendered green against nothing.
     """
-    raw = _ssh(
-        f"sqlite3 -separator '\\x1f' 'file:{REMOTE_DB}?mode=ro' \"{query}\"",
-        timeout=20,
-    )
+    if name not in _ENV_CACHE:
+        raw = _ssh(f"grep -h '^{name}=' /etc/fund/env {REMOTE_ROOT}/.env 2>/dev/null | head -1")
+        value = None
+        if raw and "=" in raw:
+            _, _, rest = raw.strip().partition(f"{name}=")
+            value = rest.strip().strip("'\"") or None
+        _ENV_CACHE[name] = value
+    return _ENV_CACHE[name]
+
+
+def _remote_db() -> str | None:
+    """The droplet's FUND_DB, read from the same env the fund itself uses."""
+    return _droplet_var("FUND_DB")
+
+
+def _sql(query: str) -> list[dict] | None:
+    """One read-only SQLite query on the droplet's live database, as JSON.
+
+    None means the read failed; the caller must never turn that into an empty
+    result. `mode=ro` is load-bearing twice over: opening the live DB
+    read-write would apply a pending migration as a side effect of a health
+    check (issue #17's shape), and it makes a missing file an ERROR rather
+    than an empty database sqlite3 helpfully creates.
+
+    -json rather than a separator. A `-separator '\\x1f'` passed through ssh
+    arrives as the four literal characters, so every multi-column row came
+    back unsplit as one string — checkpoints then filtered itself to zero and
+    printed "0 checkpoint(s), all done" against 56 real rows. JSON has no
+    separator to get wrong, and a malformed reply raises here rather than
+    quietly losing columns.
+    """
+    db = _remote_db()
+    if db is None:
+        return None
+    raw = _ssh(f"sqlite3 -json 'file:{db}?mode=ro' \"{query}\"", timeout=20)
     if raw is None:
         return None
-    return [line.split("\x1f") for line in raw.splitlines() if line.strip()]
+    if not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 def _droplet_env() -> dict[str, str]:
-    raw = _ssh(
-        f"grep -hE '^ALPACA_PAPER_TRADE=' {REMOTE_ROOT}/.env /etc/fund/env 2>/dev/null | head -1"
-    )
-    if not raw or "=" not in raw:
-        return {}
-    _, _, value = raw.strip().partition("ALPACA_PAPER_TRADE=")
-    return {"ALPACA_PAPER_TRADE": value.strip().strip("'\"")}
+    value = _droplet_var("ALPACA_PAPER_TRADE")
+    return {"ALPACA_PAPER_TRADE": value} if value is not None else {}
 
 
 def _seat_trading_toolsets() -> dict[str, bool]:
@@ -195,7 +236,7 @@ def _run_local(*argv: str) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
-def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None]:
+def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None, str]:
     """Positions with aggregate stop coverage, straight from the broker.
 
     Coverage is computed by orchestrator.protection._covering_qty — the same
@@ -207,14 +248,23 @@ def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None]:
     try:
         from market.source_alpaca import AlpacaSource
         from orchestrator.protection import _CLOSING_SIDE, _covering_qty, _qty
-    except Exception:
-        return None, [], None
+    except Exception as exc:
+        return None, [], None, f"broker client unavailable: {exc}"
+
+    missing = [k for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY") if not os.environ.get(k)]
+    if missing:
+        # Named explicitly: a local shell without credentials and a broker
+        # outage are different problems, and a red row that cannot tell them
+        # apart trains the reader to skip the row.
+        return None, [], None, (
+            f"{', '.join(missing)} not in this shell — run `set -a; source .env; set +a`"
+        )
     try:
         source = AlpacaSource()
         raw_positions = source.open_positions()
         raw_orders = source.open_orders()
-    except Exception:
-        return None, [], None
+    except Exception as exc:
+        return None, [], None, f"broker read failed: {exc}"
 
     out: list[Position] = []
     for raw in raw_positions:
@@ -232,7 +282,7 @@ def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None]:
     # AlpacaSource has no fill-history method, so this stays None and
     # db_broker_agreement reports itself unwired. Defaulting it to len(orders)
     # would print a green row for a comparison nobody performed.
-    return out, raw_orders, None
+    return out, raw_orders, None, ""
 
 
 def build_snapshot() -> Snapshot:
@@ -242,6 +292,12 @@ def build_snapshot() -> Snapshot:
     yields ServiceResult(result="unreachable"), never an exception that hides
     the broker and database checks behind it.
     """
+    # A probe first: it distinguishes "the database has no rows" from "the
+    # database was never read", which every query below would otherwise
+    # collapse into the same empty list.
+    probe = _sql("select count(*) from orders")
+    db_read_ok = probe is not None
+
     orders_rows = _sql("select client_order_id, symbol from orders") or []
     ticket_rows = _sql("select id, ticker from tickets") or []
     unposted = _sql("select count(*) from events where posted_at is null")
@@ -255,35 +311,55 @@ def build_snapshot() -> Snapshot:
         "and date(d.run_date, '+7 day') <= date('now')"
     ) or []
 
-    positions, _open_orders, broker_fills = _positions_and_coverage()
+    run_date = str(checkpoint_rows[0]["run_date"]) if checkpoint_rows else ""
+    participants = _sql(
+        "select distinct agent from costs where run_date = "
+        "(select max(run_date) from costs)"
+    ) or []
+
+    positions, _open_orders, broker_fills, broker_error = _positions_and_coverage()
     head, origin, behind = _deploy_state()
 
     return Snapshot(
         droplet_env=_droplet_env(),
         seat_trading_toolsets=_seat_trading_toolsets(),
-        orders=[OrderRow(r[0], r[1] if len(r) > 1 else "") for r in orders_rows],
-        tickets={r[0]: (r[1] if len(r) > 1 else "") for r in ticket_rows},
-        events_unposted=int(unposted[0][0]) if unposted and unposted[0][0].isdigit() else 0,
+        orders=[OrderRow(str(r["client_order_id"]), str(r.get("symbol") or "")) for r in orders_rows],
+        tickets={str(r["id"]): str(r.get("ticker") or "") for r in ticket_rows},
+        events_unposted=int(next(iter(unposted[0].values()))) if unposted else 0,
         broker_fill_count=broker_fills,
-        checkpoints=[(r[0], r[1], r[2]) for r in checkpoint_rows if len(r) >= 3],
-        journals_written=_journals_written(),
-        seats_participating={r[1] for r in checkpoint_rows if len(r) > 1} & set(SEATS),
+        checkpoints=[(str(r["run_date"]), str(r["stage"]), str(r["status"])) for r in checkpoint_rows],
+        journals_written=_journals_written(run_date),
+        seats_participating={str(r["agent"]) for r in participants} & set(SEATS),
         scorecard_codes=_scorecard_codes(),
         positions=positions,
         open_orders=[],
-        due_unresolved=[int(r[0]) for r in due_rows if r[0].isdigit()],
+        due_unresolved=[int(r["id"]) for r in due_rows],
         droplet_head=head,
         origin_master=origin,
         commits_behind=behind,
         services={u: _service(u) for u in UNITS},
+        broker_error=broker_error,
+        db_read_ok=db_read_ok,
         suppressed=read_suppressed(HEALTH),
         tracked_checks=_tracked_checks(),
     )
 
 
-def _journals_written() -> set[str]:
-    """Seats with a journal entry for the droplet's latest run date."""
-    raw = _ssh(f"ls {REMOTE_ROOT}/journals 2>/dev/null")
+def _journals_written(run_date: str) -> set[str]:
+    """Seats whose journal carries a `## <run_date>` entry.
+
+    The root comes from FUND_JOURNALS, not a constant: /opt/fund/journals
+    exists on the box and holds only a .gitkeep, so listing it reported every
+    seat silent while the real journals sat in /var/lib/fund.
+
+    Scoped to the run date on purpose. A seat that wrote an entry last week
+    has a file, and a check that only asked whether the file exists would go
+    green for a seat that said nothing today.
+    """
+    root = _droplet_var("FUND_JOURNALS")
+    if root is None or not run_date:
+        return set()
+    raw = _ssh(f"grep -l '^## {run_date}$' {root}/*.md 2>/dev/null")
     if raw is None:
         return set()
     return {Path(n.strip()).stem for n in raw.splitlines() if n.strip()} & set(SEATS)
@@ -295,7 +371,7 @@ def _scorecard_codes() -> list[str]:
         "select kind from events where date(created_at) = "
         "(select max(date(created_at)) from events)"
     ) or []
-    return [r[0] for r in rows if r]
+    return [str(r["kind"]) for r in rows if r.get("kind")]
 
 
 def main() -> int:

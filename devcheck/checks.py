@@ -170,11 +170,12 @@ def check_position_coverage(s: Snapshot) -> Finding:
     indistinguishable from a genuinely flat account.
     """
     if s.positions is None:
+        why = f" ({s.broker_error})" if s.broker_error else ""
         return Finding(
             "position_coverage",
             "alert",
-            "the broker's position book was not read, so live exposure is unknown "
-            "— spec §4 forbids inferring position state from the database",
+            f"the broker's position book was not read{why}, so live exposure is "
+            "unknown — spec §4 forbids inferring position state from the database",
         )
     naked = [p for p in s.positions if p.covering_qty < p.qty]
     if not naked:
@@ -218,6 +219,24 @@ def check_services(s: Snapshot) -> Finding:
         return Finding("services", "ok", f"last run succeeded: {names}" if names else "no units read")
     parts = [f"{r.unit}: {r.result}" + (f" at {r.last_run}" if r.last_run else "") for r in bad]
     return Finding("services", "alert", "; ".join(sorted(parts)))
+
+
+def check_database(s: Snapshot) -> Finding:
+    """Invariant 6 — SQLite is the source of truth, so a database nobody
+    could read means the day's record was never inspected.
+
+    This is the root cause the DB-derived checks defer to. It exists because
+    a query against a wrong-but-present path returns no rows with exit 0, and
+    "no rows" is how a healthy empty table also looks.
+    """
+    if s.db_read_ok:
+        return Finding("database", "ok", "the fund database was read")
+    return Finding(
+        "database",
+        "alert",
+        "the fund database could not be read — every check sourced from it is "
+        "reported unknown rather than healthy",
+    )
 
 
 def check_issue_coverage(s: Snapshot, findings: list[Finding]) -> Finding:

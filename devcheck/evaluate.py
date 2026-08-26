@@ -21,6 +21,7 @@ CHECKS = (
     checks.check_position_coverage,
     checks.check_deploy_state,
     checks.check_services,
+    checks.check_database,
 )
 
 
@@ -39,9 +40,29 @@ def evaluate(snapshot: Snapshot) -> list[Finding]:
             out.append(result)
         else:
             out.extend(result)
+    out = _starve_db_derived(out, snapshot.db_read_ok)
     # Runs last: it reads the other checks' output, not just the snapshot.
     out.append(checks.check_issue_coverage(snapshot, out))
     return out
+
+
+# Checks whose entire input is the droplet's SQLite database. When that read
+# fails there is nothing true to say about them, and "ok" would be the false
+# green this package exists to remove. They warn rather than alert so one root
+# cause stays loud instead of five copies of it.
+DB_DERIVED = ("order_idempotency", "outbox", "checkpoints", "journals", "reflection")
+
+
+def _starve_db_derived(findings: list[Finding], db_read_ok: bool) -> list[Finding]:
+    """Rewrite DB-sourced verdicts to "unknown" when the database was unread."""
+    if db_read_ok:
+        return findings
+    return [
+        replace(f, severity="warn",
+                detail="the fund database was not read, so this was never checked")
+        if f.check in DB_DERIVED else f
+        for f in findings
+    ]
 
 
 def apply_suppression(findings: list[Finding], suppressed: frozenset[str]) -> list[Finding]:

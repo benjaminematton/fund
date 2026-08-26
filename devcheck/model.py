@@ -62,5 +62,7 @@ class Snapshot:
     origin_master: str
     commits_behind: int
     services: Mapping[str, ServiceResult]
+    broker_error: str = ""             # why the book was unread, when it was
+    db_read_ok: bool = True            # False = the fund DB could not be read at all
     suppressed: frozenset[str] = field(default_factory=frozenset)
     tracked_checks: frozenset[str] = field(default_factory=frozenset)
