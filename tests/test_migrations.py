@@ -210,7 +210,7 @@ def test_charter_version_comes_from_the_header():
     from agents.seats import charter_version_for
 
     assert charter_version_for({"seat": "pm"}) == "v6"
-    assert charter_version_for({"seat": "news"}) == "v2"
+    assert charter_version_for({"seat": "news"}) == "v3"
 
 
 def test_an_unparseable_header_is_unknown_not_a_crash():
