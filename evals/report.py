@@ -12,6 +12,7 @@ support.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from math import comb
 
@@ -31,7 +32,7 @@ class CaseReport:
     trials: int
     passes: int
     inconclusive: int
-    failures: list[str]
+    failures: Counter[str]   # tag -> how many trials produced it, never a set
 
     @property
     def fraction(self) -> str:
@@ -57,8 +58,14 @@ def build_report(results) -> list[CaseReport]:
             case=case, trials=len(rs),
             passes=sum(1 for r in rs if r.passed),
             inconclusive=sum(1 for r in rs if r.inconclusive),
-            failures=sorted(set(failures))))
+            failures=Counter(failures)))
     return out
+
+
+def format_failures(failures) -> str:
+    """`TAG xN`, one per sub-kind, sorted. Same idiom as `INCONCLUSIVE xN`:
+    three identical FAILs are three findings, not one."""
+    return ", ".join(f"{tag} x{n}" for tag, n in sorted(failures.items()))
 
 
 def render(reports) -> str:
@@ -66,7 +73,7 @@ def render(reports) -> str:
              "-----   ------   ------"]
     for r in reports:
         if r.failures:
-            status = ", ".join(r.failures)
+            status = format_failures(r.failures)
         elif r.inconclusive:
             status = f"INCONCLUSIVE x{r.inconclusive}"
         else:
