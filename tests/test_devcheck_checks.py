@@ -10,7 +10,7 @@ passed, and two were caught by luck.
 from __future__ import annotations
 
 from devcheck.evaluate import evaluate
-from devcheck.model import OrderRow, Snapshot
+from devcheck.model import OrderRow, Position, Snapshot
 
 
 def _snap(**over) -> Snapshot:
@@ -182,3 +182,29 @@ def test_reflection_alerts_when_something_is_due_and_unresolved():
     f = _only(evaluate(_snap(due_unresolved=[1, 2])), "reflection")
     assert f.severity == "alert"
     assert "2" in f.detail
+
+
+def test_coverage_ok_when_fully_covered():
+    s = _snap(positions=[Position("NVDA", qty=40, covering_qty=40)])
+    assert _only(evaluate(s), "position_coverage").severity == "ok"
+
+
+def test_coverage_alerts_on_a_naked_position():
+    """2026-08-21's actual state: 40 shares, zero open orders, no stop."""
+    s = _snap(positions=[Position("NVDA", qty=40, covering_qty=0)])
+    f = _only(evaluate(s), "position_coverage")
+    assert f.severity == "alert"
+    assert "NVDA" in f.detail and "0" in f.detail and "40" in f.detail
+
+
+def test_coverage_alerts_on_partial_cover():
+    """Aggregate protection: N shares covered by one or more stops. Partial
+    cover is exposure, not protection."""
+    s = _snap(positions=[Position("NVDA", qty=80, covering_qty=40)])
+    f = _only(evaluate(s), "position_coverage")
+    assert f.severity == "alert"
+
+
+def test_coverage_ok_with_no_positions():
+    """Flat is not exposed. The check must not fire on an empty book."""
+    assert _only(evaluate(_snap(positions=[])), "position_coverage").severity == "ok"

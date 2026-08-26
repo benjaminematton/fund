@@ -16,6 +16,7 @@ CHECKS = (
     checks.check_checkpoints,
     checks.check_journals,
     checks.check_reflection,
+    checks.check_position_coverage,
 )
 
 

@@ -143,3 +143,28 @@ def check_reflection(s: Snapshot) -> Finding:
         f"{len(s.due_unresolved)} decision(s) past horizon with no resolutions row "
         f"(ids: {ids}) — the nightly reflection job is not landing",
     )
+
+
+def check_position_coverage(s: Snapshot) -> Finding:
+    """design.md §5 — a ticket carrying a stop_price becomes a broker-side
+    stop leg, so a held position is expected to be covered.
+
+    Coverage is AGGREGATE: N shares covered by one or more live stops.
+    Partial cover is exposure; the uncovered remainder has no code path that
+    will protect it.
+    """
+    naked = [p for p in s.positions if p.covering_qty < p.qty]
+    if not naked:
+        return Finding(
+            "position_coverage",
+            "ok",
+            f"{len(s.positions)} position(s), every share covered",
+        )
+    parts = [
+        f"{p.symbol} {p.covering_qty:g} of {p.qty:g} covered" for p in naked
+    ]
+    return Finding(
+        "position_coverage",
+        "alert",
+        "; ".join(parts) + " — the uncovered shares have no code path that will protect them",
+    )
