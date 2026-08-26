@@ -34,6 +34,7 @@ def _snap(**over) -> Snapshot:
         commits_behind=0,
         services={},
         suppressed=frozenset(),
+        tracked_checks=frozenset(),
     )
     base.update(over)
     return Snapshot(**base)
@@ -270,3 +271,53 @@ def test_coverage_alerts_when_the_book_could_not_be_read():
     f = _only(evaluate(_snap(positions=None)), "position_coverage")
     assert f.severity == "alert"
     assert "not read" in f.detail
+
+
+def test_issue_coverage_ok_when_alert_is_tracked():
+    s = _snap(
+        positions=[Position("NVDA", qty=40, covering_qty=0)],   # raises an alert
+        tracked_checks=frozenset({"position_coverage"}),
+    )
+    assert _only(evaluate(s), "issue_coverage").severity == "ok"
+
+
+def test_issue_coverage_alerts_when_an_alert_is_untracked():
+    """Negative control — the finding exists and nothing will remember it."""
+    s = _snap(
+        positions=[Position("NVDA", qty=40, covering_qty=0)],
+        tracked_checks=frozenset(),
+    )
+    f = _only(evaluate(s), "issue_coverage")
+    assert f.severity == "alert"
+    assert "position_coverage" in f.detail
+    assert "gh issue create" in f.detail
+
+
+def test_issue_coverage_ignores_warn_and_ok():
+    """Only alerts nag. A warn that nagged daily would train the reader to
+    skip the report, which is the failure suppression exists to prevent."""
+    s = _snap(commits_behind=22, tracked_checks=frozenset())   # deploy_state warns
+    assert _only(evaluate(s), "issue_coverage").severity == "ok"
+
+
+def test_issue_coverage_does_not_report_itself():
+    """Without this it alerts about its own alert, forever."""
+    s = _snap(positions=[Position("NVDA", qty=1, covering_qty=0)], tracked_checks=frozenset())
+    f = _only(evaluate(s), "issue_coverage")
+    assert "issue_coverage" not in f.detail
+
+
+def test_issue_coverage_does_not_nag_about_a_suppressed_check():
+    """Suppression means "known noise in this repo". Demanding a GitHub issue
+    for known noise re-creates the nagging suppression exists to remove.
+
+    issue_coverage runs inside evaluate(), before apply_suppression() has
+    downgraded anything, so it must consult the snapshot's suppression set
+    itself rather than the severity it happens to see.
+    """
+    s = _snap(
+        positions=[Position("NVDA", qty=40, covering_qty=0)],   # raises an alert
+        suppressed=frozenset({"position_coverage"}),
+        tracked_checks=frozenset(),
+    )
+    assert _only(evaluate(s), "issue_coverage").severity == "ok"

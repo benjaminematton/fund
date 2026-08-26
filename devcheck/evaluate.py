@@ -39,6 +39,8 @@ def evaluate(snapshot: Snapshot) -> list[Finding]:
             out.append(result)
         else:
             out.extend(result)
+    # Runs last: it reads the other checks' output, not just the snapshot.
+    out.append(checks.check_issue_coverage(snapshot, out))
     return out
 
 

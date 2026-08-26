@@ -218,3 +218,33 @@ def check_services(s: Snapshot) -> Finding:
         return Finding("services", "ok", f"last run succeeded: {names}" if names else "no units read")
     parts = [f"{r.unit}: {r.result}" + (f" at {r.last_run}" if r.last_run else "") for r in bad]
     return Finding("services", "alert", "; ".join(sorted(parts)))
+
+
+def check_issue_coverage(s: Snapshot, findings: list[Finding]) -> Finding:
+    """docs/agents/issue-tracker.md — work in this repo lives as GitHub issues.
+
+    An alert nobody files disappears when the window closes. Only `alert`
+    participates: a `warn` that nagged every day would train the reader to
+    skip the report, which is the failure suppression exists to prevent.
+
+    A suppressed check is excluded for that same reason — it is declared
+    known noise, and this runs before apply_suppression() has downgraded it,
+    so the severity seen here is the raw one.
+    """
+    untracked = sorted(
+        f.check
+        for f in findings
+        if f.severity == "alert"
+        and f.check != "issue_coverage"
+        and f.check not in s.tracked_checks
+        and f.check not in s.suppressed
+    )
+    if not untracked:
+        return Finding("issue_coverage", "ok", "every alert is tracked by an issue")
+    hint = " ".join(f'gh issue create --label "check:{c}"' for c in untracked[:2])
+    return Finding(
+        "issue_coverage",
+        "alert",
+        f"alert(s) with no open issue: {', '.join(untracked)} — these die with this "
+        f"window. File them: {hint}",
+    )

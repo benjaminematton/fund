@@ -138,6 +138,26 @@ def _seat_trading_toolsets() -> dict[str, bool]:
     return out
 
 
+def _tracked_checks() -> frozenset[str]:
+    """Open issues labelled check:<id>. Any gh failure means "nothing is
+    tracked" — the check then over-reports, which is the safe direction."""
+    try:
+        out = subprocess.run(
+            ["gh", "issue", "list", "--state", "open", "--limit", "100",
+             "--json", "labels", "-q", ".[].labels[].name"],
+            capture_output=True, text=True, timeout=20, cwd=str(ROOT),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    if out.returncode != 0:
+        return frozenset()
+    return frozenset(
+        line.strip()[len("check:"):]
+        for line in out.stdout.splitlines()
+        if line.strip().startswith("check:")
+    )
+
+
 def _service(unit: str) -> ServiceResult:
     raw = _ssh(f"systemctl show {unit}.service -p Result -p ExecMainExitTimestamp --value")
     if raw is None:
@@ -257,6 +277,7 @@ def build_snapshot() -> Snapshot:
         commits_behind=behind,
         services={u: _service(u) for u in UNITS},
         suppressed=read_suppressed(HEALTH),
+        tracked_checks=_tracked_checks(),
     )
 
 

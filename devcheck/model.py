@@ -63,3 +63,4 @@ class Snapshot:
     commits_behind: int
     services: Mapping[str, ServiceResult]
     suppressed: frozenset[str] = field(default_factory=frozenset)
+    tracked_checks: frozenset[str] = field(default_factory=frozenset)
