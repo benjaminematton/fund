@@ -349,6 +349,24 @@ MASTER_REGRESSION_CASES = [
 # Each module-scope entry below pairs with a function-body twin in CLEAN_CASES
 # under the same name. Same shape, different scope, opposite verdict — that
 # pairing IS the rule, so keep the names matched if you touch either table.
+#
+# WARNING ABOUT THE `global` BLOCK — read before adding or pruning a case there.
+# It has produced THREE separate evasions, and each one was invisible to the
+# case written for the one before it. Measured, not recalled: reverting the fix
+# for evasion N leaves the case for evasion N-1 red, every time.
+#
+#     evasion          the case that existed             pinned it?
+#     enclosing shadow  (none)                            -
+#     no assignment     global + assignment               NO, stayed red
+#     local import      global +/- assignment (both)      NO, both stayed red
+#
+# So a case here that "already covers global" almost certainly covers one
+# INSTANCE of the rule. That is the general trap: a case pinning one instance
+# reads exactly like a case pinning the rule, and an ablation cannot separate
+# them either, because deleting the block fails both. The only defence is
+# another case that varies the axis the first one silently fixed — which is
+# also why the axes a table names are a CLAIM about what it covers, and an axis
+# list that overstates coverage is the same defect as an unfalsifiable guard.
 BINDING_STANDS_CASES = [
     ("`if False: time = None` at module scope", """
         import time
@@ -483,6 +501,35 @@ BINDING_STANDS_CASES = [
                 return time.sleep(0.30)
 
             return inner
+    """, RULE_CLOCK_REF),
+    # THIRD `global` shape, and again neither case above could catch it. Under
+    # `global x`, a function-local `import x` binds the MODULE's x to the module
+    # object, so this scope's own import must win over whatever module scope
+    # held. The fix for the previous evasion overwrote that binding
+    # unconditionally and clobbered the import.
+    #
+    # Deletion-check (standing rule): revert the `not in imported` guard on a
+    # copy and THIS case goes clean while BOTH cases above stay red —
+    #     global + function-local import   FLAG -> clean   (this case)
+    #     global, WITH assignment          FLAG -> FLAG    (cannot pin it)
+    #     global, NO assignment            FLAG -> FLAG    (cannot pin it)
+    # so the two existing cases are not merely redundant here, they are blind.
+    #
+    # Verified: probe() blocks 0.302s; the same shape without the inner
+    # `import time` raises NameError, proving the inner import is the
+    # precondition; the same shape with no sleep reports 0.001s (executor
+    # control). Passes today — a pin, not a red case.
+    ("global + a function-local import of the same name", """
+        def outer():
+            import time
+            time = None
+
+            def probe():
+                global time
+                import time
+                return time.sleep(0.30)
+
+            return probe
     """, RULE_CLOCK_REF),
     # PIN for the nested-scope stop in _walrus_targets, whose docstring asserts
     # that nested function and class scopes are not crossed. Found by generating
