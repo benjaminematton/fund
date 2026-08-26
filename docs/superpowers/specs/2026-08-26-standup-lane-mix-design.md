@@ -675,7 +675,7 @@ the ⚠️ LIVE news-seat charter question.
 | No `needs-decision`-equivalent label in the repo | Decide stream empty. Say so once, flatly, as a fact — never a daily question. |
 | No previous digest | No carry-forward and no standing lane; the decide stream is the label set only. |
 | `git fetch` fails / no remote | `unlanded` **unavailable**, not zero. Report it as unavailable. |
-| Repo never adopted the board | Unchanged, and strictly more useful: 0b and 0g both run without a map issue. |
+| Repo never adopted the board | Unchanged, and strictly more useful: 0b and 0g both run without a map issue. **Disputed — see §9.13**, where the skill's own text reads a no-board repo as having no declared regions and so no decide lane to form. |
 | Every decide candidate is a rider | Zero decide lanes, full decision list. A legitimate outcome. |
 | A decide lane rules anyway | Detectable, not preventable — the package arrives with the answer sitting under a recommendation. |
 | A land lane extends its branch | The next run's ledger shows `ahead` rising on a branch that had a land lane. Measured, not asserted. |
@@ -692,6 +692,25 @@ rather than demonstrated.
 ---
 
 ## 9. Load-bearing and unverified
+
+> **What the review of this branch covers, and what it does not.**
+>
+> This branch has been reviewed at the level of text, across ten passes, and never executed. What that
+> review covers: cross-phase contradiction; terms used before definition or used in two senses;
+> consumers with no producer and producers with no consumer; candidate states that no rule resolves or
+> that two rules resolve differently; operators applied across kinds; and justifications wider than the
+> rules they carry. Eleven defects were found this way, none of which required execution to see, and the
+> state grid has been derived independently twice to the same result.
+>
+> What it does not cover: whether the commands in the text return the fields the rules read; whether
+> live sessions answer in the shapes the poll asks for; whether the timing rules behave as described
+> against the real messaging primitives; and whether any lane type produces useful output. Phases 2, 4,
+> 5 and 6 have never executed at all — the one real dispatch had a roster of zero (§9.6) — so the first
+> run remains the first test of the phases this branch is built on, independent of anything in it.
+
+**Every finding of that review is text-level reasoning, never a demonstration.** It found real defects
+in the text and proves nothing about runtime behaviour. Items 7–13 below are what it could not reach.
+The measured claims in items 1–5 carry their own provenance and are unaffected by it.
 
 1. **That a decide lane retires its own label when told to report it as a deliverable.** Zero
    precedent — nine lanes performed zero registry actions. This is the single largest assumption.
@@ -726,6 +745,54 @@ rather than demonstrated.
    poll, no reconcile, no binding, no broadcast. This design adds two lane types and a seventh poll
    field to phases that are entirely untested. **The first run under it is still the first test of the
    phases underneath it.**
+
+### First-run unknowns, ranked
+
+**Item 7 is the only one on this list that is falsifiable before any dispatch.** 8–12 are discoverable
+only by running. All are reasoned; none has been measured.
+
+7. **Do region heads declared in issue bodies and region heads given in `owns` poll answers ever match
+   by string equality?** **The one item here that can be falsified before a single lane is dispatched.**
+   Six review rounds rest on the assumption that they do, and **nobody has seen a single matching
+   pair.** If they do not match in practice, every candidate reads as free: the rider rule (0e) never
+   fires, Phase 4's collision matrix is inert, and a run dispatches lanes into each other's regions —
+   **an active harm, not a missing feature.** The check is cheap: dump the region heads declared in
+   issue bodies alongside the `owns` answers from a single poll and look for any pair matching by
+   string equality. **Ten minutes, and it gates the value of the whole design** — §7's worked run, the
+   rider rule, and every `held-in-region` resolution all stand on this one comparison succeeding.
+8. **That `gh api` returns `sub_issues` and `issue_dependencies_summary.blocked_by` in the shapes
+   Phase 0 reads.** §2 exercised the `sub_issues` call by hand and it returned `{number, title, state}`
+   — but by hand, never down Phase 0's own path, and **`blocked_by` carries no row in §2 at all.**
+   Phase 0's `null ≠ 0` discipline is written against a field whose shape has not been measured.
+9. **That a real peer answers the `stranded` poll in the two-part shape asked, rather than in prose.**
+   Phase 4 forms every land lane from both halves of that answer — disposition *and* `serves #<issue>`,
+   whose issue supplies the lane's region. A prose answer leaves the region underivable and the land
+   stream empty, and no peer has ever been asked (§9.6).
+10. **That `notify_when_idle`, the 2-hour collection cap, and the 20-minute empty-roster window behave
+    as described against real `SendMessage`.** Three timing rules read out of tool documentation and
+    never run. The poll's whole shape — one round, no arbitration — assumes all three.
+11. **That the orphan sweep, briefed to a non-author, produces anything but noise.** Phase 4 makes it
+    the only lane in the skill briefed to a session that did not write the work, and it is **the one
+    lane type with no precedent at all**: remediate ran nine times on 2026-08-25, decide and land each
+    have partial analogues in that run, the sweep has none.
+12. **That a lane ever retires a marker.** Not a new item — **§9.1**, named there as the single largest
+    assumption with zero precedent. Listed here only so the first-run set is complete; it is the one
+    assumption on this list that an active norm cuts against (Phase 5).
+
+### A text gap, settleable by reading
+
+13. **Whether a board-independent decide lane can exist in a repo with no map issue is unsettled, and
+    the skill and this spec disagree.** The skill states that with no map issue there are no
+    sub-issues and therefore **no declared regions at all** — a claim about sub-issues generalised into
+    a claim about the repo. But a decision-bearing issue carries its region in its own body, so in a
+    no-board repo holding `needs-decision` issues, declared regions *do* exist and Phase 4 has
+    something to run against. **§8's own row says the no-board case is *"unchanged, and strictly more
+    useful: 0b and 0g both run without a map issue"* — and 0b is the decide routing.** So the spec's
+    stated benefit for no-board repos is the thing the skill reads as impossible. The failure mode is
+    not a wrong dispatch: it is **the decide stream silently never forming, in the repo shape this
+    design was most meant to help.** This is a contradiction between two texts, not an execution
+    unknown — it is settled by reading, not by running. **To settle before this ships to a second
+    repo.**
 
 ---
 
