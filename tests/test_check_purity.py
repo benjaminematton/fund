@@ -434,7 +434,7 @@ BINDING_STANDS_CASES = [
     # without the sleep reports 0.001s). Deleting the `module_bindings`
     # threading on a copy turns this case clean, so it pins that block and not
     # something adjacent.
-    ("global reaches the module past an enclosing shadow", """
+    ("global reaches the module past an enclosing shadow (WITH assignment)", """
         import time
 
 
@@ -448,6 +448,57 @@ BINDING_STANDS_CASES = [
                 return v
 
             return inner
+    """, RULE_CLOCK_REF),
+    # THIS CASE EXISTS BECAUSE THE ONE ABOVE PINNED THE INSTANCE, NOT THE CLASS.
+    # It is not duplication — deleting it re-opens a live evasion.
+    #
+    # The case above carries `time = None` inside `inner`, and that assignment
+    # is load-bearing for the wrong reason: the `declared_global` branch sits
+    # inside `for name in rebound`, so a function that declares `global time`
+    # and never ASSIGNS `time` never enters `rebound` and the module binding is
+    # never consulted. Delete that one line from the case above and it goes
+    # clean. So the case asserted "`global` reaches the module when the function
+    # also assigns the name" while reading like "`global` reaches the module" —
+    # which is why fixing the third evasion left this fourth one, one line away,
+    # untouched.
+    #
+    # The general shape of that mistake is worth more than this case: A CASE
+    # THAT PINS ONE INSTANCE OF A RULE READS EXACTLY LIKE A CASE THAT PINS THE
+    # RULE, and an ablation cannot separate them either, because deleting the
+    # block fails both. The only defence is a second case that varies the axis
+    # the first one silently fixed.
+    #
+    # Verified: inner() blocks 0.304s; the same shape with the `global` line
+    # removed raises AttributeError, proving the `global` is what reaches the
+    # module; the same shape with no sleep reports 0.001s (executor control).
+    ("global reaches the module past an enclosing shadow (NO assignment)", """
+        import time
+
+
+        def outer():
+            time = None
+
+            def inner():
+                global time
+                return time.sleep(0.30)
+
+            return inner
+    """, RULE_CLOCK_REF),
+    # PIN for the nested-scope stop in _walrus_targets, whose docstring asserts
+    # that nested function and class scopes are not crossed. Found by generating
+    # across four axes (nested-scope kind x what the walrus binds x where the
+    # read sits x containing scope): of 24 snippets only this shape and its
+    # near-twin distinguish the guard, and none of the three shapes written by
+    # hand did. The walrus belongs to the LAMBDA, so it must not leak out and
+    # pop the comprehension's `time`; remove the stop and the genuine
+    # `time.monotonic()` beside it goes clean. Verified: go() returns a real
+    # float off the module clock. Passes today — that is the point.
+    ("walrus inside a lambda inside a comprehension does not leak out", """
+        import time
+
+
+        def go():
+            return [((lambda: (time := 1))(), time.monotonic()) for _ in range(1)]
     """, RULE_CLOCK_REF),
     # `nonlocal` onto an enclosing function's IMPORT. Twin of "nonlocal onto a
     # NON-import enclosing local" in CLEAN_CASES, and the difference between
@@ -510,20 +561,13 @@ BINDING_STANDS_CASES = [
             import time
             return [(time := time.sleep(0.30)) for _ in range(1)]
     """, RULE_CLOCK_REF),
-    # PIN for the nested-scope stop in _walrus_targets, whose docstring asserts
-    # that nested function and class scopes are not crossed. Nothing proved it.
-    # A walrus inside a LAMBDA belongs to the lambda, so it must NOT leak out
-    # and pop the module-level `time` — remove the guard and the genuine
-    # `time.sleep(1)` below goes clean. Currently passes; that is the point.
-    ("walrus inside a lambda nested in a comprehension does not leak", """
-        import time
-
-        _U = [(lambda: (time := 1))() for _ in range(1)]
-
-
-        def pause():
-            time.sleep(1)
-    """, RULE_CLOCK_REF),
+    # REMOVED: a case here claimed to pin the _walrus_targets nested-scope stop
+    # with the read in a separate `def pause()` at module scope. Measured, it
+    # flags identically with and without the guard (binding-stands keeps the
+    # module binding either way), so it pinned nothing and its comment was
+    # false. The real pin is above, in the entry that puts the read INSIDE the
+    # comprehension. Left as a note because a fourth unfalsifiable guard is
+    # worth recording, not silently deleting.
     ("match-capture (module scope)", """
         import time
 
@@ -1583,6 +1627,48 @@ DEDUP_CASES = [
 ]
 
 
+# --- KNOWN FALSE POSITIVES: accepted wrong verdicts, not guards -------------
+#
+# READ THIS BEFORE ASSUMING ANYTHING HERE IS CORRECT BEHAVIOUR. Every case in
+# this table asserts a verdict the lint currently gives and that we have ruled
+# is WRONG. They are here so the cost is visible and so that the day the
+# precondition becomes reachable, these are the cases that must change. They
+# are deliberately NOT in CLEAN_CASES or in any violation table — a case that
+# pins an accepted defect must not be mistakable for one that pins correct
+# behaviour.
+#
+# KFP-1: the function-body import exception is not flow-sensitive. An `import
+# time` in one branch binds `time` for the whole body, so a LATER, unrelated
+# `time = clock` is read as still holding the module — and the lint flags the
+# injected Clock, the one thing this lint exists to require. `master=clean,
+# candidate=FLAG`. Two errors are reported: `time.time` is a true positive,
+# `time.monotonic` is the false one.
+#
+# RULED: accept it; do NOT make the exception flow-sensitive. Not because the
+# shape is contrived — that argument was rejected — but because the precondition
+# cannot arrive silently. Checked against the tree, not reasoned: there are ZERO
+# function-body imports of time/datetime/random/os across all six pure packages,
+# and the real idiom here binds the RESULT (`now = clock.now()`), never a
+# module-shadowing name. The false positive is unreachable without a
+# function-body import of a forbidden module, and that import is itself an event
+# the lint already flags or excepts.
+#
+# THE REMEDY, if it ever becomes reachable: make the function-body import
+# exception flow-sensitive, so a binding established after the import supersedes
+# it. Verified precondition — the identical function with the function-body
+# import removed is clean, so the import is what triggers it.
+KNOWN_FALSE_POSITIVE_CASES = [
+    ("KFP-1: function-body import flags a later injected Clock", """
+        def render(clock, fmt):
+            if fmt == "epoch":
+                import time
+                return time.time()
+            time = clock
+            return time.monotonic()
+    """, RULE_CLOCK_REF),
+]
+
+
 # --- assertions ------------------------------------------------------------
 
 def _assert_all_flagged(cases, label):
@@ -1734,6 +1820,14 @@ def test_slackkit_init_must_stay_import_free():
 
 def test_slackkit_real_is_out_of_bounds_for_pure_packages():
     _assert_trees_rejected(SLACKKIT_REAL_VIOLATIONS, "slackkit.real")
+
+
+def test_known_false_positives_still_fire():
+    """NOT a correctness test. These are accepted WRONG verdicts, kept visible
+    so their cost is legible and so the fix has a home if the precondition ever
+    becomes reachable. If one of these starts passing, the lint improved —
+    move the case, do not delete it. Read KNOWN_FALSE_POSITIVE_CASES first."""
+    _assert_all_flagged(KNOWN_FALSE_POSITIVE_CASES, "known false positive")
 
 
 def test_one_violation_is_reported_once():
