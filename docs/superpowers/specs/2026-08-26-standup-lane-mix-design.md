@@ -303,6 +303,23 @@ missed — and **neither incumbent did the work**. `fund-5b` filed #63 and #73 f
 review and worked neither. *Filing is where a lane offloads, not where it queues.* So a rider whose
 item needs implementation returns to the dispatch pool rather than sitting with the incumbent.
 
+**The rider rule is not type-blind — it applies the same pairwise test Phase 4 uses.** Riding runs
+*before* the poll, so a pair resolved silently here never reaches Phase 4's matrix at all. Resolve the
+pair before riding:
+
+- **`decide` ∩ `remediate`** — not a collision. The decide candidate is **dispatched and paired** with
+  the remediate lane; it does not ride. A decide lane writes no code.
+- **`decide` ∩ `decide`** — a collision. The later in order rides, **and the pair is flagged
+  `→ /get-aligned` on the decision list** rather than silently resolved. Phase 4's handling exists for
+  exactly this pair, and a silent ride is what would stop it ever firing.
+- **anything ∩ `land`** — the candidate rides, `held-in-region`.
+- **`remediate` ∩ `remediate`** — the later in order rides.
+
+**Ordering between an attached candidate and a board-independent decide lane on one region:** the
+attached one goes first. Map order is a decision a human made; board-independence is an exemption from
+needing one, not a claim to precedence. State it rather than leaving it to whichever the query
+returned first.
+
 **A rider older than two standups is a flag `→ the human`**, or a long-running lane makes its whole
 region invisible to dispatch.
 

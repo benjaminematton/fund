@@ -51,8 +51,10 @@ Run:
 cd /Users/benjaminmatton/Developer/fund
 gh api repos/benjaminematton/fund/issues/49/sub_issues --jq '[.[].number] | length'
 gh issue list --state open --limit 200 --search '"Part of #49" in:body' --json number --jq '[.[].number] | length'
-comm -13 <(gh api repos/benjaminematton/fund/issues/49/sub_issues --jq '.[].number' | sort -n) \
-         <(gh issue list --state open --limit 200 --search '"Part of #49" in:body' --json number --jq '.[].number' | sort -n) | tr '\n' ' '
+comm -13 <(gh api repos/benjaminematton/fund/issues/49/sub_issues --jq '.[].number' | sort) \
+         <(gh issue list --state open --limit 200 --search '"Part of #49" in:body' --json number --jq '.[].number' | sort) | tr '\n' ' '
+# NOTE: plain `sort`, never `sort -n`. `comm` requires lexicographic order; feeding it a numeric sort
+# silently reports far more "unattached" issues than exist. Measured: 20 reported against 11 true.
 ```
 
 Expected: the first number is the board size, the second is the number of open issues declaring membership, and the third line prints **the unattached** — issue numbers that declare membership and are not attached. That set must be non-empty; if it is empty, the union read buys nothing and you should stop and report that.
@@ -360,6 +362,23 @@ one overloaded region into one overloaded seat. Measured on one morning: the boa
 children and every one of them shared a region head with a single live lane, so the board grew by six
 and the dispatchable set grew by nothing.
 
+**The rider rule is not type-blind — it applies the same pairwise test Phase 4 uses.** Riding runs
+*before* the poll, so a pair resolved silently here never reaches Phase 4's matrix at all. Resolve the
+pair before riding:
+
+- **`decide` ∩ `remediate`** — not a collision. The decide candidate is **dispatched and paired** with
+  the remediate lane; it does not ride. A decide lane writes no code.
+- **`decide` ∩ `decide`** — a collision. The later in order rides, **and the pair is flagged
+  `→ /get-aligned` on the decision list** rather than silently resolved. Phase 4's handling exists for
+  exactly this pair, and a silent ride is what would stop it ever firing.
+- **anything ∩ `land`** — the candidate rides, `held-in-region`.
+- **`remediate` ∩ `remediate`** — the later in order rides.
+
+**Ordering between an attached candidate and a board-independent decide lane on one region:** the
+attached one goes first. Map order is a decision a human made; board-independence is an exemption from
+needing one, not a claim to precedence. State it rather than leaving it to whichever the query
+returned first.
+
 **A rider older than two standups is a flag `→ the human`**, or a long-running lane makes its whole
 region invisible to dispatch.
 
@@ -526,7 +545,8 @@ Run:
 ```bash
 cd /Users/benjaminmatton/Developer/fund
 for n in $(gh api repos/benjaminematton/fund/issues/49/sub_issues --jq '.[] | select(.state=="open") | .number'); do
-  claimed=$(grep -c "| #$n |" ~/.claude/align/fund/map.md)
+  claimed=$(grep -cE "^\\| *#$n +\\|" ~/.claude/align/fund/map.md)  # tolerate column padding; a fixed-width
+  # pattern silently drops single-digit issue rows and reads a claimed lane as unclaimed
   [ "$claimed" -gt 0 ] && continue
   gh issue view $n --json number,labels \
     --jq '"\(.number) \([.labels[].name] | map(select(startswith("severity:"))) | join(","))"'
@@ -1146,7 +1166,8 @@ for n in $(gh api repos/benjaminematton/fund/issues/49/sub_issues --jq '.[] | se
   b=$(gh api repos/benjaminematton/fund/issues/$n --jq '.issue_dependencies_summary.blocked_by')
   l=$(gh issue view $n --json labels --jq '[.labels[].name]|join(",")')
   r=$(gh issue view $n --json body --jq '.body' | sed -n 's/^\*\*Region:\*\* \([^—]*\)—.*/\1/p' | sed 's/ *$//')
-  claimed=$(grep -c "| #$n |" ~/.claude/align/fund/map.md)
+  claimed=$(grep -cE "^\\| *#$n +\\|" ~/.claude/align/fund/map.md)  # tolerate column padding; a fixed-width
+  # pattern silently drops single-digit issue rows and reads a claimed lane as unclaimed
   printf '#%-4s blocked=%-5s claimed=%s region=%-28s labels=%s\n' "$n" "$b" "$claimed" "${r:-NONE}" "$l"
 done
 ```
