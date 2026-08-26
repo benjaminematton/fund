@@ -315,11 +315,11 @@ def _walrus_targets(node: ast.AST):
     in rows]` really does leave a local named `time` behind. Nested function
     and class scopes are not crossed — a walrus inside one belongs to it.
 
-    KNOWN AND DELIBERATE: the target is ALSO bound inside the comprehension's
-    own scope, by _bound_names seeing the Store. That is not a faithful model
-    of PEP 572, but both paths bind it to unresolvable, so no verdict differs
-    and no test separates them. Suppressing the inner binding would be
-    untested logic serving tidiness — do not "fix" it into a behaviour change.
+    The caller also uses this to SUPPRESS the target inside the comprehension's
+    own scope. Both halves are required: a use inside the comprehension
+    resolves to the containing scope too, so popping the name locally would
+    hide `[(time := time.sleep(0.30)) for _ in range(1)]`, which blocks for a
+    third of a second on a real clock.
     """
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
@@ -345,7 +345,8 @@ def _param_defaults(node: ast.AST):
 
 def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
                 inherited_stars: list[str], path: Path, errors: list[str],
-                package: tuple[str, ...]) -> None:
+                package: tuple[str, ...],
+                module_bindings: dict[str, str | None] | None = None) -> None:
     own = list(_scope_nodes(node))
     bindings = dict(inherited)
     stars = list(inherited_stars)
@@ -360,13 +361,19 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
             imported.update(_import_bindings(child, package))
     bindings.update(imported)
 
+    if module_bindings is None:  # this IS the module scope
+        module_bindings = bindings
+
     rebound: set[str] = set()
     declared_global: set[str] = set()
+    declared_nonlocal: set[str] = set()
     for child in own:
         if isinstance(child, (ast.Import, ast.ImportFrom)):
             continue
         if isinstance(child, ast.Global):
             declared_global.update(child.names)
+        if isinstance(child, ast.Nonlocal):
+            declared_nonlocal.update(child.names)
         rebound.update(_bound_names(child))
         # PEP 572: a walrus target inside a comprehension binds in the
         # CONTAINING scope, so it leaks back out to here. A plain `for` target
@@ -387,26 +394,39 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
     #                        decorators, annotations, base lists and a
     #                        comprehension's outermost iterable are evaluated
     #                        before the new scope's bindings exist.
-    #   function body ...... NO. Binding a name ANYWHERE in a function makes it
+    #   function body ...... NO, UNLESS the same scope also imports the name.
+    #                        Binding a name anywhere in a function makes it
     #                        local for the whole body, so a use before the
     #                        binding raises UnboundLocalError rather than
-    #                        reaching the module. Parameters, `except ... as`
-    #                        and `match`/`case` captures are alike here.
+    #                        reaching the module — parameters, `except ... as`
+    #                        and `match`/`case` captures are alike here. But an
+    #                        `import` in that same body IS a binding, and it
+    #                        assigns the module to that local, so a use between
+    #                        the import and the rebinding reads the real thing.
     #   comprehension
     #     `for` target ..... NO. Python 3 scopes it to the comprehension.
     #   comprehension
-    #     WALRUS target .... NO, but not for the row above and it does not
-    #                        inherit from it. PEP 572 binds the target in the
-    #                        CONTAINING scope, so it leaks out and then lands
-    #                        under whichever row governs that scope — private
-    #                        inside a function, reachable at module scope.
-    #   `global x` ......... YES, even in a function body. The declared binding
-    #                        is the MODULE's, so the privacy the function-body
-    #                        row rests on does not hold: a read before the
-    #                        rebinding returns a live value instead of raising
-    #                        UnboundLocalError. `nonlocal` is unaffected — it
-    #                        can only bind an enclosing function's local, never
-    #                        an import.
+    #     WALRUS target .... Two separate effects, and neither follows from the
+    #                        `for` row. PEP 572 binds the target in the
+    #                        CONTAINING scope, so (a) it leaks OUT and lands
+    #                        under whichever row governs that scope, and (b) a
+    #                        use INSIDE the comprehension resolves out there
+    #                        too — so the name must NOT be popped locally.
+    #                        Missing (b) hid six executing clock reads.
+    #   `global x` ......... YES. The declared binding is the MODULE's, so the
+    #                        privacy the function-body row rests on does not
+    #                        hold: a read before the rebinding returns a live
+    #                        value instead of raising UnboundLocalError.
+    #   `nonlocal x` ....... YES, onto the ENCLOSING FUNCTION's binding. This
+    #                        row previously read "unaffected — nonlocal can
+    #                        only bind an enclosing function's local, never an
+    #                        import". The premise is true and the conclusion
+    #                        does not follow: `import time` inside a function
+    #                        is a function-local binding whose value IS the
+    #                        module, so nonlocal reaches it. Executed: the
+    #                        inner function blocks 0.305s. Where the enclosing
+    #                        local is not an import there is nothing to reach
+    #                        and it stays clean, which is the committed twin.
     #
     # The enclosing-scope row covers two different mechanisms. Defaults,
     # decorators and base lists are EVALUATED at definition time, before the
@@ -424,11 +444,23 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
     # load-bearing is only that the binding STANDS, so the reference check can
     # still resolve through the rebind. Do not reintroduce a report, a warning
     # or a flag.
+    # A walrus target belongs to the CONTAINING scope, so inside the
+    # comprehension itself it must not be treated as a local rebinding — a use
+    # there reads the containing scope's binding, import included.
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        rebound -= set(_walrus_targets(node))
+
     stands = isinstance(node, _BINDING_STANDS_SCOPES)
     for name in rebound:
+        if name in declared_nonlocal:
+            continue  # the enclosing function's binding, which `inherited` holds
         if name in declared_global:
-            continue  # the module's binding, not a private local
-        if not stands or name not in bindings:
+            bindings[name] = module_bindings.get(name)
+            continue
+        # `name in imported` is the function-body exception: an import in this
+        # same body binds the module to that local, so a use between the two
+        # reaches it.
+        if (not stands and name not in imported) or name not in bindings:
             bindings[name] = None
 
     # `_clock_mod = time` / `_sleep = time.sleep`: an alias is the thing it
@@ -485,7 +517,8 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
     child_stars = inherited_stars if isinstance(node, ast.ClassDef) else stars
     for child in own:
         if isinstance(child, _SCOPE_NODES):
-            _scan_scope(child, child_bindings, child_stars, path, errors, package)
+            _scan_scope(child, child_bindings, child_stars, path, errors, package,
+                        module_bindings)
 
 
 def check_file(path: Path, package: tuple[str, ...] = ()) -> list[str]:
