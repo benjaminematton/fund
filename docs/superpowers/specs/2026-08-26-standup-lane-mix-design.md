@@ -338,9 +338,6 @@ region invisible to dispatch. **Its age comes from the decision list**, where ev
 how many days it has been open and that count carries forward the same way a decision's does — not from
 a stamp nothing writes.
 
-The rest of that rule:
-region invisible to dispatch.
-
 **A region is claimed when either test holds, and both run every time: a live lane holds it, or a lane
 this same run has already dispatched holds it.** This belongs in the rule's opening definition, not as
 a later refinement — a reader who anchors on a one-test topic sentence implements one test. Compare against
