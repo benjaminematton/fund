@@ -82,4 +82,20 @@ def load_case(path: Path | str) -> Case:
 
 
 def load_cases(directory: Path | str) -> list[Case]:
-    return [load_case(p) for p in sorted(Path(directory).glob("*.yaml"))]
+    """Most consumers collapse this list to `{c.id: c}`, where a second file
+    reusing an id silently replaces the first case's expectation while
+    editing nothing; the rest keep the list and run that case twice. Refuse
+    rather than pick a winner."""
+    cases, seen = [], {}
+    for path in sorted(Path(directory).glob("*.yaml")):
+        case = load_case(path)
+        if case.id in seen:
+            raise ValueError(
+                f"duplicate case id {case.id!r} in {directory}:"
+                f" {seen[case.id]} and {path} — consumers that key on c.id"
+                " would take the second file's expectation for both;"
+                " consumers that keep the list would run this case twice."
+                " Give one of them a new id.")
+        seen[case.id] = path
+        cases.append(case)
+    return cases
