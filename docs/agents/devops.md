@@ -36,7 +36,7 @@ it is the failure this doc itself shipped with.
 
 | Producer | Source | Reaches the tracker by | Status |
 |---|---|---|---|
-| Run alert | `events` rows `kind='alert'`, raised during the trading day | `scripts/file_alert_issues.py`, chained to the end of `ops/pull-backups.sh` | `[specced]` |
+| Run alert | `events` rows `kind='alert'`, raised during the trading day | `scripts/file_alert_issues.py`, chained to the end of `ops/pull-backups.sh` | `[live]`, once `FUND_FILER` is set in the launchd plist |
 | devcheck finding | `make dev-status`, read against the running host | `check_issue_coverage` names untracked findings; a human files them | `[live]` |
 | Audit finding | a human or agent auditing the repo | a human files it | `[live, manual]` |
 | Peer discovery | another session working this repo | a human files it | `[live, manual]` |
