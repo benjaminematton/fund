@@ -122,3 +122,48 @@ def test_db_broker_agreement_alerts_when_broker_saw_more():
     f = _only(evaluate(s), "db_broker_agreement")
     assert f.severity == "alert"
     assert "1" in f.detail and "3" in f.detail
+
+
+def test_degradations_ok_when_none():
+    assert _only(evaluate(_snap()), "degradations").severity == "ok"
+
+
+def test_degradations_warn_on_gate_error():
+    """Invariant 4 says a gate_error resolves to HOLD, which is correct
+    behaviour — so this warns, it does not alert. The day was not wrong;
+    it was degraded, and a degraded day that nobody sees becomes normal."""
+    f = _only(evaluate(_snap(scorecard_codes=["gate_error"])), "degradations")
+    assert f.severity == "warn"
+    assert "gate_error" in f.detail
+
+
+def test_degradations_warn_on_pm_timeout():
+    f = _only(evaluate(_snap(scorecard_codes=["pm_timeout"])), "degradations")
+    assert f.severity == "warn"
+
+
+def test_checkpoints_ok_when_all_done():
+    s = _snap(checkpoints=[("2026-08-21", "research", "done"), ("2026-08-21", "gate", "done")])
+    assert _only(evaluate(s), "checkpoints").severity == "ok"
+
+
+def test_checkpoints_alert_on_unfinished_stage():
+    """Negative control — Phase 2 acceptance requires every checkpoint done."""
+    s = _snap(checkpoints=[("2026-08-21", "research", "done"), ("2026-08-21", "gate", "running")])
+    f = _only(evaluate(s), "checkpoints")
+    assert f.severity == "alert"
+    assert "gate" in f.detail
+
+
+def test_journals_ok_when_every_participant_wrote():
+    s = _snap(seats_participating={"pm", "analyst"}, journals_written={"pm", "analyst"})
+    assert _only(evaluate(s), "journals").severity == "ok"
+
+
+def test_journals_warn_when_a_participant_did_not_write():
+    """Phase 2 acceptance: after a day each participating seat has a journal
+    entry. Memory is load-bearing in this phase, so a silent seat matters."""
+    s = _snap(seats_participating={"pm", "analyst"}, journals_written={"pm"})
+    f = _only(evaluate(s), "journals")
+    assert f.severity == "warn"
+    assert "analyst" in f.detail

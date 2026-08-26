@@ -80,3 +80,47 @@ def check_db_broker_agreement(s: Snapshot) -> Finding:
         f"orders has {rows} row(s); broker has seen {s.broker_fill_count} fill(s) — "
         "the fund's record disagrees with the broker",
     )
+
+
+# Codes that mean "the pipeline degraded to its default and said so".
+# Invariant 4 makes these correct behaviour, not bugs — they warn so a
+# permanently degraded day cannot quietly become the normal one.
+_DEGRADATION_CODES = ("gate_error", "pm_timeout", "critic_timeout", "missing_signal")
+
+
+def check_degradations(s: Snapshot) -> Finding:
+    """Invariant 4 — every error resolves to HOLD. Correct, and worth seeing."""
+    seen = [c for c in s.scorecard_codes if c in _DEGRADATION_CODES]
+    if not seen:
+        return Finding("degradations", "ok", "no stage degraded to its default")
+    return Finding(
+        "degradations",
+        "warn",
+        f"degraded to default: {', '.join(sorted(set(seen)))} — correct per invariant 4, "
+        "but the day did not run clean",
+    )
+
+
+def check_checkpoints(s: Snapshot) -> Finding:
+    """Phase 2 acceptance — every checkpoint reaches `done`."""
+    unfinished = sorted({stage for _, stage, status in s.checkpoints if status != "done"})
+    if not unfinished:
+        return Finding("checkpoints", "ok", f"{len(s.checkpoints)} checkpoint(s), all done")
+    return Finding(
+        "checkpoints",
+        "alert",
+        f"stage(s) not done: {', '.join(unfinished)}",
+    )
+
+
+def check_journals(s: Snapshot) -> Finding:
+    """Phase 2 acceptance — each participating seat writes a journal entry.
+    design.md §7 makes memory load-bearing in this phase."""
+    missing = sorted(set(s.seats_participating) - set(s.journals_written))
+    if not missing:
+        return Finding("journals", "ok", "every participating seat wrote a journal entry")
+    return Finding(
+        "journals",
+        "warn",
+        f"participated but wrote no journal entry: {', '.join(missing)}",
+    )

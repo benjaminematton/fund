@@ -12,6 +12,9 @@ CHECKS = (
     checks.check_order_idempotency,
     checks.check_outbox,
     checks.check_db_broker_agreement,
+    checks.check_degradations,
+    checks.check_checkpoints,
+    checks.check_journals,
 )
 
 
