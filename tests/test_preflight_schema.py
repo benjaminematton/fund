@@ -141,11 +141,11 @@ def test_a_current_db_is_green(tmp_path):
 
 
 def test_the_expected_table_count_is_pinned(tmp_path):
-    """11 tables today. expected_schema() reads state/schema.sql, so a table
+    """12 tables today. expected_schema() reads state/schema.sql, so a table
     added there is checked with no edit to the script — this assertion is the
     tripwire that makes such an addition deliberate. It IS a second edit, on
     purpose: bump it in the same commit that adds the table."""
-    assert len(preflight.expected_schema()) == 11
+    assert len(preflight.expected_schema()) == 12
 
 
 def test_only_column_names_are_compared(tmp_path):
@@ -285,7 +285,7 @@ def test_a_file_that_is_not_a_database_cannot_determine(tmp_path):
 
 
 def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
-    """Zero of the 11 tables is a wrong FUND_DB or a database nothing has
+    """Zero of the 12 tables is a wrong FUND_DB or a database nothing has
     initialized — not drift. Reporting UNEXPLAINED DIVERGENCE would send an
     operator hunting a schema change that never happened."""
     db = tmp_path / "fund.sqlite"
@@ -293,7 +293,7 @@ def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
     proc = _run(db)
 
     assert proc.returncode == preflight.CANNOT_DETERMINE
-    assert "none of the 11 tables" in proc.stderr
+    assert "none of the 12 tables" in proc.stderr
 
 
 def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
@@ -388,7 +388,7 @@ def test_a_corrupt_file_is_never_blamed_on_the_directory(tmp_path):
 
 def test_a_wal_holding_the_only_copy_of_the_schema_is_read(tmp_path):
     """Why mode=ro and not immutable=1, pinned. With the DDL still in an
-    uncheckpointed `-wal`, mode=ro reads all 11 tables; immutable=1 skips the
+    uncheckpointed `-wal`, mode=ro reads all 12 tables; immutable=1 skips the
     WAL and sees the stale snapshot behind it, which would report a fully
     migrated database as empty. It also documents that a `-wal` needing replay
     does NOT fail the open — the old comment claimed it did."""

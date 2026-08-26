@@ -681,3 +681,70 @@ def test_a_standing_discrepancy_is_not_reported_as_cleared(fund_db):
         assert assert_positions_accounted(
             fund_db, broker=Broker([], []), now_iso=NOW) == 0
     assert _alerts(fund_db) == []
+
+
+# --- the log: what the fund SAW, written after the alerts are decided --------
+
+
+def _protection_rows(conn):
+    return conn.execute(
+        "SELECT * FROM protection ORDER BY id").fetchall()
+
+
+def test_a_protective_order_the_run_saw_is_logged(fund_db):
+    """The record layer. What the broker held is written down, so a later run
+    can say when protection was last seen — which the broker read alone can
+    never answer."""
+    _promised(fund_db)
+    leg = {**_stop(), "id": "alp-0002", "client_order_id": "t1-stop",
+           "stop_price": "215.0", "expires_at": "2026-11-17T21:00:00+00:00"}
+    assert assert_positions_protected(
+        fund_db, broker=Broker([_long()], [leg]), now_iso=NOW) == 0
+
+    rows = _protection_rows(fund_db)
+    assert len(rows) == 1
+    assert rows[0]["alpaca_order_id"] == "alp-0002"
+    assert rows[0]["qty"] == 80
+    assert rows[0]["observed_at"] == NOW
+
+
+def test_the_log_records_the_order_list_the_alert_was_decided_on(fund_db):
+    """SlowLeg returns nothing on the first read and the leg on the second.
+    The alert is computed from the RE-READ, so the log must record that same
+    list — logging the first read would write 'nothing was protecting NVDA'
+    on a day the fund correctly protected it."""
+    _promised(fund_db)
+    leg = {**_stop(), "id": "alp-0002", "client_order_id": "t1-stop",
+           "stop_price": "215.0", "expires_at": None}
+    assert assert_positions_protected(
+        fund_db, broker=SlowLeg([_long()], [leg]), now_iso=NOW) == 0
+    assert [r["alpaca_order_id"] for r in _protection_rows(fund_db)] == \
+        ["alp-0002"]
+
+
+def test_a_failure_to_log_cannot_cost_the_day_an_alert(fund_db):
+    """H4. The write happens AFTER the alerts are appended and in its own try,
+    so a SQLite failure in the recorder becomes its own alert and the day
+    continues. A bare write here would propagate through daily.py, emit zero
+    alerts and skip run_close.
+
+    A PARTIAL cover, not a naked position: the recorder must actually attempt
+    an INSERT for its failure to be reachable at all. With no orders to write
+    the writer touches nothing and this test would pass against a bare write,
+    proving nothing."""
+    _promised(fund_db)
+    short_leg = {**_stop(qty="40"), "id": "alp-0002",
+                 "client_order_id": "t1-stop", "stop_price": "215.0",
+                 "expires_at": None}
+    fund_db.execute("DROP TABLE protection")
+    fund_db.commit()
+
+    n = assert_positions_protected(
+        fund_db, broker=Broker([_long()], [short_leg]), now_iso=NOW)
+
+    texts = _alerts(fund_db)
+    assert any("the position is exposed" in t for t in texts), (
+        "the real finding must survive a recorder failure")
+    assert any("could not RECORD" in t for t in texts), (
+        "the recorder's failure must name recording, not reading")
+    assert n == len(texts)

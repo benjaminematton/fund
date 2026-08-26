@@ -184,3 +184,28 @@ CREATE TABLE IF NOT EXISTS strategy_critiques (
   slack_ts        TEXT,
   created_at      TEXT NOT NULL
 );
+
+-- protection: an append-only OBSERVATION LOG, verbatim from specs/contracts.md
+-- §2 — canonical, do not add fields here. One row each time the fund sees a
+-- protective order at the broker. Deliberately NO status column — ADR-0004
+-- records why. What the fund KNOWS it saw and when; never what EXISTS now
+-- (_covering_qty reads the broker for that). Like events/costs this is a log,
+-- not a workflow table, so contracts.md §1 has no machine for it.
+--
+-- IF NOT EXISTS is load-bearing here and not style: state/db.py:12 matches
+-- that exact string to build _TABLES. §2 spells it CREATE TABLE, per its own
+-- convention; the two are the same table.
+CREATE TABLE IF NOT EXISTS protection (
+  id                TEXT PRIMARY KEY,          -- "<alpaca_order_id>@<observed_at>"
+  symbol            TEXT NOT NULL,
+  qty               INTEGER NOT NULL CHECK (qty > 0),
+  stop_price        REAL CHECK (stop_price IS NULL OR stop_price > 0),
+  alpaca_order_id   TEXT NOT NULL,
+  client_order_id   TEXT,
+  provenance_kind   TEXT NOT NULL
+                    CHECK (provenance_kind IN ('observed','adopted')),
+  broker_expires_at TEXT,
+  observed_at       TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  UNIQUE (alpaca_order_id, observed_at)
+);

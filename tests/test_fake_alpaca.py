@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from tests.fake_alpaca import FakeAlpaca
+from tests.fake_alpaca import GTC_EXPIRES_AT, FakeAlpaca
 
 MARKET = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" /
@@ -124,6 +124,35 @@ def test_fill_during_cancel_mode_fills_in_the_race():
     # live string shape, as everywhere else on this method
     assert o["status"] == "filled" and o["filled_qty"] == "67"
     assert o["filled_avg_price"] == "180.14"
+
+
+def test_open_orders_excludes_held_children_like_the_real_broker():
+    """AlpacaSource.open_orders queries QueryOrderStatus.OPEN, and a held OTO
+    child is NOT returned by it — measured 2026-08-19, cited in
+    tests/test_live_smoke.py. A fake that returns held legs lets a writer pass
+    offline and record nothing in production: the 2026-08-17 shape."""
+    broker = FakeAlpaca({"NVDA": 180.0})
+    broker.place_order({"client_order_id": "t1", "symbol": "NVDA",
+                        "side": "buy", "qty": 80,
+                        "stop_loss_stop_price": "215.0"})
+    assert broker.orders["t1-stop"]["status"] == "held", "setup: leg not held"
+    assert [o for o in broker.open_orders() if o["type"] == "stop"] == [], (
+        "the fake returns a held stop leg; the real broker does not")
+
+
+def test_open_orders_carries_the_fields_a_protection_row_needs():
+    """A row references the broker's UUID, stores the client id verbatim, and
+    records the stop price and the ~90-day GTC expiry."""
+    broker = FakeAlpaca({"NVDA": 180.0})
+    broker.place_order({"client_order_id": "t1", "symbol": "NVDA",
+                        "side": "buy", "qty": 80,
+                        "stop_loss_stop_price": "215.0"})
+    broker.tick()                       # fill the parent; the leg activates
+    leg = [o for o in broker.open_orders() if o["type"] == "stop"][0]
+    assert leg["id"], "no broker order id"
+    assert leg["client_order_id"] == "t1-stop"
+    assert leg["stop_price"] == "215.0"
+    assert leg["expires_at"] == GTC_EXPIRES_AT
 
 
 def test_never_fill_and_partial_modes():

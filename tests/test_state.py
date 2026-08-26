@@ -194,3 +194,20 @@ def test_connect_sets_wal_and_busy_timeout(tmp_path):
     conn = connect(tmp_path / "w.sqlite")
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+def test_a_database_without_the_log_gains_it_on_reconnect(tmp_path):
+    """The droplet case. _TABLES is parsed from schema.sql, so a table added
+    there is created on an existing database at the next connect() — no
+    migration. This pins that the new table is actually picked up by that
+    mechanism, which depends on the DDL saying CREATE TABLE IF NOT EXISTS."""
+    path = tmp_path / "fund.sqlite"
+    conn = connect(path)
+    conn.execute("DROP TABLE protection")
+    conn.commit()
+    conn.close()
+
+    conn = connect(path)
+    assert conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='protection'"
+    ).fetchone() is not None
