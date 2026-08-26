@@ -33,9 +33,10 @@ deploys.
   exposure is never rendered as safety.
 - **`issue_coverage` is the loop from finding to tracked work.** An alert with
   no open issue labelled `check:<id>` will be re-derived by the next session
-  and lost again. All 8 open issues currently carry zero labels, so this check
-  fires on everything until they are labelled — that is the intended first run,
-  not a bug.
+  and lost again. It fires on every alert that has no such issue yet, which on
+  a repo that has not adopted the `check:` labels means all of them — that is
+  the intended first run, not a bug. Read the current state from
+  `gh issue list`, never from this file.
 
 ## Filing what this finds
 
