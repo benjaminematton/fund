@@ -57,7 +57,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PURE_PACKAGES = ["gate", "stratgate", "fundbt", "calibration", "orchestrator",
-                 "state", "market", "slackkit"]
+                 "state", "market", "slackkit", "devcheck"]
 # Paths (relative to ROOT, posix) inside a pure package that are exempt.
 EXCLUDED_FILES = {"slackkit/real.py"}
 # Matched as dotted prefixes: "agents" covers agents.runtime, and
