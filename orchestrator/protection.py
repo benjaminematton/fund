@@ -28,45 +28,24 @@ import sqlite3
 from typing import Callable
 
 from slackkit.outbox import append_alert
+from state.protection import (CLOSING_SIDE, STOP_TYPES, log_observed,
+                              normalized, qty_of)
 
 # One short wait before calling a position naked. Matches reconcile_orders'
 # poll_s default. Deliberately NOT max_wait_s (90s): this sits on the critical
 # path of a live trading day, just before the digest posts.
 _RETRY_S = 3.0
 
-# Order types that actually cap a loss. A sell LIMIT is a take-profit: it caps
-# the upside and leaves the downside fully exposed, so it is not protection.
-_STOP_TYPES = ("stop", "stop_limit", "trailing_stop")
-
-# The closing side for a position. A short is absent on purpose: this fund is
-# long-only (state/models.py — stops guard new or added longs), so a short at
-# the broker is unclassifiable and must fail closed.
-_CLOSING_SIDE = {"long": "sell"}
+# STOP_TYPES, CLOSING_SIDE and qty_of moved to state/protection.py when the
+# log was added, so the predicate that decides "this order is protection" and
+# the coercer that reads broker numerics have ONE definition each. Both this
+# module and the log's writer must agree on them: a divergence would mean the
+# log recorded a different set of orders than the coverage number counted,
+# and the alert would contradict the record it sits beside.
 
 # "The fund has no record of opening this position" — distinct from "it was
 # opened with no stop on purpose". The first fails closed, the second is fine.
 _UNKNOWN = object()
-
-
-def _qty(value) -> int | None:
-    """Whole-share count from a string or int; None if unreadable. Broker
-    numerics arrive as strings. Fractional, negative, bool and unparseable all
-    return None and therefore alert.
-
-    Twin of gate/tickets.py:_as_share_count (which coerces adversarial AGENT
-    input) and a cousin of reconcile.py:_parse_fill. Kept separate on purpose:
-    this one coerces BROKER output and the two may legitimately diverge.
-    Unifying all three into a shared helper is a follow-up — it would mean
-    editing reconcile's fill parsing, which does not belong in this diff."""
-    if isinstance(value, bool):
-        return None
-    try:
-        n = float(value)
-    except (TypeError, ValueError):
-        return None
-    if n != int(n) or n <= 0:
-        return None
-    return int(n)
 
 
 def _covering_qty(orders: list, symbol: str, closing_side: str) -> int | None:
@@ -85,16 +64,14 @@ def _covering_qty(orders: list, symbol: str, closing_side: str) -> int | None:
         # cover and then report "NO live protective order", which is a false
         # statement about an order we simply could not classify. Only a
         # readable, genuinely non-matching value is skipped.
-        side, order_type = o.get("side"), o.get("type")
-        if not isinstance(side, str) or not side.strip():
+        side, order_type = normalized(o.get("side")), normalized(o.get("type"))
+        if side is None or order_type is None:
             return None
-        if not isinstance(order_type, str) or not order_type.strip():
-            return None
-        if side.strip().lower() != closing_side:
+        if side != closing_side:
             continue
-        if order_type.strip().lower() not in _STOP_TYPES:
+        if order_type not in STOP_TYPES:
             continue
-        n = _qty(o.get("qty"))
+        n = qty_of(o.get("qty"))
         if n is None:
             return None
         total += n
@@ -142,8 +119,8 @@ def _evaluate(conn: sqlite3.Connection, positions: list,
         p = raw if isinstance(raw, dict) else {}
         symbol = str(p.get("symbol") or "?")
         side = str(p.get("side") or "").lower()
-        held = _qty(p.get("qty"))
-        closing_side = _CLOSING_SIDE.get(side)
+        held = qty_of(p.get("qty"))
+        closing_side = CLOSING_SIDE.get(side)
         if held is None or closing_side is None:
             out.append((symbol, f"{symbol} position UNVERIFIED — cannot read"
                        f" side={p.get('side')!r} qty={p.get('qty')!r}, so"
@@ -188,12 +165,20 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
 
     Never raises on a BROKER or DATA problem — unreachable, unparseable,
     unclassifiable all become alerts, because the day must finish and the
-    finding must be recorded. A SQLite write failure DOES propagate, and
-    deliberately: SQLite is the source of truth (invariant 6), every stage
-    writes to it, and reconcile.py's own fail-closed path appends outside any
-    try for the same reason. Swallowing a failed write here would mean the
-    alert this module exists to raise was silently never recorded — the exact
-    failure it is built to prevent."""
+    finding must be recorded.
+
+    A failed write of an ALERT propagates, and deliberately: SQLite is the
+    source of truth (invariant 6), every stage writes to it, and reconcile.py's
+    own fail-closed path appends outside any try for the same reason.
+    Swallowing that would mean the alert this module exists to raise was
+    silently never recorded — the exact failure it is built to prevent.
+
+    A failed write of the protection LOG does NOT propagate. It becomes its
+    own alert and the day continues. The two are not the same write and must
+    not share a rule: by the time the log is written every alert is already
+    durable, so nothing is lost by carrying on, while raising there would
+    abort daily.py with zero alerts emitted and run_close skipped — losing
+    the findings to protect a record that is nobody's source of truth."""
     nap = sleep or (lambda _s: None)
 
     def alert(text: str, ticker: str) -> None:
@@ -239,8 +224,13 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
                 f" position(s) but could not {how} live orders ({why(e)});"
                 " cover is unknown, not confirmed")
 
+    # Retained so the LOG records the same list the alert was decided on. A
+    # re-read below replaces it; logging the first read would write "nothing
+    # was protecting NVDA" on a day the fund correctly protected it.
+    seen_orders: list = []
     try:
-        problems = _evaluate(conn, positions, read_orders())
+        seen_orders = read_orders()
+        problems = _evaluate(conn, positions, seen_orders)
     except Exception as e:
         return unverified(unread("read", e))
     if problems:
@@ -258,12 +248,53 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
             # no longer exists, using a stale list from before the nap.
             positions = list(broker.open_positions())
             if not positions:
+                # Returns WITHOUT logging, and that is deliberate — both
+                # review axes flagged it, so the reason belongs here.
+                # `seen_orders` still holds the PRE-nap read, and the position
+                # vanishing during the nap almost always means the stop just
+                # filled. Writing that list now would stamp `observed_at` with
+                # a time at which the fund had already stopped believing it:
+                # a row asserting protection existed at the moment it ceased
+                # to. An unwritten observation costs one row in an append-only
+                # log; a wrong one is the 2026-08-17 shape in miniature.
                 return 0
-            problems = _evaluate(conn, positions, read_orders())
+            seen_orders = read_orders()
+            problems = _evaluate(conn, positions, seen_orders)
         except Exception as e:
             return unverified(unread("re-read", e))
     for symbol, text in problems:
         alert(text, ticker=symbol)
+
+    # LAST, and in its own try. The alerts above are already written, so a
+    # failure here cannot cost the day a finding — it becomes its own alert
+    # and the day continues. Not bare: a raise propagates through daily.py,
+    # emits zero alerts and skips run_close. Not inside the read try either:
+    # that reports a false "could not read live orders" for a write failure.
+    #
+    # The text says RECORD, not read. At 16:05 the difference is the whole
+    # message — one means the fund cannot see the broker, the other means it
+    # saw fine and could not write down what it saw.
+    # The return value — the ids actually inserted — is intentionally dropped
+    # here. Review flagged it as possible Speculative Generality; it is not,
+    # but only because of who else calls this. It is the sole way to observe
+    # that INSERT OR IGNORE wrote nothing, which is what pins the nap-re-read
+    # idempotence in tests/test_state_protection.py. There is nothing for THIS
+    # caller to do with it: the day's alerts are already decided and a count of
+    # rows written is not a finding. Removing the return would delete the only
+    # handle the idempotence test has.
+    try:
+        log_observed(conn, seen_orders, now_iso=now_iso)
+    except Exception as e:
+        # Its own code, and no ticker. A failed RECORD is not a finding about
+        # any one position, so it cannot borrow `unprotected_position`; and
+        # `protection_unverified` would assert the checks above did not stand,
+        # which is the opposite of what happened.
+        append_alert(conn, "protection_log_unwritten",
+                     f"protection log UNWRITTEN — could not RECORD what was"
+                     f" observed ({why(e)}); the checks above ran on a live"
+                     " broker read and stand, but this run left no record of"
+                     " what was protecting each position", now_iso=now_iso)
+        return len(problems) + 1
     return len(problems)
 
 
@@ -301,7 +332,7 @@ def _held_by_symbol(positions: list) -> dict[str, int] | None:
     out: dict[str, int] = {}
     for raw in positions:
         p = raw if isinstance(raw, dict) else {}
-        symbol, qty = p.get("symbol"), _qty(p.get("qty"))
+        symbol, qty = p.get("symbol"), qty_of(p.get("qty"))
         if not symbol or qty is None:
             return None
         out[str(symbol)] = out.get(str(symbol), 0) + qty

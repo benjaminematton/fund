@@ -1,0 +1,273 @@
+# The protection record: what protects a position is a fact the fund stores
+
+Status: accepted (2026-08-20)
+
+The fund models decisions, tickets and orders. It does not model a **position**, and it does
+not model the **protection** on one. Both are re-derived by join from order history, by three
+modules with three different queries. This ADR introduces one table — a record of each
+protective order the fund knows about — and states the rule that keeps it from becoming the
+2026-08-17 failure again.
+
+It came out of designing the amend path in [ADR-0003](0003-reducing-a-stopped-position.md).
+That design kept having nowhere to put things, and this is why.
+
+## Three layers, and the confusion was collapsing them
+
+- **Intent** — was a stop meant? Lives on the decision (`decisions.stop_price`). Unchanged.
+- **Record** — what did we place or adopt, at what price, for how many shares? **This table.**
+- **Existence** — what does the broker actually hold? Broker-read, always.
+
+The bug class this repo keeps hitting is intent being read as existence. On 2026-08-17 the
+database said "stop at 215" for two sessions while the broker held nothing, because intent was
+the only layer that existed and it was doing the other two jobs.
+
+**Standing rule, and it is the load-bearing one: this table must NEVER be the source of what
+protection EXISTS.** `orchestrator/protection.py`'s `_covering_qty` keeps reading the broker.
+The table records what the fund knows and intends and remains the thing compared *against*
+broker truth. A protection table that feeds the coverage number recreates 08-17 with more
+ceremony.
+
+## Why intent could not hold the record
+
+`tickets.stop_price` is a REAL. There is nowhere in it for a share count, so the fund's
+"promise" is an entry-time price that no later event ever updates. `PROGRESS.md` records the
+cost: the live NVDA stop exists because a human hand-placed it so the broker would "agree with
+the source of truth," which "already asserted a stop at 215." Reality was reconciled to the
+record by hand because the record had no way to describe reality.
+
+## The shape
+
+**Protection is aggregate** (a property of the position, realized by one or more stop orders),
+not per-lot. Settled on broker fact rather than preference: `qty_available` is position-level,
+the `Order` model carries no lot id, and `avg_entry_price` proves Alpaca averages entries into
+one position. Per-lot would be a fiction nothing can confirm.
+
+**One row per protective order**, carrying symbol, qty, stop price, provenance, a
+`broker_expires_at` and an `observed_at`. No status. **A row is immutable, full stop** — nothing in
+it ever changes, because there is no status column to transition. An earlier draft ended this
+sentence "…only status transitions," which described the design one revision before this one.
+
+**Identity and reference are separate columns.** `alpaca_order_id` is the broker's reference, which
+every order has including legs. The row's `id` is the fund's handle for that protection.
+
+**Corrected 2026-08-21: the row id is DERIVED, not minted.** It is
+`f"{alpaca_order_id}@{observed_at}"` — the row's natural key. This ADR said "always fund-minted"
+because minting was the design when it was written; the plan's revision 4 replaced it, and the
+reason is worth keeping: deriving the id means `assert_positions_protected` needs no `id_factory`
+parameter, so its call sites are untouched, and sim-day and replay stay deterministic without
+sharing `ctx.id_factory` with tickets. "Fund-minted" and "derived" agree on the part that matters —
+the id is the fund's, computed by the fund, and is never the broker's string.
+
+The row id doubles as the order's `client_order_id` **only** when the fund itself places the order —
+the amend case, branch two, and nothing else. That case will need a minted id, since a derived one
+cannot exist before the order it names. This is what makes the three origins uniform instead of
+one-plus-exceptions:
+
+| origin | row id | `alpaca_order_id` | `client_order_id` | `provenance_kind` |
+|---|---|---|---|---|
+| amend replacement (branch two) | minted, used as the order's `client_order_id` | the new order's UUID | = row id | `ticket` |
+| OTO stop leg | derived — `<alpaca_order_id>@<observed_at>` | the leg's UUID | **Alpaca-generated** — verified: `910638b1-…`, unrelated to ticket `a14aa36b-…` | `observed` |
+| adopted (hand-placed) | derived, same rule | `5abc139f-…` | `manual-protective-stop-nvda-2026-08-19` | `adopted` |
+
+**Corrected 2026-08-20 on two counts, both found by review.**
+
+*The table needs a `client_order_id` column, and an earlier draft had none.* It then claimed the
+hand-placed marker "carries the meaning" while giving it nowhere to live —
+`manual-protective-stop-nvda-2026-08-19` is a **`client_order_id`**; the `alpaca_order_id` is
+`5abc139f-…` (`PROGRESS.md:123-124`). The only way to satisfy the old assertion was to make the
+fake return the human string as the broker id: a fixture agreeing with our code while both
+disagree with Alpaca, which is 2026-08-17 exactly.
+
+*Provenance splits in two.* A single `provenance` column holding "a ticket id, or `'adopted'`"
+mixes an identifier with an enum token, so it can carry no CHECK and cannot be grouped — while
+being justified by contracts §2's vocabulary rule, which is about exactly that. It becomes
+`provenance_kind` (`observed` | `adopted` in branch one; `ticket` arrives with branch two, when the fund places an order and knows its own id) plus a nullable `provenance_ref`.
+
+**As shipped, there is no `provenance_ref` column** (corrected 2026-08-21, found by review). It was
+specified for a reference this branch has nothing to put in: the only kind written is `observed`,
+whose whole meaning is a stop the fund saw and **cannot** trace to a ticket. `client_order_id`
+carries the one reference that exists. The column belongs with branch two's `ticket` kind, which is
+the first origin that knows its own id — adding it now would ship a column that is NULL in every
+row, with no test able to give it a value.
+
+That split also fixes a hole the review found: there is **no resolution path** from a broker order
+back to a ticket, because `open_orders()` carries no `client_order_id` and a leg's id bears no
+relation to the ticket's anyway. Under the old single column every row branch one wrote would
+have been `'adopted'` — including fund-placed legs the fund did place — collapsing the
+three-origin table to one value and making the adoption test vacuous. `observed` is the honest
+kind for a stop the fund saw at the broker but cannot trace to a ticket — including one it placed
+itself, since the broker gives it no way to prove that. A later draft used `oto_leg`, which claimed
+an origin with the same confidence the ADR had just refused for `ticket`.
+
+**The irregular id is evidence, not the mechanism.** `provenance_kind = 'adopted'` is what marks
+a human-placed order. The id is stored verbatim because it is real broker data, not because the
+system reads meaning from its shape.
+
+A fund-computed id on an adopted row is a *record handle*, not fabricated provenance — which is
+what "record and reference, never invent" requires in practice. The fund never invents a
+decision or ticket for protection it did not authorize; `protection.py`'s `_UNKNOWN` sentinel is
+the existing precedent for representing something without inventing its origin.
+
+**States, corrected twice — and now removed.** A first draft listed six states. A second cut
+them to `live` and `closed`. Adversarial review then established by execution that the `closed`
+sweep produced three Critical defects: it raced the alert reader and made that feature dead code,
+it permanently closed a row on a single unreadable read with no reverse edge (invariant 4 broken
+inside the record layer), and it never fired in the case that mattered — a triggered stop leaves
+no position, so the run returns early.
+
+**Branch one therefore ships no status column at all.** The table is an append-only observation
+log: one row each time the fund sees a protective order, stamped `observed_at`. Nothing closes,
+so nothing races, nothing strands, and no ambiguity can resolve into a claim that protection is
+gone. Staleness is not a hazard to manage but the plain reading of a dated observation.
+
+This is a house pattern rather than an exception: `tests/test_state.py` lists nine tables in
+`TABLES` and only four in `STATUSES`, and `specs/contracts.md` §1 names four machines.
+`events`, `signals`, `resolutions` and `costs` carry no status either. CLAUDE.md's "every workflow
+table is a state machine" governs workflow tables; a log is not one, which is why `events` needs
+no machine and neither does this.
+
+Distinguishing *why* a protective order stopped being seen — cancelled, triggered, expired — needs
+order history, and belongs to branch two along with `pending` and `superseded`.
+
+There is deliberately **no `rejected`** — `_extract_order` returns `None` on a rejection
+payload ("a rejection is never recorded", invariant 4), so a rejected stop produces no row at
+all, and adding the state for symmetry would create rows the code cannot write.
+
+**There is no aggregate query, and that is deliberate.** An earlier draft had one keyed on
+`status = 'live'`. With no status column there is nothing to filter: a consumer asks for
+observations before a given time and reads `observed_at` to judge them. The honesty that a status
+filter was supposed to enforce is carried by the timestamp instead, where it cannot be forgotten.
+
+`pending` is excluded for the same reason `held` never becomes a row: a stop that is authorized
+but not yet effective protects nothing, and counting it would be the table asserting existence.
+
+## Who writes it
+
+**`orchestrator/protection.py` writes rows for OTO-placed stops**, from the `open_orders()` list
+it already reads. **Amended 2026-08-20 after adversarial review**, which found that neither this
+ADR nor its spec had considered the module that already does the job. `assert_positions_protected`
+already calls `open_orders()`; runs unconditionally every day; is *deliberately not a checkpointed
+stage*, so it re-runs on a resumed day; handles `broker is None`; catches every broker exception
+and converts it to an alert rather than raising; and performs the 3-second re-read a lagging OTO
+leg needs. All verified in source.
+
+The earlier answer — the reconcile pass — was wrong on three counts the review established by
+running the code: `daily.py` calls stage bodies with no try/except, so a transient broker read
+failure would have **aborted the trading day** before the naked-position assertion ran; reconcile
+*is* checkpointed, so a resumed day would record nothing; and its `if not pending: return` fires
+first on any day with no submitted orders, which is most days.
+
+Note what does **not** change: the writer is still not the PostToolUse recorder, and the reasons
+below still hold. What changed is which non-recorder does it.
+
+`_evaluate` stays read-only — that constraint is about `_evaluate`, and
+`assert_positions_protected` already writes (it appends alert events). ~~The row write goes
+alongside the existing `read_orders()` call, inside the try that already catches its failures.~~
+
+**Superseded 2026-08-21 — the write goes LAST, after the alerts, in its OWN try.** Inside the read
+try, a write failure is reported as `UNVERIFIED — could not read live orders`, which is a false
+statement about the broker: the read succeeded and the *write* failed. Those are different problems
+at 16:05 and the alert must name the right one. Placing it after the alert loop also means every
+finding is already durable before the log is touched, so a log failure can cost the day nothing.
+Bare, it would propagate through `daily.py`, emit zero alerts and skip `run_close`.
+
+Not the PostToolUse recorder, on evidence:
+
+- the captured place response has `"legs": null`;
+- `tests/fake_alpaca.py` echoes the request's flat leg parameters rather than returning a legs array;
+- `test_live_smoke.py` polls a GET up to ten times because *"on an oto the child is created held and can lag the parent in the API by a moment"*;
+- measured at the broker: parent submitted `16:56:59.302479Z`, leg `16:57:00.723760Z` — **1.42 s later**.
+
+The recorder sees only the immediate place response, so it would write a row for some
+placements and silently miss others — worse than writing none. `open_orders()` returns legs
+flattened as top-level orders, which is the path `protection.py` already reads.
+
+**A held leg never becomes a row**, and the broker enforces this rather than our discipline:
+`AlpacaSource.open_orders` queries `QueryOrderStatus.OPEN`, and a held OTO child is measurably
+not returned by it (2026-08-19). No `held` state is needed.
+
+> **Carried debt — PAID 2026-08-21, `432c6a7`.** `tests/fake_alpaca.py`'s `open_orders()` filtered
+> on `("new", "accepted", "partially_filled", "held")` — it **included held**, while claiming in its
+> docstring to match `AlpacaSource.open_orders`. Latent then (a held leg means no filled parent,
+> so no position exists to check) but active the moment reconcile writes rows: the offline suite
+> would prove a behavior production does not have. That is the 2026-08-17 defect exactly, named
+> in `test_live_smoke.py`'s own comment. `held` is gone from the filter and the exclusion is pinned
+> by `test_open_orders_excludes_held_children_like_the_real_broker`.
+
+**The recorder writes on amend** — where the fund places the replacement itself and mints its
+id — which is branch two, not branch one.
+
+**Adoption gets its own entry point**: a hand-run, **idempotent** script under `scripts/`.
+Not a migration, which would adopt whatever the broker happened to hold at deploy time — that is
+provenance by accident. Idempotence is not optional: it is a hand-run script against a live
+record, and re-running after a partial failure is the normal case.
+
+Three constraints on adoption, from the sessions that own the pieces it touches:
+
+- **An adopted row is an observation at a timestamp, not a standing promise.** The fund did not
+  place the order and does not control it. Recording it as a promise would have
+  `protection.py` pass on NVDA correctly today and wrongly the moment the stop is cancelled —
+  which is the standing rule again, arrived at from the other direction. The row says *what was
+  observed and when*, and the broker stays the authority on whether it still exists.
+- **The adopted id is stored verbatim, in the `client_order_id` column.**
+  `manual-protective-stop-nvda-2026-08-19` is deliberately not a UUID, and that irregularity is
+  good evidence a human placed it — but `provenance_kind = 'adopted'` is what the system actually
+  reads. Never infer provenance from the shape of an id, and never store it in
+  `alpaca_order_id`, which holds `5abc139f-…`. An earlier draft conflated the two.
+- **Adoption targets whatever protection exists when the script runs**, never a hardcoded order
+  id. The NVDA stop is under active review for cancellation or resizing, and branch one is
+  behind `/to-spec` and a 🔏 ruling — so the order adopted may not be the order that exists
+  today. This does not change *whether* to adopt; it changes what the script may assume.
+
+## Consequences
+
+- **Invariant 5 is reworded**, because the OTO leg falsifies it. It currently reads
+  "`client_order_id` = gate ticket id, always"; the leg carries an id the fund neither minted nor
+  adopted. It becomes a statement about placement — *every order the fund submits carries an id
+  the fund minted, and a retry always reuses it* — with the case list in `specs/contracts.md`
+  describing this table's reference column. The invariant's real content was always idempotency;
+  "= gate ticket id" was the mechanism that delivered it when there was one mechanism.
+- **`orchestrator/protection.py` is untouched in its existing behavior.** `_promised_stop`'s
+  tri-state stays exactly as it is — a price, `None` for a charter-sanctioned stopless buy, and
+  `_UNKNOWN` for no record at all. The table cannot express the `None` case (there is no
+  protective order for that row to describe), which is precisely why intent stays on the decision.
+- **`broker_expires_at`** is named apart from `tickets.expires_at`, which means the gate's
+  +45-minute window. Alpaca caps GTC near 90 days — the live NVDA stop dies 2026-11-17 and nothing
+  watches for it. The column lands now; the alerting is separate work and must read the column
+  rather than compute from a placement date. An amend starts a fresh window, so computing would be
+  wrong as well as fragile.
+- **If a state transition emits an event, its renderer lands in the same commit.** This is
+  enforced, not conventional: `tests/test_slackkit.py` asserts every written kind has a
+  `RENDERERS` entry, so a missing one is a red test. At runtime an unknown kind makes `render()`
+  raise, the row dead-letters, and a `projection_error` reddens the audit — one step removed from
+  the cause, which is the expensive kind of failure to debug. `specs/contracts.md` §8 also
+  requires every kind carry populated `text`.
+- **Nothing else in the schema is disturbed.** Enumerated at `41a48dd`: exactly one foreign key in
+  the whole schema touches `tickets` or `orders` (`orders.client_order_id REFERENCES tickets(id)`),
+  no index or CHECK references either, and every code reader of `orders` keys on
+  `client_order_id` or joins through `tickets.id`. A separate table appears in none of them.
+
+## Branch one
+
+~~The table, the adoption script, `orchestrator/protection.py` logging what it reads, the fake's
+filter fixed, and `protection.py` reading the record layer. The existing NVDA stop is adopted as
+its first real row — safe, because NVDA is fully covered today, so `_evaluate` short-circuits at
+`covered >= held` and never reaches provenance. An adoption path with nothing adopted through it
+is untested code.~~
+
+**Narrowed 2026-08-21 to what actually shipped.** Branch one is the table, the fake's filter fixed,
+a widened `open_orders`, and `orchestrator/protection.py` logging what it reads. Two things above
+were cut:
+
+- **The record-layer reader.** So **the table ships write-only** — nothing in branch one reads a
+  row. That is a deliberate sequencing decision, not an oversight: the record lands ahead of its
+  use, and branch two is where it is consumed. Do not "fix" it by inventing a consumer.
+- **The adoption script.** Its subject no longer exists. `manual-protective-stop-nvda-2026-08-20-40`
+  filled 40 @ 214.85 on 2026-08-21T14:24:35Z, the 80-share leg reads `replaced`, and NVDA now holds
+  40 shares with zero open orders. The reasoning above — that adoption is safe *because NVDA is
+  fully covered today* — is exactly the kind of claim that expires: it was true when written and
+  was false two days later. `'adopted'` therefore has no writer in this branch, and the CHECK
+  admits a value nothing produces.
+
+Amend — the pending state, the gate's second verb, the recorder's write path — is branch two,
+and is [ADR-0003](0003-reducing-a-stopped-position.md)'s subject.

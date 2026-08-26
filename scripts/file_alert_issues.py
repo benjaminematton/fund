@@ -158,10 +158,26 @@ def main(argv: list[str] | None = None, run=None) -> int:
                     help="actually file; without it this is a dry run")
     args = ap.parse_args(argv)
 
-    # sqlite3.connect CREATES a missing file rather than raising, so an
-    # unreadable DB surfaces as "no such table: events" on the first query,
-    # not on connect. Both are caught below and both file nothing.
-    conn = sqlite3.connect(args.db)
+    # Named before anything else. Chained to the nightly pull this reads a
+    # mirror that cannot tell stale from fresh (#110), so which snapshot it
+    # worked from is the one fact a human needs to trust the run at all.
+    print(f"reading {Path(args.db).name}")
+
+    # READ-ONLY, ALWAYS. Unattended, against the only off-box copy of the
+    # fund's records: a read-write open applies a pending migration as a side
+    # effect, which is why dev_status.py opens every production read `mode=ro`,
+    # and the argument is stronger for a job nobody is watching.
+    #
+    # It also fixes a quieter thing. Plain sqlite3.connect CREATES a missing
+    # file rather than raising, so a wrong path used to surface as "no such
+    # table: events" on the first query — indistinguishable from a database
+    # with nothing in it, and leaving an empty file behind. The `mode=ro` URI
+    # raises on connect instead.
+    try:
+        conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+    except sqlite3.Error as e:
+        print(f"cannot read {args.db}: {e}", file=sys.stderr)
+        return 1
     conn.row_factory = sqlite3.Row
     tracker = GhTracker(args.repo, run=run)
     try:

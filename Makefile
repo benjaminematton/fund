@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight dev-status
 .PHONY: staging-day staging-reset eval eval-report
 .PHONY: eval-critic-dev eval-critic-holdout
 
@@ -169,6 +169,18 @@ resolve: deps
 # resolve — nothing is reflectable until resolve has written the outcome.
 reflect: deps
 	$(PYTHON) scripts/reflect_day.py
+
+# Read-only production health check for developers: is every stated invariant
+# and Phase 2 acceptance criterion still true on the box that trades?
+#
+# Reads the droplet over ssh, the broker, and the live DB with mode=ro. Writes
+# NOTHING anywhere — no order, no deploy, no migration. Exit 0 always, so a
+# check that cannot run renders as a finding instead of hiding the rest.
+#
+# Attended, not scheduled. Every finding is for a human to act on; this is
+# developer context, not the fund's own alerting, which already works.
+dev-status: deps
+	$(PYTHON) scripts/dev_status.py
 
 # Eval suite: REAL LLM turns against the REAL charters, 6 cases x 3 trials.
 # Needs .env loaded. MEASURED 2026-08-17: 18 trials, $0.81 est., ~7 minutes.

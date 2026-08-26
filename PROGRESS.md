@@ -6,6 +6,15 @@ session. `README.md` explains what the system *is*; this file explains what the 
 
 Update it when a milestone lands or an open item closes — not per commit.
 
+> **⚠ STALE — a snapshot, not current state.** Despite "read this first" above, this file
+> has not been updated since 2026-08-20 (`git log -1 -- PROGRESS.md`). Nothing below is
+> current state, and this header deliberately quotes no commit, count, or phase number —
+> a number that depends on state outside this file will eventually be wrong inside it.
+>
+> For what is actually true right now: board issue **#49** and its children for what to work
+> on, open issues and PRs for what is in flight, `git log` on `master` for what shipped, and
+> `specs/acceptance.md` for the build order. See `specs/INDEX.md`.
+
 ---
 
 ## Status — 2026-08-19

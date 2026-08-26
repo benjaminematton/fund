@@ -313,6 +313,32 @@ def test_an_unreadable_db_exits_non_zero_having_filed_nothing(tmp_path, capsys):
     assert run.calls == []
 
 
+def test_a_missing_db_is_not_created_by_the_connect(tmp_path):
+    """`sqlite3.connect` creates a missing file; the ro URI raises instead.
+
+    Chained to the nightly pull, this runs unattended against the only off-box
+    copy of the fund's records. dev_status.py opens every production read
+    `mode=ro` because a read-write open applies a pending migration as a side
+    effect of a health check — the same reasoning applies with more force to a
+    job nobody is watching. Asserted on the connect, not by writing to a
+    snapshot: a test that proves it cannot write is a test that corrupts a
+    backup on the day it fails."""
+    missing = tmp_path / "nope.sqlite"
+    _load().main([str(missing), "--since", "2026-08-24", "--apply"],
+                 run=RecordingRun())
+    assert not missing.exists()
+
+
+def test_it_names_the_database_it_read(db, db_path, capsys):
+    """The pull cannot tell a stale mirror from a fresh one (#110), so the
+    filer's own output has to say which snapshot it worked from — otherwise an
+    observation window against a month-old backup looks like a quiet month."""
+    _alert(db, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    _load().main([str(db_path), "--since", "2026-08-24"], run=RecordingRun())
+    assert db_path.name in capsys.readouterr().out
+
+
 def test_missing_gh_binary_during_planning_is_reported_not_a_traceback(db, db_path, capsys):
     """open_issue runs during plan_filings, before --apply is even consulted.
     A bare FileNotFoundError from subprocess.run must not escape main()."""

@@ -133,6 +133,46 @@ CREATE TABLE costs (
   usd_estimate  REAL NOT NULL,                -- ResultMessage.total_cost_usd (client-side est.)
   recorded_at   TEXT NOT NULL
 );
+
+-- An append-only OBSERVATION LOG: one row each time the fund sees a protective
+-- order at the broker. Like events and costs it is a log, not a workflow table,
+-- so §1 has no state machine for it — there is no status column and nothing is
+-- ever closed, cancelled or rewritten. ADR-0004 records why.
+--
+-- IT IS NEVER THE SOURCE OF WHAT PROTECTION EXISTS. orchestrator/protection.py
+-- :_covering_qty reads the broker for that, always. A row says what the fund
+-- SAW and when; a table feeding the coverage number would recreate 2026-08-17,
+-- where the database asserted a stop the broker did not hold and nothing
+-- noticed for two sessions.
+--
+-- `id` is DERIVED, not minted: "<alpaca_order_id>@<observed_at>", the row's
+-- natural key. So no id_factory is threaded, assert_positions_protected's
+-- signature is untouched, and sim-day and replay stay deterministic without
+-- sharing ctx.id_factory with tickets.
+--
+-- `stop_price` is NULLABLE because trailing_stop carries none while
+-- _covering_qty still counts it toward cover; NOT NULL would silently skip an
+-- order the alert's own number includes.
+--
+-- In state/schema.sql this table is written CREATE TABLE IF NOT EXISTS, which
+-- is load-bearing there and not style: state/db.py:12 matches that exact
+-- string to build _TABLES, and a bare CREATE TABLE would create the table on
+-- fresh databases and never register it, so no existing database would gain
+-- it. The form here follows §2's convention; the form there is the mechanism.
+CREATE TABLE protection (
+  id                TEXT PRIMARY KEY,          -- "<alpaca_order_id>@<observed_at>"
+  symbol            TEXT NOT NULL,
+  qty               INTEGER NOT NULL CHECK (qty > 0),
+  stop_price        REAL CHECK (stop_price IS NULL OR stop_price > 0),
+  alpaca_order_id   TEXT NOT NULL,             -- the broker's UUID
+  client_order_id   TEXT,                      -- Alpaca-generated on an OTO leg
+  provenance_kind   TEXT NOT NULL              -- 'ticket' arrives with the amend path
+                    CHECK (provenance_kind IN ('observed','adopted')),
+  broker_expires_at TEXT,                      -- GTC expiry, read from the broker
+  observed_at       TEXT NOT NULL,             -- what makes a row an observation
+  created_at        TEXT NOT NULL,
+  UNIQUE (alpaca_order_id, observed_at)
+);
 ```
 
 ### Attribution — `charter_version` and `model_id`
