@@ -1,5 +1,5 @@
 [Unit]
-Description=fund — post-close jobs (P&L $ and %% vs SPY; nightly resolutions)
+Description=fund — post-close jobs (P&L $ and %% vs SPY; nightly resolutions; reflections)
 Documentation=file:///opt/fund/ops/README.md
 OnFailure=fund-alert@%n.service
 
@@ -24,4 +24,13 @@ ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/close_pnl.py
 # resolutions write — acceptable, since both are retried on the next fire and
 # resolve_day selects only what is still outstanding.
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/resolve_day.py
-TimeoutStartSec=10min
+# Third and last: the reflection turns. Runs only if both legs above
+# succeeded, which is correct — if nothing resolved, nothing is reflectable.
+# It is last deliberately: it is the only leg that spends LLM budget and the
+# only one that can fail on a missing ANTHROPIC_API_KEY or SLACK_BOT_TOKEN, so
+# a failure here cannot cost the fund its P&L line or its calibration record.
+ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/reflect_day.py
+# 30min, matching fund-daily.service: this budget now has to cover N seat
+# turns, not two arithmetic jobs, and 30min is already the number this repo
+# uses to bound a hung LLM call.
+TimeoutStartSec=30min

@@ -30,7 +30,7 @@ journal: `journalctl -u fund-daily`.
 | unit | fires | runs |
 |---|---|---|
 | `fund-daily.timer` | 09:35 ET Mon–Fri | `scripts/run_day.py` |
-| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py` |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py`, then `scripts/reflect_day.py` |
 | `fund-backup.timer` | 17:30 ET daily | `ops/backup.sh` |
 | `fund-alert@.service` | on any of the above failing | `ops/notify_failure.sh` |
 
@@ -131,6 +131,12 @@ rather than by choice. If you stage an env line ahead of its code, say so to
 whoever deploys next; `/etc/fund/env` is not in git and no diff will show it.
 Traces cannot be reconstructed afterwards, so the cost of forgetting is the
 corpus itself.
+
+**The reflection job (`scripts/reflect_day.py`) requires two additional keys in
+`/etc/fund/env`:** `ANTHROPIC_API_KEY` (for Claude calls) and `SLACK_BOT_TOKEN`
+(to post reflections to channels). It is the third and last leg of `fund-pnl.timer`,
+so a missing key does not block P&L or resolution posts — only reflections. It runs
+last deliberately for this reason.
 
 `/etc/fund/env` also carries the heartbeat target, which is why the units can
 stay free of any hardcoded monitoring URL:
