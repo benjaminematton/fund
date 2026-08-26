@@ -149,6 +149,15 @@ def _dotted(node: ast.AST) -> str | None:
             and isinstance(node.args[1].value, str)):
         base = _dotted(node.args[0])
         return f"{base}.{node.args[1].value}" if base else None
+    if isinstance(node, ast.NamedExpr):
+        # A walrus EVALUATES to its value, so `(time := _src).sleep` is
+        # `_src.sleep`. Without this the return-expression shape resolves to
+        # nothing, because that walrus sits in no ast.Assign for the alias pass
+        # below to find. Deletion-check: remove these two lines on a copy and
+        # "walrus alias in a return expression" goes clean while the function,
+        # module, class and chained shapes stay red — the alias pass covers
+        # those, and only this arm covers a walrus used as an attribute base.
+        return _dotted(node.value)
     return None
 
 
@@ -490,6 +499,20 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
             hits = _candidates(dotted, bindings, stars) if dotted else []
             if len(hits) == 1:
                 bindings[targets[0].id] = hits[0]
+        # `(time := _src)` aliases exactly as `time = _src` does. NamedExpr was
+        # known to this file only as a SCOPING event (_walrus_targets), so a
+        # walrus registered as a binder — popping or standing the name — while
+        # the module it named was discarded. Not restricted to walruses inside
+        # an Assign: `own` carries them from any statement, which is what makes
+        # the `if`/`while`-condition spellings work as well.
+        # Deletion-check: drop this branch on a copy and the function, module,
+        # class and chained walrus-alias cases go clean, while the
+        # return-expression case stays red on the _dotted arm above.
+        elif isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            dotted = _dotted(child.value)
+            hits = _candidates(dotted, bindings, stars) if dotted else []
+            if len(hits) == 1:
+                bindings[child.target.id] = hits[0]
 
     # A default is evaluated outside, so the parameter holds what it resolved
     # to there — `def stamp(datetime=datetime)` really does read the clock.
