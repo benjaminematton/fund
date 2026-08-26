@@ -5,6 +5,14 @@ The handler computes the frame itself rather than accepting one: the seat is
 asked for an interpretation, and a seat that could supply its own facts could
 supply convenient ones. It also makes the one-call-per-decision contract that
 store_reflection's guard depends on structural rather than a caller promise.
+
+The tool's own schema carries no decision_id at all — only `prose`. Which row
+gets written comes ONLY from `expected_decision_id`, bound by the caller
+(scripts/reflect_day.py, never the seat). This is stricter than an earlier
+design that took a seat-supplied decision_id and checked it against the
+binding: that only DETECTED a transcription error after the fact, where this
+makes writing the wrong row structurally impossible — there is no argument
+left through which a seat could name a different row.
 """
 
 from __future__ import annotations
@@ -51,8 +59,8 @@ def test_the_reflect_seat_carries_the_cap():
 
 
 def test_a_reflection_is_stored_with_the_facts_first(db, decision_id):
-    r = _submit(db, args={"decision_id": decision_id,
-                          "prose": "Sized right, held too long."})
+    r = _submit(db, args={"prose": "Sized right, held too long."},
+               expected_decision_id=decision_id)
     assert r["ok"] is True
     stored = db.execute(
         "SELECT reflection FROM resolutions WHERE decision_id = ?",
@@ -63,8 +71,8 @@ def test_a_reflection_is_stored_with_the_facts_first(db, decision_id):
 
 
 def test_another_seat_may_not_write_a_reflection(db, decision_id):
-    r = _submit(db, seat="pm", args={"decision_id": decision_id,
-                                     "prose": "mine now"})
+    r = _submit(db, seat="pm", args={"prose": "mine now"},
+               expected_decision_id=decision_id)
     assert r["ok"] is False
     assert "pm" in r["error"]
     assert db.execute(
@@ -80,7 +88,7 @@ def test_an_unresolved_decision_is_refused_rather_than_reflected(db):
         " invalidation, status, created_at) VALUES"
         " ('2026-07-06','AMD','hold',0,'t','i','held',?)", (NOW,))
     db.commit()
-    r = _submit(db, args={"decision_id": cur.lastrowid, "prose": "x"})
+    r = _submit(db, args={"prose": "x"}, expected_decision_id=cur.lastrowid)
     assert r["ok"] is False
     assert "not resolved" in r["error"]
 
@@ -88,8 +96,8 @@ def test_an_unresolved_decision_is_refused_rather_than_reflected(db):
 def test_a_second_reflection_is_refused_with_the_first_intact(db, decision_id):
     """store_reflection is first-write-wins; the handler must report that as
     an error rather than a success, or a resumed job logs work it did not do."""
-    _submit(db, args={"decision_id": decision_id, "prose": "first"})
-    r = _submit(db, args={"decision_id": decision_id, "prose": "second"})
+    _submit(db, args={"prose": "first"}, expected_decision_id=decision_id)
+    r = _submit(db, args={"prose": "second"}, expected_decision_id=decision_id)
     assert r["ok"] is False
     assert "already" in r["error"]
     stored = db.execute(
@@ -99,5 +107,42 @@ def test_a_second_reflection_is_refused_with_the_first_intact(db, decision_id):
 
 
 def test_a_malformed_call_is_refused_without_writing(db, decision_id):
-    assert _submit(db, args={"prose": "no id"})["ok"] is False
-    assert _submit(db, args={"decision_id": decision_id})["ok"] is False
+    """decision_id is no longer an argument at all (change A) — the only
+    thing left to be malformed on a bound turn is the prose."""
+    assert _submit(db, args={},
+                   expected_decision_id=decision_id)["ok"] is False
+    assert _submit(db, args={"prose": "   "},
+                   expected_decision_id=decision_id)["ok"] is False
+    assert db.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (decision_id,)).fetchone()["reflection"] is None
+
+
+def test_an_unbound_turn_is_refused_rather_than_writing_blind(db, decision_id):
+    """Change A removed decision_id from the tool's schema entirely — the
+    row written comes ONLY from expected_decision_id, bound by the caller.
+    An unbound turn (expected_decision_id's default, None) must refuse
+    rather than write with nothing left to bind it to. This is what
+    upgrades the old wrong-row risk from detected-after-the-fact to
+    structurally impossible: there is no argument left through which a
+    seat could name a different row."""
+    r = _submit(db, args={"prose": "well-formed prose"})
+    assert r["ok"] is False
+    # N4: pin the specific refusal text so this guard cannot be replaced by
+    # some other, incidental refusal (e.g. reflection_frame(conn, None)
+    # matching no row) that happens to fail closed for a different reason.
+    assert r["error"] == ("this turn was not bound to a decision —"
+                          " refusing to write a reflection blind")
+    assert db.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (decision_id,)).fetchone()["reflection"] is None
+
+
+def test_a_bound_turn_writes_to_the_decision_it_was_launched_for(db,
+                                                                  decision_id):
+    r = _submit(db, args={"prose": "right row"},
+               expected_decision_id=decision_id)
+    assert r["ok"] is True
+    assert db.execute(
+        "SELECT reflection FROM resolutions WHERE decision_id = ?",
+        (decision_id,)).fetchone()["reflection"].endswith("right row")
