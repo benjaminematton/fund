@@ -116,13 +116,10 @@ both measured:
   so there is nothing for it to report as untracked.
 
 devcheck's one attempt to read that table is itself broken, which is why the gap is total
-rather than partial: `_scorecard_codes()` is docstringed "Alert codes raised on the
-droplet's most recent run date" but selects `events.kind`, not the payload's `code`.
-Production's kinds are `signal, decision, gate_approved, fill, digest, alert, pnl,
-model_fallback_used, scorecard`; `check_degradations` matches them against `("gate_error",
-"pm_timeout", "critic_timeout", "missing_signal")`. The intersection is empty by
-construction, so that check is structurally dead-green — and `health.md` suppresses it, so
-the deadness is unobservable **[M]**. Out of scope here (§6), tracked separately.
+rather than partial: `_scorecard_codes()` selects `events.kind` where its docstring promises
+the payload `code`, so `check_degradations` is dead-green against every kind production
+writes, and suppression hides that **[M]**. Filed as **#107** with the evidence. Out of
+scope here (§6) — this spec changes tracking, never detection.
 
 **D8 — Rolling 7-day window; reopen only on a firing after the close.** A today-only window
 misses any day the pull did not run (a sleeping laptop). Rolling makes missed runs
