@@ -351,10 +351,11 @@ lanes sees no collision at all. Where several candidates share a region head and
 **the first in map order is dispatched and the rest are `held-in-region` behind it**, named on the
 decision list as a split question exactly like riders behind a live incumbent.
 
-*Measured: 14 of the 24 region-declaring off-board issues name a region head identical to a live
-lane's — eval harness ×6, repo guardrails ×5, market data ingestion ×2, purity lint ×1. Yesterday's 41
-issues did not broaden the board; they deepened the nine regions already claimed. Without this rule,
-adding a design quota puts a second seat inside a live seat's region fourteen times.*
+*Measured against the lane regions recorded in `map.md`: 14 of the 24 region-declaring off-board
+issues name a region head identical to a live lane's — eval harness ×6, repo guardrails ×5, market
+data ingestion ×2, purity lint ×1. Yesterday's 41 issues did not broaden the board; they deepened the
+nine regions already claimed. Without this rule, adding a design quota puts a second seat inside a
+live seat's region fourteen times.*
 
 **Known false negative:** region-head equality misses #79 (`tests/test_schema_contract.py`) against
 #35 (`contract tests`). Phase 4 catches it only if the incumbent answers the poll. Report the rule's
@@ -562,7 +563,8 @@ rostered peer including the silent ones. A peer cannot assign work to a peer. **
 human being awake**, and a run always produces its digest. **The skill still creates no branch, no
 worktree, and no commit** — it reads, it messages, and it writes two files under `~/.claude/align/`.
 Both degradation shapes stand verbatim, and both get strictly more useful: 0b is a label query and 0g
-is a git query, and neither needs a map issue.
+is a git query, and neither needs a map issue. **Disputed — see §9.13**, where the skill's own text
+reads a no-board repo as having no declared regions, which would leave 0b with no decide lane to form.
 
 ---
 
