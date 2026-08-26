@@ -27,6 +27,27 @@ CLEAN_CASES is the load-bearing half — above all `self._clock.now()`, the
 injected-Clock pattern the invariant exists to *require*. A lint that flags
 correct code is the failure mode that gets a lint deleted.
 
+HOW EVERY EVASION IN THIS BRANCH WAS FOUND, and the one thing to know before
+adding a case. Six evasions shipped past a green suite. Not one was found by
+reasoning about a case; every one was found by CROSSING TWO AXES nobody had
+crossed — enclosing-shadow x declaration-kind, nested-scope-kind x where-the-
+read-sits, walrus x alias. The reason is structural:
+
+    EVERY CASE FIXES ONE VALUE OF EVERY AXIS IT DOES NOT NAME.
+
+A case pinning one instance of a rule reads exactly like a case pinning the
+rule, and an ablation cannot tell them apart either, because deleting the block
+fails both. So the axes a table names are a CLAIM about what it covers, and an
+axis list that overstates coverage is the same defect as an unfalsifiable
+guard — of which this file has now retired four (`numpy`, the old `nonlocal`,
+a dead walrus pin, and a `global` case that could not catch the shape beside
+it). Before adding a case, ask what it holds fixed, not what it varies.
+
+Oracles are subject to the same rule. Prefer an EXACT probe — swap the callable
+for a recorder and count calls — over timing. A 0.06s threshold once scored a
+one-off `import asyncio` as an evasion; a noisy oracle is an overstated axis
+list wearing a number.
+
 Zero dependencies: plain no-arg `def test_*` functions and stdlib `tempfile`,
 so it runs under pytest (what CI and `make test` invoke) and under the
 `tests/run_tests.py` fallback runner alike. Scratch trees are built under
@@ -831,6 +852,89 @@ CALLABLE_CAPTURE_CASES = [
 
         def pause():
             getattr(time, "sleep")()
+    """, RULE_CLOCK_REF),
+    # --- WALRUS x ALIAS: two families that had never been crossed ----------
+    # Open since 11d7b54 — the whole branch — and not a regression from any
+    # recent work. The alias pass has always been `ast.Assign`-only, and
+    # `ast.NamedExpr` appears in the lint exactly once, inside _walrus_targets,
+    # purely for SCOPING. So a walrus is registered as a BINDER — it pops or
+    # stands the name — while the module it names is thrown away.
+    #
+    # Every walrus case elsewhere in this file binds its target to a VALUE
+    # (`_F()`, `1`, `r`, `time.sleep(...)`); not one binds it to a module or
+    # class ALIAS. Every alias case above binds with `=`; not one binds with
+    # `:=`. Neither family is wrong and neither covers this, because the axis
+    # that separates them was never varied.
+    #
+    # Verified by EXACT PROBE, not timing: `time.sleep` is swapped for a
+    # recorder, so "the clock path ran" is a call count. All six below report
+    # `sleep called 1x` while the lint reports clean. The plain-assign control
+    # (`time = _src`) FLAGS, which is what identifies the walrus as the thing
+    # doing the hiding. Timing was rejected as the oracle after a 0.06s
+    # threshold scored a one-off `import asyncio` as an evasion — a noisy
+    # oracle is the same defect class as an overstated axis list.
+    ("walrus alias, function scope", """
+        import time as _src
+
+
+        def f():
+            _w = (time := _src)
+            return time.sleep(0.30)
+    """, RULE_CLOCK_REF),
+    ("walrus alias, module scope", """
+        import time as _src
+
+        _w = (time := _src)
+        _R = time.sleep(0.30)
+    """, RULE_CLOCK_REF),
+    # Class scope resolves through `inherited` rather than `bindings` for its
+    # children, so it is its own arm of the mechanism rather than a third
+    # spelling of the two above.
+    ("walrus alias, class scope", """
+        import time as _src
+
+
+        class C:
+            _w = (time := _src)
+            _R = time.sleep(0.30)
+    """, RULE_CLOCK_REF),
+    # Transitivity: the walrus alias must itself be resolvable as the SOURCE of
+    # a second walrus alias. Master misses this one too, so it is a still-open
+    # evasion rather than a regression.
+    ("chained walrus alias", """
+        import time as _src
+
+
+        def f():
+            _a = (_x := _src)
+            _b = (_y := _x)
+            return _y.sleep(0.30)
+    """, RULE_CLOCK_REF),
+    # DISTINCT MECHANISM, and the one an obvious fix would miss: here the
+    # walrus sits in no `ast.Assign` at all. Extending the alias pass by
+    # walking `Assign.value` for a NamedExpr fixes the three above and leaves
+    # this red. The `if` and `while` condition shapes were measured and are the
+    # same mechanism as this one — documented rather than duplicated, since
+    # three spellings of one arm is volume, not coverage. Master misses it too:
+    # its `_dotted` cannot take a NamedExpr as an attribute base.
+    ("walrus alias in a return expression (no enclosing Assign)", """
+        import time as _src
+
+
+        def f():
+            return (time := _src).sleep(0.30)
+    """, RULE_CLOCK_REF),
+    # A non-`time` target, to keep the family from being pinned to one module.
+    # Proved by identity rather than a call recorder: f() returns a real
+    # datetime.datetime instance, so the walrus really did bind the imported
+    # class. Master flags this one.
+    ("walrus alias, datetime target", """
+        from datetime import datetime as _dt
+
+
+        def f():
+            _w = (datetime := _dt)
+            return datetime.now()
     """, RULE_CLOCK_REF),
 ]
 
