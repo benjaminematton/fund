@@ -100,6 +100,62 @@ def test_resolutions_within_the_lookback_window_are_due(db):
     assert stale not in {d["decision_id"] for d in due}
 
 
+def test_a_decision_below_the_window_is_aged_out_not_merely_excluded(db):
+    """`stale` in the test above is silently excluded from due_reflections —
+    that alone is correct (it should not be selected), but until now nothing
+    ever noticed it had permanently fallen out of the window. aged_out_
+    reflections is that notice: the mirror-image query naming exactly what
+    due_reflections' own predicate can never select again."""
+    stale = _resolved(db, ticker="MSFT", resolved_at="2026-08-17T12:00:00+00:00")
+    fresh = _resolved(db, resolved_at="2026-08-25T20:35:05+00:00")
+
+    aged = reflect_day.aged_out_reflections(db, TODAY)
+
+    assert [d["decision_id"] for d in aged] == [stale]
+    assert fresh not in {d["decision_id"] for d in aged}
+
+
+def test_an_aged_out_machine_written_hold_is_not_alerted_on(db):
+    """Same charter_version <> 'none' rule as due_reflections: a pm_timeout
+    row was never reasoned about by a seat, aged out or not."""
+    _resolved(db, ticker="MSFT", resolved_at="2026-08-17T12:00:00+00:00",
+             charter_version="none")
+
+    assert reflect_day.aged_out_reflections(db, TODAY) == []
+
+
+def test_an_aged_out_decision_is_logged_and_alerted_once(db, capsys):
+    """Before this fix, a decision that aged out of the lookback window had
+    no alert, no log line, and no audit check anywhere — it just vanished.
+    This is a permanent data loss and it must not be silent."""
+    stale = _resolved(db, ticker="MSFT", resolved_at="2026-08-17T12:00:00+00:00")
+
+    counts = reflect_day.reflect_and_log(db, FakeSlack(), SimClock(NIGHTLY),
+                                         lambda job: None)
+
+    assert counts == {"reflected": 0, "failed": 0}   # stale is not due tonight
+    texts = [r["payload"] for r in db.execute(
+        "SELECT payload FROM events WHERE kind = 'alert'")]
+    aged = [t for t in texts if "reflect_aged_out" in t]
+    assert len(aged) == 1
+    assert str(stale) in aged[0] and "MSFT" in aged[0]
+    out = capsys.readouterr().out
+    assert "aged out" in out and "MSFT" in out
+
+
+def test_no_aged_out_alert_when_nothing_has_aged_out(db):
+    """The common case: a night with nothing due and nothing aged out posts
+    no reflect_aged_out alert at all."""
+    _resolved(db, resolved_at="2026-08-25T20:35:05+00:00")   # fresh, not aged
+
+    reflect_day.reflect_and_log(db, FakeSlack(), SimClock(NIGHTLY),
+                                lambda job: None)
+
+    texts = [r["payload"] for r in db.execute(
+        "SELECT payload FROM events WHERE kind = 'alert'")]
+    assert not any("reflect_aged_out" in t for t in texts)
+
+
 def test_an_unknown_charter_version_is_still_due(db):
     """schema.sql defaults charter_version to 'unknown', and an unparseable
     charter header (_parse_charter_version) returns exactly that string. The
@@ -257,11 +313,16 @@ def test_a_turn_that_writes_nothing_is_counted_failed_and_alerted(db):
 def test_several_turns_that_write_nothing_produce_one_rollup_alert(db,
                                                                     capsys):
     """A fully broken night must not turn into one Slack message per
-    resolved decision — the repo's established pattern for a per-entity
-    failure is a single rollup naming every affected entity
+    resolved decision FROM THIS JOB — the repo's established pattern for a
+    per-entity failure is a single rollup naming every affected entity
     (run_day.alert_missing_price_history). Stdout still gets a line per
-    decision (journald, not Slack); Slack gets exactly one alert naming
-    all of them."""
+    decision (journald, not Slack); this job's own alerting is exactly one
+    rollup naming all of them.
+
+    A run_turn that simply returns (this fixture) is NOT what a real broken
+    night looks like — see test_a_broken_nights_seat_failures_multiply_alerts
+    below for the real composition, where run_day.make_turn's own
+    seat_turn_failed alert multiplies per turn on top of this rollup."""
     tickers = ["NVDA", "AMD", "MSFT"]
     dids = [_resolved(db, ticker=t, resolved_at="2026-08-25T20:35:05+00:00")
             for t in tickers]
@@ -278,6 +339,50 @@ def test_several_turns_that_write_nothing_produce_one_rollup_alert(db,
     out = capsys.readouterr().out
     for ticker in tickers:
         assert f"({ticker}) wrote nothing" in out    # per-decision, stdout only
+
+
+def test_a_broken_nights_seat_failures_multiply_alerts(db):
+    """The real composition a broken night produces, not the fiction a fake
+    that structurally cannot alert (`lambda job: None`) would certify.
+
+    In production, run_turn IS run_day.make_turn(...)() — see
+    _make_run_turn. Its own run() catches a failing seat session, posts ONE
+    seat_turn_failed alert PER FAILING TURN, and returns normally (never
+    raises here — reflect_and_log's own except-branch is unreachable through
+    make_turn today, per the module docstring). From reflect_and_log's side
+    that turn then looks exactly like "wrote nothing": no reflection was
+    written, so it folds into this job's own single rollup at the end.
+
+    Faking that composition directly (rather than a no-op lambda) is what
+    proves the real count instead of a substitute's: three failing seat
+    sessions in one night post FOUR alerts total — three seat_turn_failed
+    plus one reflect_turn_wrote_nothing rollup naming all three — never one."""
+    tickers = ["NVDA", "AMD", "MSFT"]
+    dids = [_resolved(db, ticker=t, resolved_at="2026-08-25T20:35:05+00:00")
+            for t in tickers]
+
+    def _turn(job):
+        # Mirrors run_day.make_turn's run(): the underlying seat session
+        # raised, make_turn caught it, alerted once, and returned normally —
+        # no reflection written, nothing propagates to reflect_and_log.
+        reflect_day.run_day._alert(
+            db, SimClock(NIGHTLY), "seat_turn_failed",
+            f"reflect_turn_failed — {job['ticker']}: session never"
+            " connected; stage default applies (default is HOLD)")
+
+    counts = reflect_day.reflect_and_log(db, FakeSlack(), SimClock(NIGHTLY),
+                                         _turn)
+
+    assert counts == {"reflected": 0, "failed": 3}
+    texts = [r["payload"] for r in db.execute(
+        "SELECT payload FROM events WHERE kind = 'alert'")]
+    per_turn = [t for t in texts if "seat_turn_failed" in t]
+    rollup = [t for t in texts if "reflect_turn_wrote_nothing" in t]
+    assert len(per_turn) == 3
+    assert len(rollup) == 1
+    for did, ticker in zip(dids, tickers):
+        assert str(did) in rollup[0] and ticker in rollup[0]
+    assert len(texts) == 4        # 3 seat_turn_failed + 1 rollup, NOT 1 total
 
 
 def test_a_resolution_that_vanishes_after_the_turn_is_counted_failed_not_crashed(

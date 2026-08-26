@@ -133,10 +133,15 @@ Traces cannot be reconstructed afterwards, so the cost of forgetting is the
 corpus itself.
 
 **The reflection job (`scripts/reflect_day.py`) requires two additional keys in
-`/etc/fund/env`:** `ANTHROPIC_API_KEY` (for Claude calls) and `SLACK_BOT_TOKEN`
-(to post reflections to channels). It is the third and last leg of `fund-pnl.timer`,
-so a missing key does not block P&L or resolution posts — only reflections. It runs
-last deliberately for this reason.
+`/etc/fund/env`:** `ANTHROPIC_API_KEY` (for Claude calls) and `SLACK_BOT_TOKEN`.
+No reflection ever reaches a channel — `handle_submit_reflection` appends no
+projection event on purpose, because `drain` posts every unposted row and one
+event per reflection would mean one Slack message per resolved decision, every
+night. `SLACK_BOT_TOKEN` is needed only to drain this job's own alerts (a
+failed turn, a wrote-nothing rollup, a capped backlog, an aged-out decision).
+It is the third and last leg of `fund-pnl.timer`, so a missing key does not
+block P&L or resolution posts — only this job's own alerting. It runs last
+deliberately for this reason.
 
 `/etc/fund/env` also carries the heartbeat target, which is why the units can
 stay free of any hardcoded monitoring URL:

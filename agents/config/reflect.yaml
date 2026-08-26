@@ -14,6 +14,16 @@ max_turns: 4
 # required because build_seat_options wires the alpaca MCP server
 # unconditionally; the narrowest read-only toolset is set so that an empty
 # value can never be read as "unset, default to all".
+#
+# THE ALPACA MCP SERVER MUST STILL CONNECT, even though this seat can reach
+# none of its tools. build_seat_options wires it unconditionally for every
+# seat, and scripts/run_day.py's run_seat_turn (REQUIRED_SERVERS =
+# {"alpaca", "fund"}) refuses the turn unless BOTH servers report connected —
+# so a broker outage that has nothing to do with reflections still stops this
+# seat's turn from ever running. That coupling is real for every seat today,
+# not special-cased to reflect; it is tracked as issue #108 (fixing it touches
+# shared trading-day code, out of scope for this seat's own config). Learn it
+# here, not from an outage.
 alpaca_toolsets: "stock-data"
 tools: ["mcp__fund__*"]
 disallowed_tools: ["mcp__alpaca__place_*"]   # belt, though tools is the brace

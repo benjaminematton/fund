@@ -43,6 +43,16 @@ The decisive argument is not that `tools` is the stronger lock. It is that the a
 | `specs/design.md` (modify) | Seat table gains the `reflect` seat |
 | `tests/test_reflection_tool.py` (create) | Handler + registration tests |
 | `tests/test_reflect_job.py` (create) | Selection query + job seam tests |
+| `specs/contracts.md` (modify) | Canonical `submit_reflection` schema entry (Task 6) |
+| `agents/seats.py` (modify) | `build_seat_options` threads `expected_decision_id` into the reflect seat's server |
+| `scripts/run_day.py` (modify) | `_seat_session`/`make_turn` grow the `expected_decision_id` parameter that carries the binding down to the tool server |
+| `Makefile` (modify) | `reflect` target |
+| `tests/test_exec_seat_tool_surface.py` (modify) | Task 2's stricter reflect-seat pin, added alongside the five existing seats' unweakened assertions |
+| `tests/test_fund_tools.py` (modify) | Tool-cap coverage picks up `reflect`/`submit_reflection` |
+| `tests/test_reflect.py` (modify) | `orchestrator/reflect.py`'s frame/store-reflection tests, extended for the id-binding change |
+| `tests/test_run_day.py` (modify) | `_seat_session`/`make_turn` id-binding tests |
+
+**Note, added after the fact:** the table above was originally missing the five rows from `specs/contracts.md` down to `tests/test_run_day.py` — every file this branch touched to thread `expected_decision_id` from `scripts/reflect_day.py` down through `run_day.py` and `agents/seats.py` into the tool server, plus the contracts entry and the coverage/surface tests that changed cap required it. See the design-change notes in Tasks 1–3 below for why that binding exists at all.
 
 ---
 
@@ -57,6 +67,8 @@ The decisive argument is not that `tools` is the stronger lock. It is that the a
 - Produces: `handle_submit_reflection(conn, *, seat, args, now_iso) -> dict` returning `{"ok": True}` or `{"ok": False, "error": str}`; the registered MCP tool name `submit_reflection`; the cap `"submit_reflection"` in `SEAT_CAPS["reflect"]`
 
 The handler computes the frame itself and calls `store_reflection` **once** with frame and prose together — this is what satisfies the single-call constraint by construction. The seat never sees or supplies the frame.
+
+> **Design changed mid-branch (commit `a5b3322`) — recorded here rather than silently rewritten.** Every code sample in this task (Steps 1–4) shows the design as it was FIRST planned and shipped: `submit_reflection` took a seat-supplied `decision_id` argument, checked against nothing. That shipped, then a review on this same branch replaced it: the schema became prose-only (`"required": ["prose"]`, no `decision_id` property at all) and the row is now bound **server-side**, via an `expected_decision_id` parameter threaded from the caller (`scripts/reflect_day.py` → `agents/seats.py::build_seat_options` → `scripts/run_day.py::_seat_session`/`make_turn` → `agents/tools/fund_server.py::build_fund_server`/`handle_submit_reflection`) — never supplied by the seat, never present in the tool's JSON schema. Why: a SQLite `lastrowid` is a per-run surrogate value, and CLAUDE.md bars per-run values (timestamps, UUIDs, tmp paths) from ever reaching a prompt, because a baked-in value breaks replay determinism — a seat-supplied or seat-echoed decision id is exactly that class of value. The **current** signature is `handle_submit_reflection(conn, *, seat, args, now_iso, expected_decision_id=None) -> dict`, and `args` carries only `prose`. Treat the code below as the historical starting point, not the interface to build against — see `tests/test_reflection_tool.py` for what is actually pinned.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -183,6 +195,9 @@ from orchestrator.reflect import reflection_frame, store_reflection
 
 Then add the handler next to `handle_submit_spec_critique`:
 
+<!-- SUPERSEDED in commit a5b3322 — see the design-change note above this step.
+     `args.get("decision_id")` below is what shipped FIRST; the row is now
+     bound via `expected_decision_id`, and `args` carries only `prose`. -->
 ```python
 def handle_submit_reflection(conn: sqlite3.Connection, *, seat: str,
                              args: dict, now_iso: str) -> dict:
@@ -236,6 +251,9 @@ def handle_submit_reflection(conn: sqlite3.Connection, *, seat: str,
 
 In `build_fund_server`, add the wrapper alongside the other `@tool` coroutines:
 
+<!-- SUPERSEDED in commit a5b3322 — see the design-change note above Step 1.
+     The `decision_id` property and its "required" entry below were removed;
+     the shipped schema is prose-only. -->
 ```python
     @tool("submit_reflection",
           "Record your reflection on ONE resolved decision. Call it exactly"
@@ -411,6 +429,8 @@ setting_sources: []
 
 - [ ] **Step 4: Write the charter**
 
+> **Design changed mid-branch (commit `a5b3322`).** The charter body below still says "Pass the `decision_id` from your prompt" — that was true only under Task 1's ORIGINAL design. The shipped tool takes no `decision_id` argument at all; the seat is never told the surrogate id and cannot pass it. See `charters/reflect.md` as committed for the corrected Tools section.
+
 Create `charters/reflect.md`, following `charters/_template.md`'s seven sections:
 
 ```markdown
@@ -434,7 +454,7 @@ Turn one resolved decision into one lesson the deciding seat could act on next t
 Your prompt carries the whole frame for exactly one decision: the ticker, the date, the action and size, its final status, what each seat signalled with what confidence, and the realized return and alpha over the horizon. Nothing else arrives, and there is nothing to fetch — you have no read tools.
 
 ## Tools
-- `submit_reflection` — REQUIRED, once, at the end of your turn. Pass the `decision_id` from your prompt and your `prose`. A turn without this call leaves the record with the facts and no lesson, which is a wasted turn.
+- `submit_reflection` — REQUIRED, once, at the end of your turn. Pass the `decision_id` from your prompt and your `prose`. A turn without this call leaves the record with the facts and no lesson, which is a wasted turn. <!-- SUPERSEDED in commit a5b3322: there is no decision_id in your prompt or in the tool's arguments any more — the shipped charter reads "Pass only your `prose` — you are never told a decision id and never need one; the turn is already bound to the one decision in your prompt." -->
 
 ## Output contract
 One `submit_reflection` call. `prose` is ≤80 words, 1–3 sentences, and must name **one** thing that would change a future call — a size, a signal weighted wrongly, a thesis that was never falsifiable, a holding period. No preamble, no restatement of the numbers, no hedging both ways.
@@ -489,6 +509,14 @@ protects the other four seats."
 - Produces: `due_reflections(conn, run_date) -> list[dict]`, `reflect_and_log(conn, slack, clock, run_turn) -> dict`, `main(argv=None) -> int`, `REQUIRED_ENV`
 
 `run_turn` is injected as `Callable[[dict], None]` so the job is testable with no SDK, matching how `tests/test_run_day.py` monkeypatches `_seat_session`.
+
+> **Design changed mid-branch (commit `a5b3322`, and again in the review fix wave that followed it) — recorded here, not silently rewritten.** Everything below shows this task as FIRST built: `_DUE` selects only `run_date`'s own calendar day ("resolved tonight"), the prompt embeds `decision_id` as text, and the job has no retry window, no per-night cap, and no aged-out check. All four changed before this branch closed:
+> - **Selection window (`a5b3322`).** `_DUE` no longer bounds to one night. `REFLECT_LOOKBACK_DAYS` (7) widens it to a trailing window spanning `REFLECT_LOOKBACK_DAYS + 1` calendar days — `[D-7 00:00 ET, D+1 00:00 ET)` — so a miss (a failed turn, a systemd timeout, a missing token) is retried on later nights instead of vanishing the moment the calendar rolls over. `due_count(conn, run_date)` reports the TRUE number due, uncapped, for comparison against what `due_reflections` actually returns.
+> - **The per-night spend cap (`a5b3322`).** `MAX_TURNS_PER_NIGHT` (25) bounds how many turns one fire will pay for; exceeding it is not silent — see `reflect_backlog_capped` below.
+> - **Change A: the id leaves the prompt (`a5b3322`).** The prompt no longer contains `decision_id` at all — see Task 1's note. The binding travels out-of-band as `expected_decision_id`, threaded through `agents/seats.py`/`scripts/run_day.py` (see the File Structure table).
+> - **The aged-out alert (a later review fix, `reflect_aged_out`).** A decision whose `resolved_at` falls below the window's lower bound before it is ever picked up is now logged and alerted once by name — see `aged_out_reflections` in the shipped `scripts/reflect_day.py`. Under the code below, that decision would just disappear with no alert, no log line, and no audit check.
+>
+> The code samples in Steps 3–4 are the historical starting point for this task, not its final interface — see `scripts/reflect_day.py` and `tests/test_reflect_job.py` as committed for what actually shipped.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -744,6 +772,10 @@ LOCK_NAME = "reflect_day.lock"
 
 SEAT = "reflect"
 
+# SUPERSEDED in a5b3322 — see the design-change note above Step 1. The window
+# widened from "resolved tonight" to a REFLECT_LOOKBACK_DAYS+1-calendar-day
+# trailing window, so a miss is retried instead of lost after one night.
+#
 # Resolved tonight, not yet reflected on, and written by a seat.
 #
 # The resolved_at window rather than decisions.run_date: resolve_day resolves
@@ -847,6 +879,11 @@ def main(argv: list[str] | None = None) -> int:
 
     run_date = et_run_date(clock.now())   # cost lands on the day the turn ran
 
+    # SUPERSEDED in a5b3322 (Change A) — see the design-change note above
+    # Step 1. The prompt below bakes decision_id into text; the shipped
+    # prompt never does (CLAUDE.md bars per-run values from prompts), and
+    # `make_turn` instead takes `expected_decision_id=job["decision_id"]`
+    # as an out-of-band keyword argument.
     def run_turn(job: dict) -> None:
         prompt = (
             f"Reflect on this closed decision. Call submit_reflection exactly"
@@ -1067,7 +1104,7 @@ that row's own frame."
 - `tests/conftest.py`'s `make_executor` routes a fixed tool list and raises for anything else, so `submit_reflection` is not replayable in `sim-day` until a branch is added there. Out of scope for this lane; the job does not run in the simulated trading day.
 - Cost is attributed to the turn's `run_date` (Q9), so a night's reflection spend lands on the day it ran, not the day the decisions were made.
 
-**Type consistency.** `due_reflections` returns `list[dict]` with keys `decision_id`, `ticker`, `run_date`; `reflect_and_log` adds `frame` before calling `run_turn`; `handle_submit_reflection` takes `decision_id: int` and `prose: str`. `store_reflection` returns `bool` — the handler branches on it.
+**Type consistency.** `due_reflections` returns `list[dict]` with keys `decision_id`, `ticker`, `run_date`; `reflect_and_log` adds `frame` before calling `run_turn`; `handle_submit_reflection` takes `decision_id: int` and `prose: str`. `store_reflection` returns `bool` — the handler branches on it. **Corrected after the fact (commit `a5b3322`, see Task 1's design-change note): `handle_submit_reflection` takes `(conn, *, seat, args, now_iso, expected_decision_id=None)` — `args` carries only `prose`; `decision_id` is never a seat-facing type at all, only the caller-bound `expected_decision_id: int | None`.**
 
 **Resolved before handing over.** `et_run_date` lives in `orchestrator/clock`, not `audit_day` — `scripts/run_day.py:72` imports it from there and `:493` uses it exactly this way. The plan now imports and calls it directly; there is no fallback to clean up.
 

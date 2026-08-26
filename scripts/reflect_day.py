@@ -28,15 +28,33 @@ Posture (invariant 4: no row beats a wrong row):
   * a missing env var             -> exit 1 naming every missing var
   * another reflect_day running   -> exit 0 rather than double-spend
   * a turn that raises            -> one alert per turn, no row, night continues
+                                      (defence in depth — not reachable through
+                                      run_day.make_turn today; see below)
   * a turn that writes nothing    -> logged, no row; one alert for the whole
                                       night naming every such decision
+  * a decision that ages out of the lookback window unreflected -> logged,
+                                      one alert naming every such decision
+                                      (reflect_aged_out — see due_reflections)
   * more than MAX_TURNS_PER_NIGHT is due -> take the cap, alert how many were
                                             left, the night continues
 
+THIS JOB'S OWN alerting for a broken night is one rollup per failure kind,
+never one Slack message per decision. That is NOT the same as one message per
+broken night, total: run_day.make_turn (shared trading-day code, out of scope
+for this fix wave) catches a seat session that fails and posts its OWN
+seat_turn_failed alert, ONE PER FAILING TURN, before this job ever sees the
+turn return — from here that turn just looks like "wrote nothing" and folds
+into this job's rollup below. So three failing seat sessions in one night post
+FOUR Slack messages (three seat_turn_failed, one reflect_turn_wrote_nothing
+rollup), not one. An operator must expect that count, not be surprised by it.
+
 A missed decision (a failed turn, a turn that wrote nothing, a systemd
-timeout mid-loop, a missing token on an earlier run) is NOT lost: due_reflections
-selects on resolved_at over a REFLECT_LOOKBACK_DAYS-night window, so a miss is
-retried on subsequent nights, for up to that many nights, before it ages out.
+timeout mid-loop, a missing token on an earlier run) is not lost after one
+missed night: due_reflections selects on resolved_at over a window spanning
+REFLECT_LOOKBACK_DAYS+1 calendar days ([D-REFLECT_LOOKBACK_DAYS 00:00 ET,
+D+1 00:00 ET)), so a miss is retried on subsequent nights, for up to
+REFLECT_LOOKBACK_DAYS more nights, before it ages out — and aging out is
+alerted on explicitly (reflect_aged_out), never silent.
 
 Re-running is safe and cheap: due_reflections selects only rows whose
 `reflection` IS NULL, so a re-fire pays only for what is still outstanding.
@@ -81,8 +99,8 @@ REFLECT_LOOKBACK_DAYS = 7
 # not silent — see reflect_and_log's reflect_backlog_capped alert.
 MAX_TURNS_PER_NIGHT = 25
 
-# Resolved in the last REFLECT_LOOKBACK_DAYS nights, not yet reflected on, and
-# written by a seat.
+# Resolved within the trailing REFLECT_LOOKBACK_DAYS+1-calendar-day window
+# ending run_date, not yet reflected on, and written by a seat.
 #
 # The resolved_at window rather than decisions.run_date: resolve_day resolves
 # at horizon, so a decision resolved tonight was MADE about five sessions ago
@@ -108,6 +126,23 @@ _DUE_WHERE = """
 _DUE = f"SELECT d.id AS decision_id, d.ticker, d.run_date {_DUE_WHERE} ORDER BY d.id LIMIT ?"
 _DUE_COUNT = f"SELECT COUNT(*) AS n {_DUE_WHERE}"
 
+# The mirror image of _DUE_WHERE's lower bound: a row that fell BELOW the
+# window instead of within it. due_reflections can never select such a row
+# again — every future run_date only pushes the window's lower bound later —
+# so reflection IS NULL here means the reflection will NEVER be written. Same
+# charter_version <> 'none' rule: a pm_timeout hold has nothing to reflect on
+# whether it is due or aged out. This is what aged_out_reflections alerts on;
+# without it, that permanent loss had no alert, no log line, and no audit
+# check anywhere in the pipeline.
+_AGED_OUT_WHERE = """
+  FROM decisions d
+  JOIN resolutions r ON r.decision_id = d.id
+ WHERE r.reflection IS NULL
+   AND r.resolved_at < ?
+   AND COALESCE(d.charter_version, '') <> 'none'
+"""
+_AGED_OUT = f"SELECT d.id AS decision_id, d.ticker {_AGED_OUT_WHERE} ORDER BY d.id"
+
 
 def log(msg: str) -> None:
     print(f"reflect_day: {msg}", flush=True)
@@ -125,9 +160,10 @@ def _window(run_date: str) -> tuple[str, str]:
 
 
 def due_reflections(conn, run_date: str) -> list[dict]:
-    """The decisions resolved in the last REFLECT_LOOKBACK_DAYS nights (ending
-    `run_date`) that still need a reflection, capped at MAX_TURNS_PER_NIGHT.
-    Use `due_count` alongside this to know whether the cap actually bound."""
+    """The decisions resolved in the trailing REFLECT_LOOKBACK_DAYS+1
+    calendar-day window ending `run_date` that still need a reflection,
+    capped at MAX_TURNS_PER_NIGHT. Use `due_count` alongside this to know
+    whether the cap actually bound."""
     start, end = _window(run_date)
     return [dict(r) for r in
             conn.execute(_DUE, (start, end, MAX_TURNS_PER_NIGHT))]
@@ -139,6 +175,17 @@ def due_count(conn, run_date: str) -> int:
     whether the cap bound and needs an alert."""
     start, end = _window(run_date)
     return conn.execute(_DUE_COUNT, (start, end)).fetchone()["n"]
+
+
+def aged_out_reflections(conn, run_date: str) -> list[dict]:
+    """Decisions that will NEVER be reflected on: `reflection IS NULL` and
+    `resolved_at` already fell below the lookback window's lower bound.
+    due_reflections' own WHERE requires `resolved_at >= ` that same bound, and
+    every later run_date only pushes the bound forward — so once a row crosses
+    it, no future fire will ever select it again. This is the permanent loss
+    the module docstring warns about, made visible instead of silent."""
+    start, _ = _window(run_date)
+    return [dict(r) for r in conn.execute(_AGED_OUT, (start,))]
 
 
 def reflect_and_log(conn, slack, clock, run_turn) -> dict:
@@ -163,11 +210,20 @@ def reflect_and_log(conn, slack, clock, run_turn) -> dict:
     make_turn today, costs nothing to keep).
 
     A turn that wrote nothing is logged per-decision to stdout (journald, not
-    Slack) as it happens, but alerted only ONCE, naming every decision that
-    wrote nothing — the repo's established pattern for a per-entity failure
-    (run_day.alert_missing_price_history's one alert naming every affected
-    ticker). A fully broken night must not turn into one Slack message per
-    resolved decision.
+    Slack) as it happens, but alerted only ONCE by THIS job, naming every
+    decision that wrote nothing — the repo's established pattern for a
+    per-entity failure (run_day.alert_missing_price_history's one alert
+    naming every affected ticker). That rollup is this job's OWN alerting; it
+    does not cover run_day.make_turn's separate seat_turn_failed alert, which
+    fires once per failing turn and is out of this job's control (see the
+    module docstring) — a fully broken night is not one Slack message, it is
+    one seat_turn_failed per failing turn plus this one rollup.
+
+    Also alerted once, but separately and unconditionally checked BEFORE any
+    turn runs: a decision whose resolved_at has fallen below the lookback
+    window's lower bound with no reflection ever written. due_reflections can
+    never select it again, so this is a permanent loss, not a retry — see
+    aged_out_reflections.
 
     That rollup alert, and the drain, both run in `finally`: reflection_frame
     or a DB error on a LATER decision must not skip either one. Appending the
@@ -184,6 +240,17 @@ def reflect_and_log(conn, slack, clock, run_turn) -> dict:
     counts = {"reflected": 0, "failed": 0}
     wrote_nothing: list[dict] = []
     try:
+        aged_out = aged_out_reflections(conn, run_date)
+        if aged_out:
+            named = ", ".join(f"{d['decision_id']} ({d['ticker']})"
+                              for d in aged_out)
+            log(f"aged out: {len(aged_out)} decision(s) will never be"
+                f" reflected on — {named}")
+            run_day._alert(conn, clock, "reflect_aged_out",
+                           f"reflect_aged_out — {len(aged_out)} decision(s)"
+                           f" fell out of the {REFLECT_LOOKBACK_DAYS}-night"
+                           f" lookback window with no reflection ever"
+                           f" written and will never be retried: {named}")
         total_due = due_count(conn, run_date)
         due = due_reflections(conn, run_date)
         if total_due > len(due):

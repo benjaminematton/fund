@@ -104,7 +104,7 @@ CREATE TABLE resolutions (
   realized_return REAL NOT NULL,
   alpha_vs_spy  REAL NOT NULL,
   invalidated   INTEGER NOT NULL DEFAULT 0,   -- invalidation condition hit early
-  reflection    TEXT,                         -- written by the deciding agent
+  reflection    TEXT,                         -- written by the reflect seat, never the deciding agent
   resolved_at   TEXT NOT NULL
 );
 
