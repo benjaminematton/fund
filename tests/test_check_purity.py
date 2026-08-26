@@ -421,6 +421,34 @@ BINDING_STANDS_CASES = [
             time = None
             return grabbed
     """, RULE_CLOCK_REF),
+    # Twin of the case above, and the pair states the rule that was never
+    # written down: `global` means the MODULE's binding, regardless of what any
+    # enclosing scope bound. Above there is no enclosing shadow; here `outer`
+    # binds `time = None` and `global` in `inner` reaches straight past it to
+    # the module anyway.
+    #
+    # Resolution used to follow the ENCLOSING scope, so the shadow silenced the
+    # check and this executed a real clock read while the lint said clean. It is
+    # a pin, not a red case — it passes today and must keep passing.
+    # Verified: inner() blocks 0.304s (executor controlled — the same shape
+    # without the sleep reports 0.001s). Deleting the `module_bindings`
+    # threading on a copy turns this case clean, so it pins that block and not
+    # something adjacent.
+    ("global reaches the module past an enclosing shadow", """
+        import time
+
+
+        def outer():
+            time = None
+
+            def inner():
+                global time
+                v = time.sleep(0.30)
+                time = None
+                return v
+
+            return inner
+    """, RULE_CLOCK_REF),
     # `nonlocal` onto an enclosing function's IMPORT. Twin of "nonlocal onto a
     # NON-import enclosing local" in CLEAN_CASES, and the difference between
     # them is the whole rule: an `import` inside a function is a function-local
