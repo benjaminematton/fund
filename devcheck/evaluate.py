@@ -8,6 +8,10 @@ from devcheck.model import Finding, Snapshot
 # deployment state last.
 CHECKS = (
     checks.check_paper_trading,
+    checks.check_trading_toolset,
+    checks.check_order_idempotency,
+    checks.check_outbox,
+    checks.check_db_broker_agreement,
 )
 
 

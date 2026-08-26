@@ -10,7 +10,7 @@ passed, and two were caught by luck.
 from __future__ import annotations
 
 from devcheck.evaluate import evaluate
-from devcheck.model import Snapshot
+from devcheck.model import OrderRow, Snapshot
 
 
 def _snap(**over) -> Snapshot:
@@ -59,3 +59,66 @@ def test_paper_trading_missing_alerts():
     findings = evaluate(_snap(droplet_env={}))
     paper = [f for f in findings if f.check == "paper_trading"]
     assert paper[0].severity == "alert"
+
+
+def _only(findings, check):
+    matches = [f for f in findings if f.check == check]
+    assert len(matches) == 1, f"expected exactly one {check}, got {matches}"
+    return matches[0]
+
+
+def test_trading_toolset_exec_only_is_ok():
+    assert _only(evaluate(_snap()), "trading_toolset").severity == "ok"
+
+
+def test_trading_toolset_second_seat_alerts():
+    """Negative control for invariant 2."""
+    f = _only(evaluate(_snap(seat_trading_toolsets={"exec": True, "pm": True})), "trading_toolset")
+    assert f.severity == "alert"
+    assert "pm" in f.detail
+
+
+def test_trading_toolset_exec_missing_alerts():
+    """Exec losing `trading` is silent otherwise: the day just never fills."""
+    f = _only(evaluate(_snap(seat_trading_toolsets={"exec": False})), "trading_toolset")
+    assert f.severity == "alert"
+
+
+def test_order_idempotency_ok_when_every_coid_is_a_ticket():
+    s = _snap(orders=[OrderRow("t-1", "NVDA")], tickets={"t-1": "NVDA"})
+    assert _only(evaluate(s), "order_idempotency").severity == "ok"
+
+
+def test_order_idempotency_alerts_on_unknown_coid():
+    """Negative control for invariant 5 — a coid that is not a ticket id
+    means an order the gate did not authorise, or a minted retry id."""
+    s = _snap(orders=[OrderRow("free-form", "NVDA")], tickets={"t-1": "NVDA"})
+    f = _only(evaluate(s), "order_idempotency")
+    assert f.severity == "alert"
+    assert "free-form" in f.detail
+
+
+def test_outbox_ok_when_drained():
+    assert _only(evaluate(_snap()), "outbox").severity == "ok"
+
+
+def test_outbox_alerts_on_backlog():
+    """Negative control for invariant 6 — Slack is the projection, and an
+    undrained outbox means it is silently stale."""
+    f = _only(evaluate(_snap(events_unposted=3)), "outbox")
+    assert f.severity == "alert"
+    assert "3" in f.detail
+
+
+def test_db_broker_agreement_ok_when_counts_match():
+    s = _snap(orders=[OrderRow("t-1", "NVDA")], tickets={"t-1": "NVDA"}, broker_fill_count=1)
+    assert _only(evaluate(s), "db_broker_agreement").severity == "ok"
+
+
+def test_db_broker_agreement_alerts_when_broker_saw_more():
+    """Negative control for invariant 6 — SQLite is the source of truth, so
+    the broker having seen fills the DB has no row for is a divergence."""
+    s = _snap(orders=[OrderRow("t-1", "NVDA")], tickets={"t-1": "NVDA"}, broker_fill_count=3)
+    f = _only(evaluate(s), "db_broker_agreement")
+    assert f.severity == "alert"
+    assert "1" in f.detail and "3" in f.detail
