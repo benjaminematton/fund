@@ -119,6 +119,13 @@ as much a guess).
   rows in a shape it can interpret; a row written by `get-aligned` or `split-the-plan` is left alone,
   never reinterpreted.
 - **region-declared** — see below; a lane with no declared region is excluded here, not carried forward
+- **not waiting on a human** — no label marking it as awaiting a ruling (`needs-decision`, or the
+  repo's equivalent). `blocked_by` models **issue-to-issue edges only**, so an issue blocked on a
+  decision nobody has made reports `blocked_by == 0` and reads as ready. Measured 2026-08-25 on the
+  first board built for `fund`: #38 and #42 both carried `needs-decision` and both reported
+  `blocked_by == 0`, and #38 was the second candidate lane the first dispatch would have handed out.
+  Dispatching such a lane does not get the decision made; it gets a seat to guess at it. Phase 3
+  surfaces it as a flag to the human instead, naming the decision it waits on
 
 in map order. These are the **candidate lanes**.
 
@@ -379,9 +386,20 @@ every repo; in one with no map issue it degrades per §4 Phase 0.
 **B. The `fund` board migration** — one-time, in the `fund` repo:
 
 - create the phase map issue
-- make the 8 open issues its sub-issues, in the order they should be worked
+- make the open issues its sub-issues, in the order they should be worked. **Read the live count from
+  `gh issue list`, never from this document** — it said "the 8 open issues" and was stale inside a day,
+  the 2026-08-25 audit having filed #38–#46 and taken it to 17. A count written into a spec is a
+  measurement with an expiry date on it
+- **how many to board is a live question, and it was ruled on.** Map order *is* the priority decision,
+  so a map with seventeen children in an invented order is worth less than one with five in a real
+  one. That fork was put to Benjamin on 2026-08-25 and he chose to board the full set in a proposed
+  severity-then-dependency order. Recorded because it is a decision, not a default — a later board
+  should re-ask rather than inherit it
 - add `blocked_by` edges where a real dependency exists
-- mark shipped plans dead with a status header rather than ticking 359 boxes
+- retire shipped plans with a status header rather than ticking 359 boxes. **State the evidence, not
+  the verdict**: which artifact is on master, and which issue tracks whatever remains. Two of the
+  eight had live follow-ups and one had a session working it, so "dead" would have been false while
+  the header still did the job of keeping anyone from reading the checkboxes as state
 - one line in `docs/agents/issue-tracker.md`: claims key on `sessionId` in `map.md`, not on the GitHub
   assignee
 
