@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from devcheck import checks
 from devcheck.model import Finding, Snapshot
 
@@ -37,4 +39,19 @@ def evaluate(snapshot: Snapshot) -> list[Finding]:
             out.append(result)
         else:
             out.extend(result)
+    return out
+
+
+def apply_suppression(findings: list[Finding], suppressed: frozenset[str]) -> list[Finding]:
+    """Downgrade suppressed checks to ok and say so.
+
+    Never drops the row. A vanished row is indistinguishable from a check
+    that never ran, and the whole package exists to remove that ambiguity.
+    """
+    out = []
+    for f in findings:
+        if f.check in suppressed and f.severity != "ok":
+            out.append(replace(f, severity="ok", detail=f"{f.detail} [suppressed by .claude/health.md]"))
+        else:
+            out.append(f)
     return out
