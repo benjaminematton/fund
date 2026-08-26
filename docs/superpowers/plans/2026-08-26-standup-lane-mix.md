@@ -384,9 +384,6 @@ region invisible to dispatch. **Its age comes from the decision list**, where ev
 how many days it has been open and that count carries forward the same way a decision's does — not from
 a stamp nothing writes.
 
-The rest of that rule:
-region invisible to dispatch.
-
 **Why the second test exists**, since it is the one an implementer will be tempted to drop: without
 it, a run that releases an incumbent dispatches every candidate in that region at once.
 Measured: when one lane's owner exited, its issue was released and the five children sharing its
