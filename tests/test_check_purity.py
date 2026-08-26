@@ -933,12 +933,31 @@ CALLABLE_CAPTURE_CASES = [
             return _y.sleep(0.30)
     """, RULE_CLOCK_REF),
     # DISTINCT MECHANISM, and the one an obvious fix would miss: here the
-    # walrus sits in no `ast.Assign` at all. Extending the alias pass by
-    # walking `Assign.value` for a NamedExpr fixes the three above and leaves
-    # this red. The `if` and `while` condition shapes were measured and are the
-    # same mechanism as this one — documented rather than duplicated, since
-    # three spellings of one arm is volume, not coverage. Master misses it too:
-    # its `_dotted` cannot take a NamedExpr as an attribute base.
+    # walrus sits in no `ast.Assign` at all, and it is used directly as an
+    # ATTRIBUTE BASE. Extending the alias pass alone leaves this red. Master
+    # misses it too: its `_dotted` cannot take a NamedExpr as an attribute base.
+    #
+    # WHY `if`/`while` CONDITIONS ARE NOT HERE — corrected 2026-08-25, and the
+    # earlier reason was wrong. They are NOT this mechanism. Measured by
+    # ablating each arm of the fix separately:
+    #
+    #     shape             no _dotted arm   no alias arm   carried by
+    #     function scope    CLOCK            clean          alias
+    #     module scope      CLOCK            clean          alias
+    #     class scope       CLOCK            clean          alias
+    #     chained           CLOCK            clean          alias
+    #     datetime          CLOCK            clean          alias
+    #     IF condition      CLOCK            clean          alias
+    #     WHILE condition   CLOCK            clean          alias
+    #     RETURN expr       clean            CLOCK          _dotted
+    #
+    # So `if`/`while` ride the ALIAS arm, which the four cases above already
+    # pin, and only this case rides `_dotted`. The conclusion is unchanged —
+    # they need no separate cases — but the reason is the opposite of what was
+    # first written, and it matters: anyone deleting the alias arm believing
+    # `_dotted` covered `if`/`while` would be wrong on SEVEN of these eight
+    # rows. A right answer resting on a wrong mechanism is the failure this
+    # file exists to catch, so the table is recorded rather than the claim.
     ("walrus alias in a return expression (no enclosing Assign)", """
         import time as _src
 
