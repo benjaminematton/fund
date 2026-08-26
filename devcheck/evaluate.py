@@ -17,6 +17,8 @@ CHECKS = (
     checks.check_journals,
     checks.check_reflection,
     checks.check_position_coverage,
+    checks.check_deploy_state,
+    checks.check_services,
 )
 
 

@@ -10,7 +10,7 @@ passed, and two were caught by luck.
 from __future__ import annotations
 
 from devcheck.evaluate import evaluate
-from devcheck.model import OrderRow, Position, Snapshot
+from devcheck.model import OrderRow, Position, ServiceResult, Snapshot
 
 
 def _snap(**over) -> Snapshot:
@@ -208,3 +208,38 @@ def test_coverage_alerts_on_partial_cover():
 def test_coverage_ok_with_no_positions():
     """Flat is not exposed. The check must not fire on an empty book."""
     assert _only(evaluate(_snap(positions=[])), "position_coverage").severity == "ok"
+
+
+def test_deploy_state_ok_when_level():
+    assert _only(evaluate(_snap()), "deploy_state").severity == "ok"
+
+
+def test_deploy_state_warns_when_behind():
+    """Behind is normal and worth seeing — the box is not running the code
+    the suite just went green against."""
+    s = _snap(droplet_head="aaa1111", origin_master="bbb2222", commits_behind=22)
+    f = _only(evaluate(s), "deploy_state")
+    assert f.severity == "warn"
+    assert "22" in f.detail
+
+
+def test_services_ok_when_all_succeeded():
+    s = _snap(services={"fund-daily": ServiceResult("fund-daily", "success", "2026-08-21T09:35")})
+    assert _only(evaluate(s), "services").severity == "ok"
+
+
+def test_services_alert_on_failure():
+    """2026-08-21: fund-daily.service exited 1 at 09:38 and sat 8h."""
+    s = _snap(services={"fund-daily": ServiceResult("fund-daily", "exit-code", "2026-08-21T09:38")})
+    f = _only(evaluate(s), "services")
+    assert f.severity == "alert"
+    assert "fund-daily" in f.detail
+
+
+def test_services_alert_when_droplet_unreachable():
+    """Spec §4: droplet unreachable renders as a finding; other checks still
+    run. Absence of data is never rendered as health."""
+    s = _snap(services={"fund-daily": ServiceResult("fund-daily", "unreachable", "")})
+    f = _only(evaluate(s), "services")
+    assert f.severity == "alert"
+    assert "unreachable" in f.detail

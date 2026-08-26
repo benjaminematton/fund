@@ -168,3 +168,30 @@ def check_position_coverage(s: Snapshot) -> Finding:
         "alert",
         "; ".join(parts) + " — the uncovered shares have no code path that will protect them",
     )
+
+
+def check_deploy_state(s: Snapshot) -> Finding:
+    """Deployment state — is the code under test the code that is running.
+
+    Warn, not alert: being behind is the normal state between a merge and a
+    deploy. It is worth seeing because a green suite says nothing about the
+    box, and on 2026-08-21 four sessions each held a different answer.
+    """
+    if s.commits_behind == 0:
+        return Finding("deploy_state", "ok", f"droplet level with origin/master ({s.origin_master})")
+    return Finding(
+        "deploy_state",
+        "warn",
+        f"droplet at {s.droplet_head}, origin/master at {s.origin_master} — "
+        f"{s.commits_behind} commit(s) behind",
+    )
+
+
+def check_services(s: Snapshot) -> Finding:
+    """The scheduled units that constitute the fund actually running."""
+    bad = [r for r in s.services.values() if r.result != "success"]
+    if not bad:
+        names = ", ".join(sorted(s.services))
+        return Finding("services", "ok", f"last run succeeded: {names}" if names else "no units read")
+    parts = [f"{r.unit}: {r.result}" + (f" at {r.last_run}" if r.last_run else "") for r in bad]
+    return Finding("services", "alert", "; ".join(sorted(parts)))
