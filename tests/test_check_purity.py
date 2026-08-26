@@ -28,10 +28,32 @@ injected-Clock pattern the invariant exists to *require*. A lint that flags
 correct code is the failure mode that gets a lint deleted.
 
 HOW EVERY EVASION IN THIS BRANCH WAS FOUND, and the one thing to know before
-adding a case. Six evasions shipped past a green suite. Not one was found by
-reasoning about a case; every one was found by CROSSING TWO AXES nobody had
-crossed — enclosing-shadow x declaration-kind, nested-scope-kind x where-the-
-read-sits, walrus x alias. The reason is structural:
+adding a case. Six evasions shipped past a green suite. All six were settled by
+EXECUTION and none by argument — but the method that FOUND them was mostly not
+an instrument:
+
+    #  evasion                                   found by
+    1  nonlocal onto an enclosing import         hand counterexample, falsifying
+                                                 a written claim
+    2  walrus self-use in its own comprehension  hand counterexample, falsifying
+                                                 the KNOWN AND DELIBERATE note
+    3  global past an enclosing shadow           ablation
+    4  global with no assignment                 hand attack (generator missed)
+    5  function-local import under global        generated gate (A2 x A3)
+    6  walrus alias not propagated               hand attack (generator missed)
+
+FOUR OF SIX CAME FROM READING A SPECIFIC CLAIM AND TRYING TO BREAK IT. Two came
+from an instrument, and every instrument in play missed at least one that a
+hand-built counterexample caught. Generators confirmed and BOUNDED the
+findings; claim-falsification FOUND most of them — and it is also what produced
+all four vacuous guards below. So the first move on this file is not to build a
+generator: it is to read what the code and the comments claim about themselves
+and attack the claim.
+
+What the instruments contributed was the axis discipline, which is what makes a
+sweep worth running once you have a claim to bound — enclosing-shadow x
+declaration-kind, nested-scope-kind x where-the-read-sits, walrus x alias. The
+reason those pairs were where the bugs lived is structural:
 
     EVERY CASE FIXES ONE VALUE OF EVERY AXIS IT DOES NOT NAME.
 
