@@ -27,6 +27,12 @@ def _alerts(conn) -> list[str]:
     return [json.loads(r["payload"])["text"] for r in rows]
 
 
+def _payloads(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'alert' ORDER BY id").fetchall()
+    return [json.loads(r["payload"]) for r in rows]
+
+
 @pytest.fixture
 def conn(tmp_path):
     c = connect(str(tmp_path / "t.sqlite"))
@@ -48,6 +54,10 @@ def test_changed_field_alerts_naming_old_and_new(conn):
     assert n == 1
     text = _alerts(conn)[0]
     assert "no_shorting" in text and "True" in text and "False" in text
+    payload = _payloads(conn)[0]
+    assert payload["code"] == "account_precondition_drift"
+    assert payload["drift"] == {"field": "no_shorting", "expected": True,
+                                "actual": False}
 
 
 def test_one_alert_per_drifted_field(conn):

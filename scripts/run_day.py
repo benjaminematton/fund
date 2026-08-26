@@ -72,8 +72,9 @@ from market.features import (build_market_inputs, unmapped_holdings,  # noqa: E4
 from orchestrator.clock import et_run_date, iso                    # noqa: E402
 from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
                                 run_day)
+from orchestrator.ingest_guard import account_snapshot             # noqa: E402
 from orchestrator.preconditions import assert_account_config_unchanged  # noqa: E402
-from slackkit.outbox import append_event, drain                    # noqa: E402
+from slackkit.outbox import append_alert, drain                    # noqa: E402
 from state.db import connect                                       # noqa: E402
 
 # Core env. ALPACA_PAPER_TRADE is checked separately and first (invariant 1).
@@ -279,7 +280,7 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
                 _seat_session(cfg, db_path, clock, prompt, snapshot,
                               journals_root))
         except Exception as exc:
-            _alert(conn, clock,
+            _alert(conn, clock, "seat_turn_failed",
                    f"{seat}_turn_failed — {type(exc).__name__}: {exc};"
                    " stage default applies (default is HOLD)")
             return
@@ -294,7 +295,8 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
                 # longer open, so only genuinely unexecuted ones can accuse it
                 check_tool_calls(names, len(open_tickets(conn, iso(clock.now()))))
             except Exception as exc:
-                _alert(conn, clock, f"exec_turn_violation — {exc}")
+                _alert(conn, clock, "exec_turn_violation",
+                       f"exec_turn_violation — {exc}")
 
     return run
 
@@ -336,9 +338,9 @@ def record_cost_guarded(conn, clock, run_date: str, seat: str, result,
             " trading continues; the audit will flag the missing cost row")
 
 
-def _alert(conn, clock, text: str, **payload) -> None:
+def _alert(conn, clock, code: str, text: str, **payload) -> None:
     log(f"ALERT {text}")
-    append_event(conn, "alert", {"text": text, **payload}, iso(clock.now()))
+    append_alert(conn, code, text, now_iso=iso(clock.now()), **payload)
 
 
 # --- market-data gaps -------------------------------------------------------
@@ -363,7 +365,7 @@ def alert_missing_price_history(conn, clock, close_df, positions) -> None:
                    if total_blackout else
                    "today's correlations are understated and sizing is looser"
                    " than it should be")
-    _alert(conn, clock,
+    _alert(conn, clock, "missing_price_history",
            f"no usable price history for held {', '.join(gaps)} — excluded"
            f" from the book-correlation basket: {consequence}, until the"
            " feed recovers",
@@ -380,7 +382,7 @@ def alert_unmapped_sectors(conn, clock, positions, sectors) -> None:
     gaps = unmapped_holdings(positions, sectors)
     if not gaps:
         return
-    _alert(conn, clock,
+    _alert(conn, clock, "unmapped_sector",
            f"no config/sectors.yaml entry for held {', '.join(gaps)} —"
            " sector book value is NaN, so every buy fails closed"
            " (gate_error) until the yaml names them",
@@ -425,7 +427,8 @@ def report_audit(conn, slack, db_path: str, run_date: str, clock) -> int:
         log(f"AUDIT CLEAN {run_date}")
         return 0
     now = iso(clock.now())
-    _alert(conn, clock, f"audit {run_date} FAILED: " + "; ".join(problems),
+    _alert(conn, clock, "audit_failed",
+           f"audit {run_date} FAILED: " + "; ".join(problems),
            **{audit_day.SELF_ALERT_KEY: True})
     drain(conn, slack, now)
     return 1
@@ -455,7 +458,7 @@ def guarded(conn, slack, clock, body: Callable[[], int]) -> int:
                 " traded (default is HOLD).")
         log(f"ALERT {text}")
         try:
-            append_event(conn, "alert", {"text": text}, iso(clock.now()))
+            append_alert(conn, "run_day_failed", text, now_iso=iso(clock.now()))
             drain(conn, slack, iso(clock.now()))
         except Exception as inner:
             log(f"could not record/post that alert ({type(inner).__name__}:"
@@ -518,7 +521,21 @@ def _trading_day(conn, slack, clock, source, run_date: str, db_path: str,
 
     watchlist = load_watchlist(WATCHLIST_YAML)
     sectors = yaml.safe_load(SECTORS_YAML.read_text()) or {}
-    account = source.account_state()
+    # The gate sizes the ENTIRE day from this one payload, so it is validated
+    # before anything reads it: an empty positions list does not fail
+    # downstream, it sizes (held_qty 0 blocks every sell, the empty book takes
+    # the permissive correlation tier). None means the payload could not be
+    # trusted; the alert is already appended and no stage may run.
+    account = account_snapshot(conn, source=source, now_iso=iso(clock.now()),
+                               sleep=time.sleep)
+    if account is None:
+        # Drained here because run_day drains per stage and no stage will run,
+        # so the alert would otherwise sit in the outbox until the next day —
+        # the same reason the account-config precondition drains explicitly.
+        log("ALERT positions_payload_lost — the broker's positions payload"
+            " could not be trusted; no stages run, nothing traded (exit 1)")
+        drain(conn, slack, iso(clock.now()))
+        return 1
     universe = sorted(set(watchlist) | set(account.get("positions") or {}))
     close_df = source.close_frame(universe, end=pd.Timestamp(clock.now()))
     alert_missing_price_history(conn, clock, close_df,

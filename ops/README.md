@@ -166,12 +166,20 @@ continues a comment across a trailing backslash where a shell would not.
 
 ### The heartbeat check
 
-`fund-daily.service` pings `HC_PING_URL` from `ExecStartPost`, so a ping means
-the day completed. The watchdog alerts on the **absence** of one — the single
-failure mode `OnFailure` cannot see, because a timer that never fires produces
-nothing for systemd to react to. Provisioning a fresh host is not finished
-until this exists; without it the host is silent in exactly the case that
-matters, and silence reads as a quiet day.
+`fund-daily.service` pings `HC_PING_URL/${EXIT_STATUS}` from `ExecStopPost`, so
+a ping means the day **ran**, and the exit status says whether it passed — 0 is
+a success to healthchecks.io, nonzero a failure. The watchdog alerts on the
+**absence** of one — the single failure mode `OnFailure` cannot see, because a
+timer that never fires produces nothing for systemd to react to. Provisioning a
+fresh host is not finished until this exists; without it the host is silent in
+exactly the case that matters, and silence reads as a quiet day.
+
+**It was `ExecStartPost` until 2026-08-24**, which fires only on success. A
+failed run therefore sent nothing and the watchdog fired — but `OnFailure` had
+already alerted on that same run, so silence meant "the box is dead" *or* "the
+run failed", ambiguous precisely where the watchdog is the only thing that can
+speak. If you are deploying a version at or before that date, the old form is
+what you will find on the host.
 
 On healthchecks.io, the check must be in **cron** mode:
 
@@ -414,13 +422,22 @@ default is safe and idempotent; anything that drops, renames, rewrites or
 backfills a column is not a deploy step and needs planning on its own.
 Take a fresh backup immediately before the pull.
 
-**`make preflight` does NOT run the migration, and a green preflight is not
-evidence that it ran.** Preflight drives `eval_suite.py`, which builds a fresh
-per-trial DB under `evals/traces/` and never opens `$FUND_DB`. Measured on
-2026-08-19: after a clean pull and a green preflight, the live DB still had
-zero of the six new columns. Left there, the first `connect()` against it would
-have been the next 09:35 `run_day` — the schema changing unattended, mid-day,
-with a green preflight standing as false reassurance that it already had.
+**`make preflight` does NOT run the migration.** It now *reports* on the live
+DB — `scripts/preflight_schema.py` opens `$FUND_DB` read-only (never
+`connect()`, which would apply the migration it is reporting on) and exits 0
+ok, 1 migrations pending, 2 unexplained divergence, 3 cannot determine. Read
+which one off that step's stderr, not off `make`'s status: make collapses any
+recipe failure to its own exit 2. A green preflight is now evidence that every
+table and column `state/schema.sql` declares is present — **names only**, so
+types, `NOT NULL`, `CHECK` and `UNIQUE` are not compared and a constraint lost
+in a hand-edited table still reads green. Until 2026-08-25 it drove
+`eval_suite.py` alone,
+which builds a fresh per-trial DB under `evals/traces/` and never opened
+`$FUND_DB`: measured on 2026-08-19, after a clean pull and a green preflight,
+the live DB still had zero of the six new columns. Left there, the first
+`connect()` against it would have been the next 09:35 `run_day` — the schema
+changing unattended, mid-day, with a green preflight standing as false
+reassurance that it already had.
 
 So fire it deliberately, while you are watching and the backup is fresh:
 

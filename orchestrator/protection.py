@@ -27,7 +27,7 @@ import json
 import sqlite3
 from typing import Callable
 
-from slackkit.outbox import append_event
+from slackkit.outbox import append_alert
 from state.protection import (CLOSING_SIDE, STOP_TYPES, log_observed,
                               normalized, qty_of)
 
@@ -107,11 +107,14 @@ def _promised_stop(conn: sqlite3.Connection, symbol: str) -> float | None | obje
 
 
 def _evaluate(conn: sqlite3.Connection, positions: list,
-              orders: list) -> list[str]:
-    """Alert texts for ONE snapshot of the account. Reads only; appends
-    nothing, so the caller can evaluate a snapshot, wait, and evaluate a
-    fresher one without having written anything it must retract."""
-    out: list[str] = []
+              orders: list) -> list[tuple[str, str]]:
+    """(symbol, alert text) pairs for ONE snapshot of the account. Reads
+    only; appends nothing, so the caller can evaluate a snapshot, wait, and
+    evaluate a fresher one without having written anything it must retract.
+    The symbol travels alongside the text so the caller can key the alert's
+    `ticker` on the actual position, rather than re-parsing it back out of
+    prose."""
+    out: list[tuple[str, str]] = []
     for raw in positions:
         p = raw if isinstance(raw, dict) else {}
         symbol = str(p.get("symbol") or "?")
@@ -119,33 +122,34 @@ def _evaluate(conn: sqlite3.Connection, positions: list,
         held = qty_of(p.get("qty"))
         closing_side = CLOSING_SIDE.get(side)
         if held is None or closing_side is None:
-            out.append(f"{symbol} position UNVERIFIED — cannot read"
+            out.append((symbol, f"{symbol} position UNVERIFIED — cannot read"
                        f" side={p.get('side')!r} qty={p.get('qty')!r}, so"
-                       " whether it is protected is unknown")
+                       " whether it is protected is unknown"))
             continue
         covered = _covering_qty(orders, symbol, closing_side)
         if covered is None:
-            out.append(f"{symbol} {held} UNVERIFIED — a live order for it"
-                       " could not be read, so its cover cannot be confirmed")
+            out.append((symbol, f"{symbol} {held} UNVERIFIED — a live order"
+                       " for it could not be read, so its cover cannot be"
+                       " confirmed"))
             continue
         if covered >= held:
             continue
         promised = _promised_stop(conn, symbol)
         if promised is _UNKNOWN:
-            out.append(f"{symbol} {held} is held with NO live protective order"
-                       " and no fund record of opening it — provenance"
-                       " unknown, so whether it should be protected cannot be"
-                       " established")
+            out.append((symbol, f"{symbol} {held} is held with NO live"
+                       " protective order and no fund record of opening"
+                       " it — provenance unknown, so whether it should be"
+                       " protected cannot be established"))
         elif promised is not None:
             # "NO live protective order (30 of 80 stopped)" contradicts
             # itself. Say which of the two situations this actually is.
             shortfall = ("the broker has NO live protective order" if not covered
                          else f"the broker covers only {covered} of {held}"
                               " shares")
-            out.append(f"{symbol} {held} was ticketed with a stop at"
+            out.append((symbol, f"{symbol} {held} was ticketed with a stop at"
                        f" {promised} but {shortfall} — the position is exposed"
                        " and no code path will protect it; place or restore a"
-                       " stop manually")
+                       " stop manually"))
         # promised is None: the PM opened this without a stop on purpose
         # (charters/pm.md:25). Standing exposure, not a fault — reported in
         # the EOD digest, not as an alert.
@@ -177,8 +181,21 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
     the findings to protect a record that is nobody's source of truth."""
     nap = sleep or (lambda _s: None)
 
-    def alert(text: str) -> None:
-        append_event(conn, "alert", {"text": text}, now_iso)
+    def alert(text: str, ticker: str) -> None:
+        append_alert(conn, "unprotected_position", text,
+                     now_iso=now_iso, ticker=ticker)
+
+    def unverified(text: str) -> int:
+        # Distinct from `alert()`'s code on purpose (F1): this fires with no
+        # ticker, and `gh issue list --label` matches on has-label, not
+        # has-exact-label-set — so under one shared code, an open
+        # ticker-keyed `unprotected_position` issue for some symbol would
+        # silently satisfy the lookup for THIS unrelated, unkeyed finding.
+        # An unverifiable broker state must never hide behind a known
+        # per-position exposure. Mirrors accounting_shortfall/
+        # accounting_unverified below.
+        append_alert(conn, "protection_unverified", text, now_iso=now_iso)
+        return 1
 
     def why(e: Exception) -> str:
         # The type alone ("ConnectionError") is not actionable at 16:05 on a
@@ -189,16 +206,16 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
         return list(broker.open_orders())
 
     if broker is None:
-        alert("position protection UNVERIFIED — no broker wired into the run;"
-              " a held position could be unprotected and nothing would say so")
-        return 1
+        return unverified(
+            "position protection UNVERIFIED — no broker wired into the run;"
+            " a held position could be unprotected and nothing would say so")
     try:
         positions = list(broker.open_positions())
     except Exception as e:
-        alert("position protection UNVERIFIED — could not read positions"
-              f" ({why(e)}); a held position could be unprotected and nothing"
-              " would say so")
-        return 1
+        return unverified(
+            "position protection UNVERIFIED — could not read positions"
+            f" ({why(e)}); a held position could be unprotected and nothing"
+            " would say so")
     if not positions:
         return 0
 
@@ -215,8 +232,7 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
         seen_orders = read_orders()
         problems = _evaluate(conn, positions, seen_orders)
     except Exception as e:
-        alert(unread("read", e))
-        return 1
+        return unverified(unread("read", e))
     if problems:
         # An OTO stop leg is created 'held' and can lag its parent in the API
         # by moments — and this runs immediately after reconciliation, which
@@ -245,10 +261,9 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
             seen_orders = read_orders()
             problems = _evaluate(conn, positions, seen_orders)
         except Exception as e:
-            alert(unread("re-read", e))
-            return 1
-    for text in problems:
-        alert(text)
+            return unverified(unread("re-read", e))
+    for symbol, text in problems:
+        alert(text, ticker=symbol)
 
     # LAST, and in its own try. The alerts above are already written, so a
     # failure here cannot cost the day a finding — it becomes its own alert
@@ -270,10 +285,15 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
     try:
         log_observed(conn, seen_orders, now_iso=now_iso)
     except Exception as e:
-        alert(f"protection log UNWRITTEN — could not RECORD what was observed"
-              f" ({why(e)}); the checks above ran on a live broker read and"
-              " stand, but this run left no record of what was protecting"
-              " each position")
+        # Its own code, and no ticker. A failed RECORD is not a finding about
+        # any one position, so it cannot borrow `unprotected_position`; and
+        # `protection_unverified` would assert the checks above did not stand,
+        # which is the opposite of what happened.
+        append_alert(conn, "protection_log_unwritten",
+                     f"protection log UNWRITTEN — could not RECORD what was"
+                     f" observed ({why(e)}); the checks above ran on a live"
+                     " broker read and stand, but this run left no record of"
+                     " what was protecting each position", now_iso=now_iso)
         return len(problems) + 1
     return len(problems)
 
@@ -281,13 +301,18 @@ def assert_positions_protected(conn: sqlite3.Connection, *, broker,
 # --- the mirror: shares the records account for that the broker does not hold -
 
 
-def _recorded_holdings(conn: sqlite3.Connection) -> dict[str, int]:
+def recorded_holdings(conn: sqlite3.Connection) -> dict[str, int]:
     """Net shares per symbol the fund's OWN order records account for.
 
     THE SEAM. The fund stores no position — `state/schema.sql` has no positions
     table — so what it holds is *implied* by its filled orders. If a later
     design stores that fact directly, swap this one read; nothing above it
     changes.
+
+    Public because orchestrator/ingest_guard.py reads it too: the same seam
+    answers "is the fund's book empty?" at ingestion and "does the broker
+    still hold what we opened?" at the close. Two readers of one seam is the
+    point of naming it a seam.
 
     `filled_qty > 0` rather than `status = 'filled'`, for the same reason
     _promised_stop does it: reconcile.py records a timed-out partial as
@@ -376,17 +401,19 @@ def assert_positions_accounted(conn: sqlite3.Connection, *, broker,
     nap = sleep or (lambda _s: None)
 
     def alert(text: str, accounting: dict) -> None:
-        append_event(conn, "alert",
-                     {"text": text, "accounting": accounting}, now_iso)
+        append_alert(conn, "accounting_shortfall", text, now_iso=now_iso,
+                     ticker=accounting["symbol"],
+                     clears=bool(accounting.get("cleared")),
+                     accounting=accounting)
 
     def why(e: Exception) -> str:
         return f"{type(e).__name__}: {str(e)[:120]}"
 
     def unverified(text: str) -> int:
-        append_event(conn, "alert", {"text": text}, now_iso)
+        append_alert(conn, "accounting_unverified", text, now_iso=now_iso)
         return 1
 
-    recorded = {s: q for s, q in _recorded_holdings(conn).items() if q > 0}
+    recorded = {s: q for s, q in recorded_holdings(conn).items() if q > 0}
     if not recorded:
         return 0
 

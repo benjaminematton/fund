@@ -139,7 +139,8 @@ def test_account_state_carries_last_equity():
     numbers the circuit breaker does."""
     class Trading:
         def get_account(self):
-            return _Clock(equity="101500", last_equity="101000", cash="30000")
+            return _Clock(equity="101500", last_equity="101000", cash="30000",
+                          long_market_value="71500")
         def get_all_positions(self):
             return []
 
@@ -157,7 +158,8 @@ def test_account_state_last_equity_is_nan_when_unparseable():
     a P&L computed from it fails closed instead of reporting a wrong day."""
     class Trading:
         def get_account(self):
-            return _Clock(equity="101500", last_equity=None, cash="30000")
+            return _Clock(equity="101500", last_equity=None, cash="30000",
+                          long_market_value="71500")
         def get_all_positions(self):
             return []
 
@@ -166,18 +168,83 @@ def test_account_state_last_equity_is_nan_when_unparseable():
     assert math.isnan(src.account_state()["last_equity"])
 
 
+def test_account_state_carries_long_market_value():
+    """The one number that tells an EMPTY positions payload apart from a LOST
+    one. orchestrator/ingest_guard.py refuses the day when the list is empty
+    and this is not zero: the account is carrying value the list did not
+    report, so every gate input computed from that list is a fiction."""
+    class Trading:
+        def get_account(self):
+            return _Clock(equity="101500", last_equity="101000", cash="30000",
+                          long_market_value="71500")
+        def get_all_positions(self):
+            return []
+
+    src = _bare_source()
+    src._trading = Trading()
+    assert src.account_state()["long_market_value"] == 71_500.0
+
+
+def test_account_state_long_market_value_is_nan_when_unparseable():
+    """Same posture as last_equity: NaN, not 0.0. A zero here would read as
+    'the account is flat' and license exactly the empty-book sizing this
+    field exists to block, so an unreadable value must fall through to
+    ingest_guard's records tie-breaker instead."""
+    class Trading:
+        def get_account(self):
+            return _Clock(equity="101500", last_equity="101000", cash="30000",
+                          long_market_value=None)
+        def get_all_positions(self):
+            return []
+
+    src = _bare_source()
+    src._trading = Trading()
+    assert math.isnan(src.account_state()["long_market_value"])
+
+
 # ---- open_positions / open_orders: the protection assertion's broker reads ----
 
 def test_installed_alpaca_py_exposes_the_read_apis_we_call():
     """Same posture as the cancel-wiring pin: a wrong alpaca-py method name
     can otherwise only fail LIVE, and this read is what stands between a naked
-    position and nobody noticing."""
+    position and nobody noticing. long_market_value is pinned for the same
+    reason one layer over: if the field is renamed away, account_state raises
+    at 09:00 instead of silently reporting a flat account."""
     from alpaca.trading.client import TradingClient
+    from alpaca.trading.models import TradeAccount
     from alpaca.trading.requests import GetOrdersRequest
     assert callable(TradingClient.get_all_positions)
     assert callable(TradingClient.get_orders)
     for field in ("status", "nested", "limit"):
         assert field in GetOrdersRequest.model_fields
+    assert "long_market_value" in TradeAccount.model_fields
+
+
+def test_long_market_value_is_the_type_ingest_guard_reasons_about():
+    """3374ec8's posture, applied one field over. ingest_guard's whole
+    unreadable-value branch rests on two properties of this field, and
+    neither is written down anywhere else: it arrives as a STRING (so
+    _safe_float, not float, is the right coercion), and it is OPTIONAL with
+    a None default (so Alpaca dropping it from the wire is a silent NaN, not
+    a raise — the reason account_state's comment calls that case quiet).
+
+    If a future alpaca-py makes it a float, _safe_float still works and this
+    test still passes. If it makes it REQUIRED, the silent-NaN branch becomes
+    unreachable and ingest_guard's docstring is stale — that is the change
+    worth being told about, so it is asserted rather than assumed."""
+    from alpaca.trading.models import TradeAccount
+
+    field = TradeAccount.model_fields["long_market_value"]
+    py_types = {a for a in getattr(field.annotation, "__args__",
+                                   (field.annotation,))
+                if a is not type(None)}
+    assert py_types == {str}, (
+        f"long_market_value is now {py_types}, not str — re-read"
+        " market/source_alpaca.py's coercion and ingest_guard._as_dollars")
+    assert not field.is_required() and field.default is None, (
+        "long_market_value is no longer optional-with-None — a dropped field"
+        " now raises instead of arriving as NaN, and"
+        " orchestrator/ingest_guard.py's unreadable branch is stale")
 
 
 def test_open_positions_unwraps_alpaca_enums():

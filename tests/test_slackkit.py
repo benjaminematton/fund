@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -726,6 +727,44 @@ def test_real_slack_leaves_every_other_slack_error_transient():
     with pytest.raises(SlackApiError) as exc:
         slack.post("#pnl", "hi")
     assert not isinstance(exc.value, PermanentPostError)
+
+
+def test_append_alert_carries_code_ticker_and_extra_payload(fund_db):
+    conn = fund_db
+    from slackkit.outbox import append_alert
+    rowid = append_alert(conn, "unprotected_position", "NVDA 40 exposed",
+                         now_iso="2026-08-24T13:37:54+00:00", ticker="NVDA",
+                         accounting={"symbol": "NVDA", "held": 40})
+    row = conn.execute("SELECT kind, payload FROM events WHERE id=?",
+                       (rowid,)).fetchone()
+    assert row["kind"] == "alert"
+    assert json.loads(row["payload"]) == {
+        "text": "NVDA 40 exposed",
+        "code": "unprotected_position",
+        "ticker": "NVDA",
+        "accounting": {"symbol": "NVDA", "held": 40},
+    }
+
+
+def test_append_alert_omits_absent_ticker_and_clears(fund_db):
+    conn = fund_db
+    from slackkit.outbox import append_alert
+    rowid = append_alert(conn, "pm_timeout", "pm_timeout AAPL — defaulted to hold",
+                         now_iso="2026-08-24T13:36:11+00:00")
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM events WHERE id=?", (rowid,)).fetchone()["payload"])
+    assert "ticker" not in payload and "clears" not in payload
+
+
+def test_append_alert_marks_a_clearing_alert(fund_db):
+    conn = fund_db
+    from slackkit.outbox import append_alert
+    rowid = append_alert(conn, "accounting_shortfall", "NVDA agrees again at 40",
+                         now_iso="2026-08-25T13:00:00+00:00", ticker="NVDA",
+                         clears=True)
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM events WHERE id=?", (rowid,)).fetchone()["payload"])
+    assert payload["clears"] is True
 
 
 def _written_kinds(root: Path) -> set[str]:

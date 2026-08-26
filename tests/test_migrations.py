@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from orchestrator.clock import SimClock
 from slackkit.fake import FakeSlack
 from state.db import connect
-from state.migrations import apply
+from state.migrations import apply, pending
 
 RUN = "2026-08-18"
 
@@ -84,6 +84,31 @@ def test_apply_reports_only_what_it_did(tmp_path):
     _drop_attribution(conn, "decisions")
     assert apply(conn) == ["0001_attribution"]
     assert apply(conn) == []
+
+
+# --- the read-only seam ------------------------------------------------------
+
+def test_pending_names_what_apply_would_do(tmp_path):
+    """One list of what a migration adds, read by both sides. If pending()
+    kept its own copy it could report current while apply() still had work —
+    which is a green preflight against a database that is behind (#17)."""
+    conn = connect(tmp_path / "fund.sqlite")
+    _drop_attribution(conn, "signals")
+
+    assert pending(conn) == ["0001_attribution"]
+    assert apply(conn) == ["0001_attribution"]
+    assert pending(conn) == []
+
+
+def test_pending_writes_nothing(tmp_path):
+    """The whole reason the seam exists: scripts/preflight_schema.py asks
+    whether the live DB is behind and must not answer by fixing it."""
+    conn = connect(tmp_path / "fund.sqlite")
+    _drop_attribution(conn, "decisions")
+
+    for _ in range(3):
+        assert pending(conn) == ["0001_attribution"]
+    assert not {"charter_version", "model_id"} & _columns(conn, "decisions")
 
 
 def test_no_attribution_column_is_ever_nullable(tmp_path):
@@ -210,7 +235,7 @@ def test_charter_version_comes_from_the_header():
     from agents.seats import charter_version_for
 
     assert charter_version_for({"seat": "pm"}) == "v6"
-    assert charter_version_for({"seat": "news"}) == "v2"
+    assert charter_version_for({"seat": "news"}) == "v3"
 
 
 def test_an_unparseable_header_is_unknown_not_a_crash():

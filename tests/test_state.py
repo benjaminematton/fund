@@ -38,6 +38,15 @@ def test_ddl_applies_cleanly_and_is_idempotent(tmp_path):
     conn2.close()
 
 
+def test_every_status_table_has_a_state_machine(fund_db):
+    tables = {r["name"] for r in fund_db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    with_status = {t for t in tables if any(
+        c["name"] == "status"
+        for c in fund_db.execute(f"PRAGMA table_info({t})"))}
+    assert with_status == set(STATUSES) == set(EDGES)
+
+
 def test_foreign_keys_enforced(fund_db):
     import sqlite3
     with pytest.raises(sqlite3.IntegrityError):

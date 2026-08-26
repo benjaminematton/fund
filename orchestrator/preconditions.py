@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from slackkit.outbox import append_event
+from slackkit.outbox import append_alert
 
 
 def assert_account_config_unchanged(conn: sqlite3.Connection, *, broker,
@@ -53,7 +53,8 @@ def assert_account_config_unchanged(conn: sqlite3.Connection, *, broker,
     to refuse to trade."""
 
     def alert(text: str, drift: dict) -> int:
-        append_event(conn, "alert", {"text": text, "drift": drift}, now_iso)
+        append_alert(conn, "account_precondition_drift", text,
+                     now_iso=now_iso, drift=drift)
         return 1
 
     if not baseline:
