@@ -573,15 +573,29 @@ Expected: either a match — the previous run recorded harm that was *occurring*
 A branch has no issue body, so it has neither a declared region nor a `blocked_by`; the candidate
 filters above do not reach it. Each unlanded branch is a candidate **land lane**:
 
-- **Its region is computed from the branch's own content** — `git diff --name-only
-  origin/master...<branch>` — never from a title, a label, or a guess. That is a region derived from
-  what the work touches, which is why it does not offend the rule against inventing an order.
+- **Its region is the region of the issue its branch served**, read from that issue exactly as any
+  other candidate's is — so it is a region head in the same vocabulary as every other lane, and
+  `land ∩ anything` is computable by the one comparison this skill defines. **Never compute a region
+  from a diff.** `git diff --name-only origin/master...<branch>` yields a file list, and a region is an
+  area of code and not a filename; comparing a file list against a region head is comparing two
+  different kinds of thing, and an agent asked to do it will invent an operator.
+- **A branch that serves no issue has no declared region**, and is therefore not dispatched — flagged
+  `→ the human` like any other region-undeclared candidate, not guessed at.
 - **Its owner is whichever session claims it in the poll's `stranded` field.** Authorship is not
   inferred from branch names or `git log` — every session commits as the same identity, so neither can
   distinguish one from another.
-- **A branch no session claims is an orphan.** Orphans drain at **one sweep lane per run**, taking
-  every orphan whose region does not intersect a claimed one and naming the ones it dropped. **The
-  sweep is the one lane that goes to a non-author**, and it is briefed as such.
+- **A branch no session claims is an orphan.** An orphan whose region head is already claimed resolves
+  `held-in-region` and is reported, not swept. The rest are gathered into **one sweep lane per run**,
+  which names the orphans it dropped and why.
+- **The sweep lane resolves to `needs a chat`, and it is the one land-shaped lane that does** —
+  precisely because it has no author. Phase 4's authorship rule governs a land lane bound to its
+  branch's author; the sweep is not one of those, and the rule that a land lane opens no chat does not
+  reach it. **This is the only lane in the skill briefed to a non-author**, and its briefing says so.
+- **`backup/*` and other rebase-safety refs are excluded by name**, never swept. They are snapshots,
+  not work, and reconstructing intent from one is a guess.
+- **If `git fetch` fails the land candidate set is *unavailable*, not empty** — the same discipline the
+  ledger applies to `unlanded`. Report it as unavailable rather than running a morning with no land
+  lanes and no reason given.
 
 **Land candidates are computed before the poll and bound after it.** The `stranded` answers are what
 establish authorship, so Phase 2 lists them **by branch, not by owner** — *these branches are
