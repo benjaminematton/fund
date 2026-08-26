@@ -288,8 +288,15 @@ MASTER_REGRESSION_CASES = [
 #       binding raises UnboundLocalError and never reaches the module. This
 #       covers parameters, `except ... as`, and `match`/`case` captures alike —
 #       all three verified by execution.
-#   comprehension target ......................... NO, Python 3 scopes it and
-#       it does not leak.
+#   comprehension `for` target ................... NO, Python 3 scopes it to
+#       the comprehension and it does not leak.
+#   comprehension WALRUS target .................. NO, but for a DIFFERENT
+#       reason, and the row above does not carry over. PEP 572 binds a walrus
+#       target in the CONTAINING scope, so it DOES leak out of the
+#       comprehension — and then lands under whichever row governs that scope.
+#       Inside a function that is the function-body row, so it is private and
+#       clean; at module scope it is reachable and the reference check catches
+#       any real clock read regardless. Verified by execution.
 #
 # Rareness and suspiciousness are NOT the test; reachability is. A rule that
 # flags code which cannot produce the harm is the failure mode that gets lints
@@ -732,11 +739,25 @@ ENCLOSING_SCOPE_CASES = [
     # that away: nothing is rebound, the function is never called, and in the
     # first three the name is never referenced in the body either.
     #
-    # "Unused" is the whole point. A default, a decorator, an annotation and a
-    # base list are all evaluated in the ENCLOSING scope at definition time —
-    # `def f(x=time.sleep)` captures the real time.sleep the moment the def
-    # executes, whether or not anything ever calls f. Each of these pins one
-    # arm of _outer_exprs; delete that arm and the case goes silent.
+    # "Unused" is the whole point: none of these is reachable by looking at the
+    # function body, so a scanner that only walks bodies misses all four.
+    #
+    # Defaults, decorators and base lists are EVALUATED in the enclosing scope
+    # at definition time — `def f(x=time.sleep)` captures the real time.sleep
+    # the moment the def executes, whether or not anything ever calls f.
+    #
+    # Annotations are the exception and the earlier wording here was wrong.
+    # Every file in this suite carries `from __future__ import annotations`
+    # (see the module docstring at the top), so annotations are stringified and
+    # never evaluated at all; on 3.14 they are lazy regardless. The VERDICT is
+    # unchanged — PEP 649's annotate function still closes over the enclosing
+    # scope, so the name it would resolve is the enclosing one — but the
+    # mechanism is deferred resolution, not evaluation at definition time, and
+    # the previous claim that this was "confirmed by executing it" was false
+    # for the annotation arm. Do not re-derive the old sentence.
+    #
+    # Each of these pins one arm of _outer_exprs; delete that arm and the case
+    # goes silent.
     ("outer position alone: unused default argument", """
         import time
 
@@ -954,6 +975,25 @@ CLEAN_CASES = [
 
         _UNUSED = [None for time in ()]
     """),
+    # Twin of the case above, and the asymmetry IS the content: a normal `for`
+    # target does not leak out of the comprehension, but a WALRUS target binds
+    # in the CONTAINING scope (PEP 572). So `time` here is a genuine local of
+    # `elapsed`, the module import is unreachable from the whole body by the
+    # function-body row of the discriminator, and `time.monotonic()` is not a
+    # clock read at all.
+    #
+    # Executed to confirm the binding is real, not theoretical:
+    # `elapsed(["NOT-THE-STDLIB"])` returns 'NOT-THE-STDLIB'. The discriminator's
+    # comprehension row is written for the `for` target and does not carry over
+    # to the walrus — do not collapse the two.
+    ("walrus target in a comprehension binds in the CONTAINING scope", """
+        import time
+
+
+        def elapsed(rows):
+            marks = [(time := r) for r in rows]
+            return time.monotonic()
+    """),
     ("comprehension target reusing an imported name — list", """
         import json
 
@@ -1026,11 +1066,18 @@ CLEAN_CASES = [
 
         annotations = {"a": 1}
     """),
-    ("optional dependency: `import numpy` / `numpy = None`", """
+    # RE-POINTED from numpy to pandas. As written with `numpy` this guard
+    # PASSED VACUOUSLY and pinned nothing: `numpy` is not in WATCHED_BASES
+    # (verified — `"numpy" in WATCHED_BASES` is False), so no rule could ever
+    # have fired on it and the case could not fail. `pandas` IS a watched base,
+    # via pandas.Timestamp.now, and is a hard dependency of fundbt/ — so this
+    # spelling is both the realistic one and the one that can actually fail.
+    # A guard that cannot fail is the same defect as an unpinned block.
+    ("optional dependency: `import pandas` / `pandas = None`", """
         try:
-            import numpy
+            import pandas
         except ImportError:
-            numpy = None
+            pandas = None
     """),
     # --- round three: arity discriminates a clock read from a formatter ----
     # time.strftime/asctime/ctime read the wall clock ONLY in their no-arg
