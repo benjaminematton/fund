@@ -569,33 +569,18 @@ Expected: either a match — the previous run recorded harm that was *occurring*
 - [ ] **Step 3: Insert the precedence order at the end of Phase 0, after the ledger**
 
 ```markdown
-**Land candidates come from the ledger's `unlanded` set, and this is the only thing that derives one.**
-A branch has no issue body, so it has neither a declared region nor a `blocked_by`; the candidate
-filters above do not reach it. Each unlanded branch is a candidate **land lane**:
+**Land lanes are formed in Phase 4, after the poll — not here.** Phase 0's ledger *counts* unlanded
+branches, and that count is a measurement, not a candidate list. A land lane needs two facts only the
+poll can supply: **who owns the branch**, and **which issue it served**, whose region becomes the
+lane's region. Forming one here would mean knowing the answers the poll exists to ask.
 
-- **Its region is the region of the issue its branch served**, read from that issue exactly as any
-  other candidate's is — so it is a region head in the same vocabulary as every other lane, and
-  `land ∩ anything` is computable by the one comparison this skill defines. **Never compute a region
-  from a diff.** `git diff --name-only origin/master...<branch>` yields a file list, and a region is an
-  area of code and not a filename; comparing a file list against a region head is comparing two
-  different kinds of thing, and an agent asked to do it will invent an operator.
-- **A branch that serves no issue has no declared region**, and is therefore not dispatched — flagged
-  `→ the human` like any other region-undeclared candidate, not guessed at.
-- **Its owner is whichever session claims it in the poll's `stranded` field.** Authorship is not
-  inferred from branch names or `git log` — every session commits as the same identity, so neither can
-  distinguish one from another.
-- **A branch no session claims is an orphan.** An orphan whose region head is already claimed resolves
-  `held-in-region` and is reported, not swept. The rest are gathered into **one sweep lane per run**,
-  which names the orphans it dropped and why.
-- **The sweep lane resolves to `needs a chat`, and it is the one land-shaped lane that does** —
-  precisely because it has no author. Phase 4's authorship rule governs a land lane bound to its
-  branch's author; the sweep is not one of those, and the rule that a land lane opens no chat does not
-  reach it. **This is the only lane in the skill briefed to a non-author**, and its briefing says so.
-- **`backup/*` and other rebase-safety refs are excluded by name**, never swept. They are snapshots,
-  not work, and reconstructing intent from one is a guess.
-- **If `git fetch` fails the land candidate set is *unavailable*, not empty** — the same discipline the
-  ledger applies to `unlanded`. Report it as unavailable rather than running a morning with no land
-  lanes and no reason given.
+**So the rider rule never pre-empts on a land region.** No land lane exists before the poll, so
+`anything ∩ land` is not computable in Phase 0 and is not attempted. It resolves in Phase 4, where both
+sides are known.
+
+**`backup/*` and other rebase-safety refs never become land lanes** — snapshots, not work. **And if
+`git fetch` fails, the unlanded count is *unavailable*, not zero**, so the land stream is unavailable
+too: report it that way rather than running a morning with no land lanes and no reason given.
 
 **Land candidates are computed before the poll and bound after it.** The `stranded` answers are what
 establish authorship, so Phase 2 lists them **by branch, not by owner** — *these branches are
@@ -674,8 +659,11 @@ Find, inside the block-quoted poll message:
 Then, immediately after the `owns` bullet, add:
 
 ```markdown
-> - **stranded** — branches you or your subagents left ahead of `origin/master` and unmerged. For
->   each: `ready` / `dead` / `blocked-on: #<issue>`. **Check it, do not recall it:**
+> - **stranded** — branches you or your subagents left ahead of `origin/master` and unmerged. For each,
+>   **two things**: its disposition — `ready` / `dead` / `blocked-on: #<issue>` — **and the issue it
+>   served**, as `serves #<issue>`, or `serves nothing`. Name the issue in every case, not only when you
+>   are blocked: that issue's region becomes the lane's region, and a branch with no issue named cannot
+>   be dispatched. **Check it, do not recall it:**
 >   `git rev-list --left-right --count master...<branch>`
 ```
 
@@ -862,6 +850,23 @@ region with a `land` lane is **`held-in-region` behind it** — not covered, and
 land lane is short and is about work that already exists, so letting it reach its terminal state clears
 the region rather than racing it. Without this rule that candidate matches none of the three states and
 falls through, which is the defect this phase exists to prevent.
+
+**Land lanes are formed here, from the poll's answers — this is the only thing that creates one.**
+Every branch a session claimed in `stranded` becomes a land lane **owned by that session**, carrying
+**the region of the issue that session named**. Both facts come from the same answer, which is why
+formation waits for the poll.
+
+- A branch whose owner named **`serves nothing`** is region-undeclared: flagged `→ the human`, never
+  dispatched — the same treatment any region-undeclared candidate gets.
+- A branch **no session claimed** is an **orphan**. **An orphan has no region**, because the only thing
+  that names one is an owner it does not have. So orphans are never region-matched — inventing a
+  comparison for them is the failure this skill spends its Phase 0 forbidding.
+- **All orphans gather into one sweep lane per run**, which resolves to **`needs a chat`** — the one
+  land-shaped lane that does, precisely because it has no author. Its first job is to establish, for
+  each branch, whether it should live; that determination is what produces a region, if any. **It is
+  the only lane in this skill briefed to a non-author**, and its briefing says so.
+
+Once formed, a land lane resolves through the matrix above like any other candidate.
 
 **Land lanes bind by authorship, or to nobody, and they open no chats.** Where one must go to a
 non-author, say so in the briefing: *"You did not write this. Your first job is to establish whether
