@@ -8,7 +8,28 @@ Both sides are PARSED, never restated: a column list typed out here would be
 a third source of truth. Parsing is deliberately deferred out of the module
 body into `_contract()`, so that DDL this file cannot parse fails THIS
 file's tests instead of erroring pytest's collection and taking all ~1200
-tests in the repo down with it. Nothing at import time reads either source.
+tests in the repo down with it.
+
+What is deferred is the RAISE, not the READ. Both sources are read and
+parsed AT IMPORT, by `_bound_or_sentinel()` inside the `parametrize`
+decorator near the bottom of this file: after a bare
+`import tests.test_schema_contract` with zero tests run,
+`_contract.cache_info()` already reports `misses=1, currsize=1` and the
+parametrize argvalues already hold their 11 table names (measured). Two
+consequences to reason from:
+
+  * Anything `_bound_or_sentinel()` lets through is a COLLECTION error, so
+    it catches `Exception` and not `ValueError` — a spec file that has been
+    renamed raises `FileNotFoundError`, which is not a `ValueError` and
+    which halted collection repo-wide until it did.
+  * `_contract()` is memoized by the time the first test runs, so a source
+    edit made AFTER collection is invisible. Measured: flipping
+    `usd_estimate REAL` to `INTEGER` in `state/schema.sql` from a
+    `pytest_collection_finish` hook leaves every test in this file green
+    (18 of 18) with that drift really in the tree. Only the opposite
+    direction is guarded: `test_schema_matches_spec` fails if the DDL did
+    not parse at collection but parses now. Editing a spec or the schema
+    while pytest is running yields a stale pass; re-run the suite.
 
 What the comparison actually compares, precisely. Table and column NAMES,
 and the three booleans NOT NULL / PRIMARY KEY / UNIQUE, are structural:
@@ -67,6 +88,7 @@ from __future__ import annotations
 import functools
 import re
 import sqlite3
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -358,34 +380,21 @@ def _parse_tables(sql: str) -> dict[str, Table]:
     tables: dict[str, Table] = {}
     for stmt in _split_top(_tokenize(sql), ";"):
         upper = [t.upper() for t in stmt]
-        # Checked on EVERY statement, including one that DOES start with
-        # `CREATE TABLE`. A `CREATE TABLE` anywhere but position 0 is a table
-        # this comparator will not compare, and the raw-text floor below
-        # cannot see it either once `CREATE` and `TABLE` sit on two lines.
-        # Restricting this to statements failing the test below left four
-        # regions of a `CREATE TABLE` — a column CHECK, a DEFAULT (expr), a
-        # type's parens and a whole table-constraint item — as free text a
-        # second table could hide in, reached by leaving a `(` open across
-        # the `;` that would otherwise have ended the statement.
-        if any(upper[k:k + 2] == ["CREATE", "TABLE"]
-               for k in range(1, len(upper))):
-            raise ValueError(
-                f"{' '.join(stmt[:6])!r}...: a CREATE TABLE is buried inside"
-                " this statement instead of starting it, so it would not be"
-                " compared at all. Either the statement above it is missing"
-                " its `;`, or a `(` opened earlier in this statement is never"
-                " closed and has swallowed it. Add the semicolon or balance"
-                " the parentheses.")
         if upper[:2] != ["CREATE", "TABLE"]:
             # CREATE INDEX / VIEW / TRIGGER are ignored on purpose. CREATE TEMP
             # TABLE and CREATE VIRTUAL TABLE are tables this comparator cannot
             # represent, and silently skipping one is how a table stops being
-            # compared without anyone noticing.
+            # compared without anyone noticing. A `CREATE TABLE` that does not
+            # START its statement lands here too — see the twin check below.
             if "TABLE" in upper:
                 raise ValueError(
-                    f"{' '.join(stmt[:4])!r}: only plain CREATE TABLE is"
-                    " compared — extend the parser rather than letting this"
-                    " table be skipped")
+                    f"{' '.join(stmt[:4])!r}: this statement carries a TABLE"
+                    " keyword but is not a plain CREATE TABLE, so nothing"
+                    " compares it. Either extend the parser rather than"
+                    " letting the table be skipped (CREATE TEMP/VIRTUAL TABLE,"
+                    " ALTER, DROP), or restore the `;` this statement is"
+                    " missing — without it a following CREATE TABLE is"
+                    " swallowed into this one.")
             continue
         i = 2
         if [t.upper() for t in stmt[i:i + 3]] == ["IF", "NOT", "EXISTS"]:
@@ -395,14 +404,20 @@ def _parse_tables(sql: str) -> dict[str, Table]:
         if "TABLE" in upper[2:]:
             # `TABLE` is reserved, so it cannot be a column name or a type: a
             # second one inside this statement's body is another table
-            # statement swallowed by an unclosed `(`. The check above only
-            # sees `CREATE TABLE`; this catches CREATE TEMP/VIRTUAL, ALTER and
-            # DROP, which would otherwise turn a raise into silence.
+            # statement swallowed by the `;` that should have ended this one.
+            # The `(` doing the swallowing can be opened in any of the four
+            # regions of a `CREATE TABLE` that hold free text — a column
+            # CHECK, a DEFAULT (expr), a type's parens, and a whole
+            # table-constraint item — and this check covers all four, plus the
+            # plain missing-`;` case. The raw-text floor below cannot see any
+            # of it once `CREATE` and `TABLE` sit on two lines.
             raise ValueError(
                 f"{' '.join(stmt[:4])!r}...: a second TABLE statement is"
-                " buried inside this CREATE TABLE's body, swallowed by a `(`"
-                " that is never closed — it is not compared and not reported."
-                " Balance the parentheses.")
+                " buried inside this CREATE TABLE's body, so it is compared by"
+                " nothing and reported by nothing else. Either the `;` that"
+                " should have ended the statement above is missing, or a `(`"
+                " opened earlier in this statement is never closed and has"
+                " swallowed it. Add the semicolon or balance the parentheses.")
         name = stmt[i].lower()
         if "." in name:
             # `.` is in the tokenizer's identifier charset and has to be, for
@@ -433,19 +448,15 @@ def _parse_tables(sql: str) -> dict[str, Table]:
                 constraints.append(_norm(item))
             else:
                 columns.append(_parse_column(name, item))
-        # Both sides of the comparison key columns by name and constraints by
-        # normalized text, so a duplicate of either COLLAPSES: two identical
-        # `qty` columns compare equal to one, and the second copy of a table
-        # constraint disappears into `_diff`'s set(). SQLite rejects the
-        # duplicate column itself, but nothing executes the markdown, so on the
-        # spec side the collapse is invisible in both directions. Raise instead.
-        dupe_cols = sorted({c.name for c in columns
-                            if [x.name for x in columns].count(c.name) > 1})
-        if dupe_cols:
-            raise ValueError(
-                f"{name}: column(s) {dupe_cols} declared more than once — the"
-                " comparison keys columns by name, so the duplicate would"
-                " collapse into the first and never be compared. Remove it.")
+        # The comparison holds table constraints in a set, so a duplicate
+        # COLLAPSES: the second copy disappears into `_diff`'s set() and is
+        # never compared. Nothing else catches that — SQLite ACCEPTS it
+        # (measured: `CREATE TABLE t (a INT, UNIQUE(a), UNIQUE(a))` executes
+        # clean), so `test_spec_ddl_executes` passes on it too. Raise instead.
+        # Duplicate COLUMN names need no twin of this check: SQLite REJECTS
+        # them ("duplicate column name: a"), which fails
+        # `test_spec_ddl_executes` on the spec side and every test that opens a
+        # DB through `state/db.py` on the schema side.
         dupe_cons = sorted({c for c in constraints if constraints.count(c) > 1})
         if dupe_cons:
             raise ValueError(
@@ -493,6 +504,22 @@ def _section_blocks(path: Path, heading: str) -> list[str]:
 
     What it does NOT see: `CREATE TABLE` in §2 prose, and code blocks in a
     section other than `heading`. Neither renders as canonical §2 DDL.
+
+    HOW BIG THE POLICED SURFACE IS. The section ends at the next `^## `, and
+    the negative lookahead lets `###` SUBHEADINGS stay inside it. So the two
+    guards above — every fence must be tagged sql/sqlite, every indented block
+    raises — apply to far more than the DDL fence. Measured on this commit:
+    `specs/contracts.md` §2 spans 161 lines, of which 39 (29 non-blank) come
+    AFTER the closing fence, including the whole
+    `### Attribution — charter_version and model_id` subsection;
+    `specs/strategy-contracts.md` §2 spans 122 lines with nothing but a blank
+    line after its closing fence. A ```text snippet or a 4-space-indented
+    list continuation written into that Attribution prose takes all 7 of this
+    file's source-reading tests down (measured, both forms) while the DDL
+    itself is untouched. That is the
+    price of the guards, and it is paid knowingly: narrowing the scan to stop
+    at the fence would restore exactly the silence — DDL sitting in §2 that
+    nothing reads — these guards exist to prevent.
     """
     lines = path.read_text().splitlines()
     try:
@@ -585,32 +612,49 @@ class _Contract:
 
 @functools.cache
 def _contract() -> _Contract:
-    """Read and parse both sides. Raises `ValueError` on anything unparseable.
+    """Read and parse both sides. Raises on anything unreadable or unparseable
+    — `ValueError` from the parser, but also whatever `Path.read_text()`
+    throws.
 
-    CALLED FROM INSIDE TESTS, NEVER AT IMPORT — that placement is the whole
-    point of this function, not an accident of style. Every `raise ValueError`
-    above is deliberate and loud, but when the parse ran in the module body
-    those raises fired during pytest's COLLECTION: `make test` reported
-    `Interrupted: 1 error during collection`, ran ZERO of the repo's ~1200
-    tests, and told whoever hit it to extend a parser. An ordinary, drift-free
-    DDL edit applied correctly to BOTH sides was enough to do it — measured on
-    nine: `ON DELETE CASCADE`, `COLLATE NOCASE`, a COLUMN-level named
-    `CONSTRAINT`, `GENERATED ALWAYS AS`, `) STRICT`, a quoted identifier, a
-    ```text fence in §2, an untagged fence, a second ```sql fence, and
-    retitling the §2 heading. (A TABLE-level named `CONSTRAINT` parses fine;
-    that one does not reproduce.) Since `CLAUDE.md` requires `make test` green
-    before every commit, that made one unparsed token a repo-wide stop-work
+    THE RAISE REACHES THE CALLER FROM INSIDE A TEST, NEVER FROM THE MODULE
+    BODY — that placement is the whole point of this function, not an accident
+    of style. (The CALL still happens at import: `_bound_or_sentinel()` makes
+    it, and catches everything, so what the module body never does is raise.)
+    Every `raise ValueError` above is deliberate and loud, but when the parse
+    ran in the module body those raises fired during pytest's COLLECTION:
+    `make test` reported `Interrupted: 1 error during collection`, ran ZERO
+    of the repo's ~1200 tests, and told whoever hit it to extend a parser.
+    An ordinary edit introducing no drift at all was enough to do it —
+    re-measured on TEN, all ten still raising here.
+    Six are DDL applied correctly to BOTH sides:
+    `ON DELETE CASCADE`, `COLLATE NOCASE`, a COLUMN-level named `CONSTRAINT`,
+    `GENERATED ALWAYS AS`, `) STRICT`, and a quoted identifier. Four are
+    markdown edits to a spec file that leave the DDL untouched: a ```text
+    fence in §2, an untagged fence, a second ```sql fence, and retitling the
+    §2 heading. (A TABLE-level named `CONSTRAINT` parses fine — it lands in
+    `Table.constraints` as normalized text; that one does not reproduce.)
+    Since `CLAUDE.md` requires `make test` green before every commit, that
+    made one unparsed token a repo-wide stop-work
     whose cheapest fix is deleting this file. Deferred here, the identical
-    raise is one failing test file: `make test` on the `ON DELETE CASCADE`
-    edit reports `7 failed, 1180 passed, 1 skipped` — every test outside this
-    file still runs and still passes. (1180 rather than 1190 because the 11
-    per-table cases below collapse to one sentinel when there is no parsed
-    table list to parametrize over.)
+    raise is confined to this file, and which of its tests go red depends on
+    where the failure is (both measured on this commit):
+
+        ON DELETE CASCADE (a PARSER limit)   6 of this file's tests fail;
+                                             `test_spec_ddl_executes` passes,
+                                             since it is valid SQL
+        an untagged fence (BLOCK DISCOVERY)  7 fail — the smoke test has no
+                                             block to run and goes down too
+
+    Either way every test outside this file still runs and still passes, and
+    the suite runs 10 fewer tests than a green run, because the 11 per-table
+    cases below collapse to one sentinel when there is no parsed table list to
+    parametrize over.
 
     The messages are unchanged and must stay loud: the defect was WHERE they
     fired, never THAT they fired. `functools.cache` memoizes only success —
-    Python does not cache exceptions — so on a parse failure every test in
-    this file re-runs the parse and fails with the same full message.
+    Python does not cache exceptions — so on a parse failure every test here
+    that reads the sources re-runs the parse and fails with the same full
+    message.
     """
     schema_tables = _parse_tables(SCHEMA.read_text())
     spec_tables: dict[str, Table] = {}
@@ -638,9 +682,22 @@ _PARSE_FAILED = "<spec/schema DDL did not parse>"
 
 
 def _bound_or_sentinel() -> list[str]:
+    """The bound table names, or the sentinel if reading or parsing blew up.
+
+    Catches `Exception`, and the width is the point: "collection must never
+    die" is a property of THIS call site, not of the parser's exception
+    vocabulary. A `ValueError`-only guard let `FileNotFoundError` through, so
+    renaming or moving a spec file — `_section_blocks` calls
+    `Path.read_text()` — errored collection and ran ZERO of the repo's ~1200
+    tests. The raise sites above tell contributors to "extend the parser"; the
+    next one to reach for `KeyError` or `IndexError` must not silently reopen
+    that hole. Nothing is swallowed: every test here that reads the sources
+    calls `_contract()`, which re-raises with the full message as an ordinary
+    failure of this file.
+    """
     try:
         return list(_contract().bound)
-    except ValueError:
+    except Exception:
         return [_PARSE_FAILED]
 
 
@@ -677,37 +734,82 @@ def _diff(con: _Contract, name: str) -> list[str]:
     return out
 
 
-# Independent of the parser: raw-text CREATE ... TABLE lines in a block. Used
-# only as a LOWER bound on how many statements the text declares — it is
-# `^`-anchored per line, so it undercounts a `CREATE` and `TABLE` split across
-# two lines, and it counts two statements sharing one line as one. The
-# comparison below is therefore one-sided and a reformat can never make it
-# fire. Those same blind spots are why this floor must never be the only thing
-# standing between a dropped table and a green run: an under-count here gives
-# a silent parser skip exactly enough slack to hide in. See
+# Independent of the parser: raw-text CREATE ... TABLE lines in a block, used
+# only as a LOWER bound on how many statements the text declares. It is a
+# heuristic over text and it is blind in both directions:
+#
+#   * it UNDERCOUNTS — `^`-anchored per line, so a `CREATE` and `TABLE` split
+#     across two lines is missed, and two statements sharing one line count as
+#     one. The `>=` comparison below makes those blind spots silent, never
+#     spurious.
+#   * it OVERCOUNTS any `CREATE ...` line whose text before the first `;`
+#     contains the word TABLE. Comment text used to count, so a
+#     `CREATE INDEX ... ON trial_registry(family)` line ending in the comment
+#     `-- one row per table`, with the `;` on the next line, failed the floor
+#     with nothing drifted at all (measured; the same comment placed AFTER the
+#     `;` was silent). `_SQL_COMMENT` strips comment text before the count for
+#     that reason. A TABLE inside a string literal on such a line would still
+#     overcount; neither spec has one.
+#
+# The under-count is why this floor must never be the only thing standing
+# between a dropped table and a green run: it gives a silent parser skip
+# exactly enough slack to hide in. See
 # `test_spec_extraction_did_not_come_up_short` for what that cost once.
 _CREATE_TABLE_LINE = re.compile(r"(?im)^[ \t]*CREATE\b[^;\n]*\bTABLE\b")
+# `--` to end of line and `/* */` across lines. Stripping inside a string
+# literal would be wrong, but it can only LOWER the count, which is the safe
+# direction for a floor compared with `>=`.
+_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
 
 
 def test_parsers_found_the_ddl():
-    """Both sides parsed to something, and no table parsed to zero columns.
+    """At least one table is left for `test_schema_matches_spec` to run on.
 
-    A floor, not a coverage check: it says nothing about how MUCH of either
-    source was extracted. That job belongs to
-    `test_spec_extraction_did_not_come_up_short` and to the two existence
-    tests, which pin every known table from both directions.
+    One assert, and it guards the parametrize list itself. `bound` IS that
+    list. If it empties — the spec side parsing to nothing, or
+    `NO_SCHEMA_HOME` grown until it covers every spec table — `parametrize`
+    gets empty argvalues and pytest turns 11 comparisons into ONE SKIP,
+    "got empty parameter set" (measured). That is the quietest failure this
+    file has, so it is made loud here.
 
-    Also the first place a parse failure lands, now that `_contract()` runs
-    inside the tests: it raises here with its own message instead of at
-    collection time.
+    Two asserts that stood here were removed as subsumed, both re-measured:
+    `assert con.schema_tables` (with `state/schema.sql` emptied,
+    `test_every_spec_table_is_declared_in_schema` fires naming all 11 tables
+    and how to fix it) and a loop over zero-column tables (a zero-column table
+    needs `CREATE TABLE t ()`, which SQLite rejects — "near ')': syntax error"
+    — so `test_spec_ddl_executes` has the spec side and `state/db.py` the
+    schema side).
+
+    Also the first place a parse failure lands, now that the raise reaches a
+    test body instead of the module body: it surfaces here with its own
+    message instead of at collection time.
     """
-    con = _contract()
-    assert con.schema_tables, "no CREATE TABLE parsed from state/schema.sql"
-    assert con.bound, "no CREATE TABLE parsed from the spec §2 sections"
-    for src, tables in (("state/schema.sql", con.schema_tables),
-                        ("spec §2", con.spec_tables)):
-        empty = [t for t, tbl in tables.items() if not tbl.columns]
-        assert not empty, f"{src}: parsed no columns for {empty}"
+    assert _contract().bound, (
+        "no CREATE TABLE parsed from the spec §2 sections")
+
+
+def test_a_non_valueerror_still_yields_the_sentinel():
+    """`_bound_or_sentinel()` survives ANY exception, not just `ValueError`.
+
+    It runs at import, inside `parametrize`, so anything it lets through is a
+    collection error and ZERO of the repo's ~1200 tests run.
+    `FileNotFoundError` (a renamed spec file, raised by `Path.read_text()`) is
+    the measured instance; `KeyError` stands for whatever a future parser
+    guard raises. Patched here rather than by moving a real file: this
+    worktree shares a checkout, and a test that dirties the tree is worse than
+    the bug.
+    """
+    module = sys.modules[__name__]
+    for exc in (FileNotFoundError(2, "No such file or directory", str(SCHEMA)),
+                KeyError("heading")):
+        with pytest.MonkeyPatch.context() as mp:
+            def boom(_exc=exc):
+                raise _exc
+            mp.setattr(module, "_contract", boom)
+            assert _bound_or_sentinel() == [_PARSE_FAILED], (
+                f"{type(exc).__name__} escaped _bound_or_sentinel() — at"
+                " import time that is"
+                " `Interrupted: 1 error during collection`")
 
 
 def test_spec_extraction_did_not_come_up_short():
@@ -757,7 +859,7 @@ def test_spec_extraction_did_not_come_up_short():
             f" out of {label} — its DDL block is empty, or its DDL moved out of"
             " §2. Every table it used to declare has silently stopped being"
             " compared.")
-        declared = len(_CREATE_TABLE_LINE.findall(raw))
+        declared = len(_CREATE_TABLE_LINE.findall(_SQL_COMMENT.sub("", raw)))
         assert len(names) >= declared, (
             f"spec extraction came up short: {label} spells out {declared}"
             f" CREATE TABLE statements but only {len(names)} were parsed"
@@ -819,10 +921,29 @@ def test_spec_ddl_executes():
     is a separate, loud failure of the tests above — is not also reported here
     as a syntax problem the SQL does not have.
 
-    SCOPE, DELIBERATELY NARROW. This closes the MALFORMED-SQL CLASS ONLY: DDL
-    that SQLite itself would reject, which nothing in this repo executed
-    before — the missing `;` and the unbalanced-paren burials earlier rounds
-    found are both syntactically invalid, so `executescript` rejects them.
+    SCOPE. What it uniquely closes is spec-side SQL that SQLite rejects but
+    that the PARSER above does not: DDL the parser skips by design, or
+    normalizes until the defect disappears. Four cases measured on this commit,
+    each of them the ONLY failing test in the whole suite:
+
+      * a missing `;` after the FIRST `CREATE INDEX` in
+        `strategy-contracts.md` §2 — the two indexes merge into one statement,
+        which carries no `TABLE` token, so `_parse_tables` skips it by design
+        and neither index is looked at;
+      * `CREATE INDEX ... ON trial_ledger(spec_id)`, naming a table that does
+        not exist — valid syntax, unresolvable, and again no `TABLE` token;
+      * a TRAILING COMMA before the `)` of a spec `CREATE TABLE` — `_split_top`
+        drops the empty part, so the malformed statement parses to a
+        byte-identical `Table` and is invisible to `_diff` by construction;
+      * a broken `CREATE VIEW live_sleeves AS SELEKT * FROM sleeves` — a
+        statement shape the parser never inspects.
+
+    Note where it is LEAST unique: malformed SQL identical on BOTH sides is
+    not this test's class at all. `state/db.py:connect()` runs `executescript`
+    over `state/schema.sql` whenever a DB is missing a table — which every
+    `tmp_path` fixture in the suite is — so that case is repo-wide wreckage
+    long before it reaches here. Measured, with one column duplicated in
+    `state/schema.sql`: 61 failed and 473 errors across the suite.
 
     What it does NOT reach, and may never be cited as covering:
 
