@@ -451,11 +451,27 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
         rebound -= set(_walrus_targets(node))
 
     stands = isinstance(node, _BINDING_STANDS_SCOPES)
-    for name in rebound:
+    # `| declared_global` and not just `rebound`: a `global x` DECLARATION
+    # rebinds resolution on its own, with or without an assignment anywhere in
+    # the body. Iterating `rebound` alone made the assignment load-bearing, so
+    # `global time` + a bare `time.sleep(0.30)` kept the enclosing scope's
+    # shadow and read the real clock while the lint said clean. Deletion-check:
+    # revert to `for name in rebound:` on a copy and the assignment-free case
+    # in BINDING_STANDS_CASES goes clean while its with-assignment twin stays
+    # red — which is exactly why one case could not pin both.
+    for name in rebound | declared_global:
         if name in declared_nonlocal:
             continue  # the enclosing function's binding, which `inherited` holds
         if name in declared_global:
-            bindings[name] = module_bindings.get(name)
+            # `import x` in a scope that declared `global x` binds the MODULE's
+            # x to the module object, so this scope's own import wins over
+            # whatever the module scope held. Overwriting unconditionally
+            # clobbered it: `global time` + a function-local `import time` read
+            # 0.306s of real clock while the lint said clean. Deletion-check:
+            # drop the `not in imported` guard on a copy and the two
+            # A3=global/A4=import rows in the generated gate go clean again.
+            if name not in imported:
+                bindings[name] = module_bindings.get(name)
             continue
         # `name in imported` is the function-body exception: an import in this
         # same body binds the module to that local, so a use between the two
