@@ -36,6 +36,8 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 
 ## Specs — read before implementing; schemas there are canonical
 
+A dated filename is a snapshot of the moment it was written, never current state. Current state is board issue #49 and `git log` on `master`. `specs/INDEX.md` maps the canonical files against the dated, derived ones and says which wins.
+
 - `specs/design.md` — full design doc (seats, daily cycle, gate math).
 - `specs/contracts.md` — DDL, pydantic models, tool schemas, state machines, failure semantics. **Do not invent fields.**
 - `specs/acceptance.md` — per-phase done-criteria. Implement its tests FIRST, then code until green.
