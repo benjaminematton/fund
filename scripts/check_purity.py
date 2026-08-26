@@ -11,15 +11,18 @@ Checks over the no-LLM business-logic packages listed in PURE_PACKAGES:
      intra-package import in slackkit/ is written relative — a rule that only
      understood absolute spellings would guard the form nobody writes.
      A forbidden module reached by attribute (`import slackkit` then
-     `slackkit.real.RealSlack()`) is the same violation and reported as one.
+     `slackkit.real.RealSlack()`) is the same violation. It is reported once
+     per attribute prefix that lands inside the forbidden module, so
+     `slackkit.real.a.b.c` yields four lines naming one root cause.
   2. No dynamic imports: importlib.import_module() and __import__(). A pure
      package has to stay statically analyzable, and the argument may be
      computed ("claude" + "_agent_sdk"), so the call itself is the violation.
   3. No wall clock: datetime.now()/utcnow()/today(), date.today(),
      pandas.Timestamp.now()/today(), asyncio.sleep(), and the time module's
-     sleep, counters and clock readers. time.strftime/asctime/ctime read the
-     clock only in their no-argument form; given a value to render they are
-     pure formatters and are left alone (see ARITY_PURE_FROM).
+     sleep, counters and clock readers. strftime/asctime/ctime/gmtime/localtime
+     read the clock only when called with too few arguments to render a
+     supplied value; given one they are pure converters and are left alone
+     (see ARITY_PURE_FROM).
   4. slackkit/__init__.py stays import-free, so `import slackkit` executes
      nothing (slackkit/real.py:1-3). That file is NOT on its own sufficient to
      keep slack_sdk out of linted code — it never stops `from slackkit.real
@@ -36,8 +39,10 @@ not only calls:
     "sleep")` are caught without ever being called — capturing the callable is
     the same banned dependency as calling it.
   * The injected `self._clock.now()` stays green because `self` resolves to
-    nothing, not because of any shadowing rule. A name that resolves to no
-    import is not a match, and that is the whole mechanism.
+    nothing, not because of any shadowing rule. The converse does NOT hold, so
+    do not restate this as "resolving to no import is a pass": under a star
+    import an unbound name is deliberately still matched against every watched
+    base, which is how re-export laundering is caught (see _candidates).
 
 Zero dependencies. Exit 1 on any violation. A package directory that does not
 exist is skipped, so a package can be added to the list before it is written.
@@ -68,16 +73,22 @@ FORBIDDEN_REFS = {
     "time.monotonic_ns", "time.perf_counter", "time.perf_counter_ns",
     "time.process_time", "time.process_time_ns", "time.thread_time",
     "time.thread_time_ns", "time.clock_gettime", "time.clock_gettime_ns",
-    "time.localtime", "time.gmtime",
     "asyncio.sleep",
     "pandas.Timestamp.now", "pandas.Timestamp.today", "pandas.Timestamp.utcnow",
 }
 # Names that read the wall clock ONLY when called with too few arguments to
-# render: `time.ctime()` is now, `time.ctime(secs)` is a formatter. The value
-# is the argument count at which the call becomes pure. Bare references to
-# these are deliberately not flagged — the spelling alone does not say which
-# form is meant.
-ARITY_PURE_FROM = {"time.strftime": 2, "time.asctime": 1, "time.ctime": 1}
+# render or convert a supplied value: `time.ctime()` is now, `time.ctime(secs)`
+# is a formatter; `time.gmtime()` is now, `time.gmtime(epoch)` is a converter.
+# The value is the argument count at which the call becomes pure. Bare
+# references to these are deliberately not flagged — the spelling alone does
+# not say which form is meant.
+#
+# gmtime and localtime belong here and sat in FORBIDDEN_REFS unconditionally
+# until the docstring's own example failed on itself: in
+# `time.strftime("%Y", time.gmtime(0))` the outer call was correctly pure while
+# the inner one it was feeding got flagged.
+ARITY_PURE_FROM = {"time.strftime": 2, "time.asctime": 1, "time.ctime": 1,
+                   "time.gmtime": 1, "time.localtime": 1}
 # Fully-qualified names that import at runtime, defeating this lint entirely.
 DYNAMIC_IMPORT_REFS = {"importlib.import_module", "importlib.__import__",
                        "builtins.__import__", "__import__"}
@@ -85,16 +96,16 @@ DYNAMIC_IMPORT_REFS = {"importlib.import_module", "importlib.__import__",
 # Nodes that open a new binding scope.
 _SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
                 ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-# Scopes where a rebinding does NOT hide the import from a use site, so a
-# collision is reportable. See the discriminator on _scan_scope.
-_COLLIDING_SCOPES = (ast.Module, ast.ClassDef)
+# Scopes where a rebinding does NOT hide the import from a use site, so the
+# import binding STANDS rather than being popped. See the discriminator on
+# _scan_scope.
+_BINDING_STANDS_SCOPES = (ast.Module, ast.ClassDef)
 
 
 def _watched_bases() -> set[str]:
     """Every dotted name a forbidden reference hangs off: `datetime`,
-    `datetime.datetime`, `time`, `pandas.Timestamp`, ... Used to decide whether
-    a rebinding could reach anything forbidden, and to resolve a name that a
-    star import could have supplied from anywhere."""
+    `datetime.datetime`, `time`, `pandas.Timestamp`, ... Used to resolve a name
+    a star import could have supplied from anywhere."""
     bases: set[str] = set()
     for ref in FORBIDDEN_REFS | DYNAMIC_IMPORT_REFS | set(ARITY_PURE_FROM):
         parts = ref.split(".")
@@ -119,18 +130,6 @@ def _forbidden_import(name: str) -> str | None:
         if name == entry or name.startswith(entry + "."):
             return entry
     return None
-
-
-def _reaches_forbidden(target: str) -> bool:
-    """Could a name bound to `target` reach something this lint forbids?
-
-    This is an ANCESTOR test, not a descendant one, and the difference is the
-    whole rule. `from datetime import UTC` binds UTC -> `datetime.UTC`, which
-    is *under* the watched root `datetime` but is the base of nothing — asking
-    "does it resolve under a watched root?" reddens it, asking "is it the base
-    of a forbidden pattern?" does not.
-    """
-    return bool(_forbidden_import(target)) or target in WATCHED_BASES
 
 
 def _dotted(node: ast.AST) -> str | None:
@@ -308,6 +307,28 @@ def _scope_nodes(node: ast.AST):
         yield from _walk_in_scope(child)
 
 
+def _walrus_targets(node: ast.AST):
+    """Names a walrus binds in the scope CONTAINING `node`.
+
+    PEP 572 gives an assignment expression inside a comprehension to the
+    containing scope rather than the comprehension's, so `[(time := r) for r
+    in rows]` really does leave a local named `time` behind. Nested function
+    and class scopes are not crossed — a walrus inside one belongs to it.
+
+    KNOWN AND DELIBERATE: the target is ALSO bound inside the comprehension's
+    own scope, by _bound_names seeing the Store. That is not a faithful model
+    of PEP 572, but both paths bind it to unresolvable, so no verdict differs
+    and no test separates them. Suppressing the inner binding would be
+    untested logic serving tidiness — do not "fix" it into a behaviour change.
+    """
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            yield child.target.id
+        if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda, ast.ClassDef)):
+            yield from _walrus_targets(child)
+
+
 def _param_defaults(node: ast.AST):
     """(parameter, default expression) pairs. The default is evaluated in the
     enclosing scope, so the parameter really holds whatever it resolves to."""
@@ -339,12 +360,20 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
             imported.update(_import_bindings(child, package))
     bindings.update(imported)
 
-    rebound: dict[str, int] = {}
+    rebound: set[str] = set()
+    declared_global: set[str] = set()
     for child in own:
         if isinstance(child, (ast.Import, ast.ImportFrom)):
             continue
-        for name in _bound_names(child):
-            rebound.setdefault(name, getattr(child, "lineno", 0))
+        if isinstance(child, ast.Global):
+            declared_global.update(child.names)
+        rebound.update(_bound_names(child))
+        # PEP 572: a walrus target inside a comprehension binds in the
+        # CONTAINING scope, so it leaks back out to here. A plain `for` target
+        # does not, which is why the two cannot share a row.
+        if isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp,
+                              ast.GeneratorExp)):
+            rebound.update(_walrus_targets(child))
 
     # THE DISCRIMINATOR: can the rebinding make a use site resolve to the
     # import? Not "is it rare" and not "is it suspicious" — reachability.
@@ -363,26 +392,43 @@ def _scan_scope(node: ast.AST, inherited: dict[str, str | None],
     #                        binding raises UnboundLocalError rather than
     #                        reaching the module. Parameters, `except ... as`
     #                        and `match`/`case` captures are alike here.
-    #   comprehension ...... NO. Python 3 scopes the target; it does not leak.
+    #   comprehension
+    #     `for` target ..... NO. Python 3 scopes it to the comprehension.
+    #   comprehension
+    #     WALRUS target .... NO, but not for the row above and it does not
+    #                        inherit from it. PEP 572 binds the target in the
+    #                        CONTAINING scope, so it leaks out and then lands
+    #                        under whichever row governs that scope — private
+    #                        inside a function, reachable at module scope.
+    #   `global x` ......... YES, even in a function body. The declared binding
+    #                        is the MODULE's, so the privacy the function-body
+    #                        row rests on does not hold: a read before the
+    #                        rebinding returns a live value instead of raising
+    #                        UnboundLocalError. `nonlocal` is unaffected — it
+    #                        can only bind an enclosing function's local, never
+    #                        an import.
     #
-    # Narrowed to bindings that can reach something forbidden. It previously
-    # fired on any import/rebind pair, which reddened `try: import numpy /
-    # except ImportError: numpy = None` and four other ordinary defensive
-    # shapes, while the message claimed the rebinding "disables the purity
-    # check" — false for all five. If this ever over-fires again the remedy is
-    # a narrow exemption for the specific shape, never a weaker rule.
-    collides = isinstance(node, _COLLIDING_SCOPES)
-    for name, lineno in sorted(rebound.items(), key=lambda item: item[1]):
-        target = bindings.get(name)
-        if collides:
-            # LOAD_NAME still reaches the import here, so the binding stands.
-            if target is not None and _reaches_forbidden(target):
-                errors.append(f"{path}:{lineno}: '{name}' is imported and rebound "
-                              f"where the import stays reachable ({target}) — a use "
-                              f"above the rebinding still resolves to it")
-            elif name not in bindings:
-                bindings[name] = None
-        else:
+    # The enclosing-scope row covers two different mechanisms. Defaults,
+    # decorators and base lists are EVALUATED at definition time, before the
+    # new scope's bindings exist. Annotations are not evaluated at all here —
+    # this file carries `from __future__ import annotations`, and on 3.14 they
+    # are lazy regardless — but the verdict is the same, because PEP 649's
+    # annotate function still closes over the enclosing scope. Deferred
+    # resolution, not evaluation; do not restate the annotation arm as
+    # something confirmed by executing it.
+    #
+    # There is deliberately NO report attached to any of this. A collision
+    # report lived here and was deleted after ablation showed it caught no
+    # purity violation the reference check did not already catch, while
+    # false-positiving on class-body fields that never use the name. What is
+    # load-bearing is only that the binding STANDS, so the reference check can
+    # still resolve through the rebind. Do not reintroduce a report, a warning
+    # or a flag.
+    stands = isinstance(node, _BINDING_STANDS_SCOPES)
+    for name in rebound:
+        if name in declared_global:
+            continue  # the module's binding, not a private local
+        if not stands or name not in bindings:
             bindings[name] = None
 
     # `_clock_mod = time` / `_sleep = time.sleep`: an alias is the thing it
