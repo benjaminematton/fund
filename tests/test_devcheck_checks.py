@@ -243,3 +243,30 @@ def test_services_alert_when_droplet_unreachable():
     f = _only(evaluate(s), "services")
     assert f.severity == "alert"
     assert "unreachable" in f.detail
+
+
+def test_db_broker_agreement_warns_when_the_broker_could_not_be_read():
+    """Absence is never rendered as health (spec §4).
+
+    AlpacaSource exposes no fill history, so this count can genuinely be
+    unread. Defaulting an unread count to len(orders) would print 🟢 for a
+    comparison nobody performed — the exact "signal that changes meaning
+    without changing appearance" shape this package exists to remove.
+    """
+    s = _snap(orders=[OrderRow("t-1", "NVDA")], tickets={"t-1": "NVDA"}, broker_fill_count=None)
+    f = _only(evaluate(s), "db_broker_agreement")
+    assert f.severity == "warn"
+    assert "not read" in f.detail
+
+
+def test_coverage_alerts_when_the_book_could_not_be_read():
+    """The false green this check is most dangerous to have.
+
+    An unreachable broker yields no positions, and "0 position(s), every
+    share covered" is indistinguishable from a genuinely flat book. Spec §4:
+    a failed broker call renders as a finding, and position state is never
+    inferred. On 2026-08-21 an unknown exposure sat eight hours.
+    """
+    f = _only(evaluate(_snap(positions=None)), "position_coverage")
+    assert f.severity == "alert"
+    assert "not read" in f.detail

@@ -50,12 +50,12 @@ class Snapshot:
     orders: Sequence[OrderRow]
     tickets: Mapping[str, str]          # ticket id -> symbol
     events_unposted: int
-    broker_fill_count: int
+    broker_fill_count: int | None      # None = not read; never defaulted to agreement
     checkpoints: Sequence[tuple[str, str, str]]   # (run_date, stage, status)
     journals_written: frozenset[str] | set[str]
     seats_participating: frozenset[str] | set[str]
     scorecard_codes: Sequence[str]
-    positions: Sequence[Position]
+    positions: Sequence[Position] | None   # None = not read; never inferred
     open_orders: Sequence[OpenOrder]
     due_unresolved: Sequence[int]       # decision ids past horizon with no resolution
     droplet_head: str

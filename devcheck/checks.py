@@ -70,8 +70,20 @@ def check_outbox(s: Snapshot) -> Finding:
 def check_db_broker_agreement(s: Snapshot) -> Finding:
     """Invariant 6 — the DB is the source of truth, so the broker having
     seen more fills than the DB has rows is a divergence, not a rounding
-    difference. Manual out-of-gate orders produce exactly this."""
+    difference. Manual out-of-gate orders produce exactly this.
+
+    An unread count is reported as unread. AlpacaSource exposes no fill
+    history, so this is a live state rather than a hypothetical: rendering it
+    as agreement would print a green row for a comparison nobody performed.
+    """
     rows = len(s.orders)
+    if s.broker_fill_count is None:
+        return Finding(
+            "db_broker_agreement",
+            "warn",
+            f"orders has {rows} row(s); the broker's fill count was not read, so the "
+            "two were never compared — AlpacaSource exposes no fill history",
+        )
     if rows == s.broker_fill_count:
         return Finding("db_broker_agreement", "ok", f"orders rows == broker fills ({rows})")
     return Finding(
@@ -152,7 +164,18 @@ def check_position_coverage(s: Snapshot) -> Finding:
     Coverage is AGGREGATE: N shares covered by one or more live stops.
     Partial cover is exposure; the uncovered remainder has no code path that
     will protect it.
+
+    An unread book is an alert, not a green row. "0 position(s), every share
+    covered" is what an unreachable broker would otherwise print, and it is
+    indistinguishable from a genuinely flat account.
     """
+    if s.positions is None:
+        return Finding(
+            "position_coverage",
+            "alert",
+            "the broker's position book was not read, so live exposure is unknown "
+            "— spec §4 forbids inferring position state from the database",
+        )
     naked = [p for p in s.positions if p.covering_qty < p.qty]
     if not naked:
         return Finding(
