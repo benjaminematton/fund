@@ -290,13 +290,24 @@ MASTER_REGRESSION_CASES = [
 #       all three verified by execution.
 #   comprehension `for` target ................... NO, Python 3 scopes it to
 #       the comprehension and it does not leak.
-#   comprehension WALRUS target .................. NO, but for a DIFFERENT
-#       reason, and the row above does not carry over. PEP 572 binds a walrus
-#       target in the CONTAINING scope, so it DOES leak out of the
-#       comprehension — and then lands under whichever row governs that scope.
-#       Inside a function that is the function-body row, so it is private and
-#       clean; at module scope it is reachable and the reference check catches
-#       any real clock read regardless. Verified by execution.
+#   comprehension WALRUS target .................. DEPENDS, and the `for` row
+#       above does not carry over. PEP 572 binds a walrus target in the
+#       CONTAINING scope, so it leaks out of the comprehension and lands under
+#       whichever row governs that scope: private inside a function body,
+#       reachable at module scope.
+#
+#       AND — a use INSIDE the same comprehension also resolves to the
+#       containing scope, so if the name is import-bound there the use reaches
+#       the real module. `[(time := time.sleep(0.30)) for _ in range(1)]`
+#       blocks for a third of a second and leaves `time` as None. The name must
+#       therefore NOT be popped inside the comprehension.
+#
+#       CORRECTION: this row previously ended "at module scope it is reachable
+#       and the reference check catches any real clock read regardless." That
+#       was mine and it was false — the reference check did NOT catch the
+#       self-use shape, which is how six evasions survived a round. It is the
+#       kind of claim this file exists to disprove, so it is recorded rather
+#       than quietly replaced.
 #
 # Rareness and suspiciousness are NOT the test; reachability is. A rule that
 # flags code which cannot produce the harm is the failure mode that gets lints
@@ -323,7 +334,7 @@ MASTER_REGRESSION_CASES = [
 #      left as a husk; this comment is the durable artefact, not that table.
 #   4. The collision REPORT was deleted outright and every case here was
 #      re-measured against an ablated copy rather than reassigned by
-#      assumption. Seven stayed violations under the reference check and their
+#      assumption. EIGHT stayed violations under the reference check and their
 #      rule moved from the deleted RULE_COLLISION to RULE_CLOCK_REF; `global`
 #      stayed red for a different reason (see its case); two moved to
 #      CLEAN_CASES. RULE_COLLISION was removed because nothing asserts it.
@@ -409,6 +420,81 @@ BINDING_STANDS_CASES = [
             grabbed = time.time
             time = None
             return grabbed
+    """, RULE_CLOCK_REF),
+    # `nonlocal` onto an enclosing function's IMPORT. Twin of "nonlocal onto a
+    # NON-import enclosing local" in CLEAN_CASES, and the difference between
+    # them is the whole rule: an `import` inside a function is a function-local
+    # binding whose value IS the module, so `nonlocal` reaches it. The earlier
+    # claim that `nonlocal` "can never reach an import" was wrong, and the case
+    # written on it has been corrected rather than deleted.
+    # Executed: inner() blocks 0.305s on a real wall clock.
+    ("nonlocal onto an enclosing function's import", """
+        def outer():
+            import time
+
+            def inner():
+                nonlocal time
+                v = time.sleep(0.30)
+                time = None
+                return v
+
+            return inner
+    """, RULE_CLOCK_REF),
+    # --- walrus used INSIDE its own comprehension --------------------------
+    # PEP 572 gives the walrus target to the CONTAINING scope, so a use inside
+    # the comprehension resolves there — to the import. The lint also binds the
+    # target inside the comprehension's own scope, which pops the name exactly
+    # where the use is read, so the use resolves to nothing and the clock read
+    # goes clean. Every one of these executes and blocks ~0.30s on a real wall
+    # clock; the module-scope variants leave `time` set to None afterwards.
+    #
+    # This was previously documented in the lint as harmless because "both paths
+    # bind to unresolvable, so no verdict differs". That is falsified by every
+    # case below and is the fourth "harmless by construction" claim in this
+    # change to turn out false. Measure such claims; do not accept them.
+    ("walrus used inside its own listcomp", """
+        import time
+
+        _U = [(time := time.sleep(0.30)) for _ in range(1)]
+    """, RULE_CLOCK_REF),
+    ("walrus used inside its own setcomp", """
+        import time
+
+        _U = {(time := time.sleep(0.30)) for _ in range(1)}
+    """, RULE_CLOCK_REF),
+    ("walrus used inside its own dictcomp", """
+        import time
+
+        _U = {i: (time := time.sleep(0.30)) for i in range(1)}
+    """, RULE_CLOCK_REF),
+    ("walrus used inside its own genexp", """
+        import time
+
+        _U = tuple((time := time.sleep(0.30)) for _ in range(1))
+    """, RULE_CLOCK_REF),
+    ("walrus used inside a comprehension's `if` clause", """
+        import time
+
+        _U = [x for x in range(1) if (time := time.sleep(0.30)) is None]
+    """, RULE_CLOCK_REF),
+    ("walrus used inside its own comprehension, in function scope", """
+        def go():
+            import time
+            return [(time := time.sleep(0.30)) for _ in range(1)]
+    """, RULE_CLOCK_REF),
+    # PIN for the nested-scope stop in _walrus_targets, whose docstring asserts
+    # that nested function and class scopes are not crossed. Nothing proved it.
+    # A walrus inside a LAMBDA belongs to the lambda, so it must NOT leak out
+    # and pop the module-level `time` — remove the guard and the genuine
+    # `time.sleep(1)` below goes clean. Currently passes; that is the point.
+    ("walrus inside a lambda nested in a comprehension does not leak", """
+        import time
+
+        _U = [(lambda: (time := 1))() for _ in range(1)]
+
+
+        def pause():
+            time.sleep(1)
     """, RULE_CLOCK_REF),
     ("match-capture (module scope)", """
         import time
@@ -928,21 +1014,24 @@ CLEAN_CASES = [
                 # unexamined shape.
                 return time.monotonic()
     """),
-    # Twin of "global (function body ...)" in BINDING_STANDS_CASES. `nonlocal` can
-    # only bind an ENCLOSING FUNCTION's local, never a module-level import, so
-    # it can never reach the stdlib and must stay clean. That asymmetry with
-    # `global` is the whole content of the pair.
-    ("nonlocal (function body)", """
-        import time
-
-
+    # CORRECTED 2026-08-25. This case previously read `import time` at module
+    # scope with `time = None` in `outer`, and was justified as "`nonlocal` can
+    # only bind an enclosing function's local, never an import, so it can never
+    # reach the stdlib." The premise is true and the conclusion does not follow:
+    # an `import` INSIDE a function creates a function-local binding whose value
+    # IS the module, so `nonlocal` can reach one. That shape is now a violation
+    # in BINDING_STANDS_CASES; this control keeps the genuinely-clean half so
+    # the pair pins the distinction instead of deleting it.
+    #
+    # Here the enclosing local is NOT an import — it is a caller's Timer — so
+    # nothing resolves to the stdlib and `.monotonic()` is that object's own API.
+    ("nonlocal onto a NON-import enclosing local (function body)", """
         def outer():
-            time = None
+            time = Timer()
 
             def inner():
                 nonlocal time
-                time = object()
-                return time
+                return time.monotonic()
 
             return inner
     """),
@@ -1420,22 +1509,25 @@ PACKAGE_RELATIVE_CLEAN_TREES = [
 # re-route a message without breaking a test. That design is structurally blind
 # to one thing: the SAME violation reported twice.
 #
-# Two blocks in the lint exist only to deduplicate. A comprehension's outermost
-# iterable and a parameter's annotation are each reachable by two paths through
-# the scanner, and each block suppresses the second. Delete either and the lint
+# THREE blocks in the lint exist only to deduplicate — this said "two" until a
+# third, the Store-context filter, was found unpinned by exactly the gap this
+# comment was written to close. A comprehension's outermost iterable, a
+# parameter's annotation, and an alias capture's Store target are each reachable
+# by two paths through the scanner, and each block suppresses the second. Delete
+# any of them and the lint
 # stays correct about WHAT is wrong while printing it twice — so no existence
 # check moves, the ablation scores the block as dead, and the next person
 # removes it. The only symptom is doubled output that nobody traces back. That
 # is the same unverified-purpose failure this lane has spent its length
 # closing, with a cosmetic blast radius instead of a correctness one.
 #
-# SCOPE, deliberately narrow (ruled 2026-08-25): these two minimal snippets
-# assert DEDUPLICATION, not a general contract on error counts. Each is chosen
-# to produce exactly one violation by exactly one rule, so the count is
+# SCOPE, deliberately narrow (ruled 2026-08-25): these minimal snippets assert
+# DEDUPLICATION, not a general contract on error counts. Each is chosen to
+# produce exactly one violation by exactly one rule, so the count is
 # unambiguous. If a future rule legitimately fires twice on one of these
-# snippets, the right fix is to update THESE TWO CASES deliberately — not to
-# loosen them back to existence checks, and not to freeze counts anywhere else
-# in this file.
+# snippets, the right fix is to update THESE CASES deliberately — not to loosen
+# them back to existence checks, and not to freeze counts anywhere else in this
+# file.
 DEDUP_CASES = [
     ("comprehension's outermost iterable, reported once", """
         import time
@@ -1450,6 +1542,15 @@ DEDUP_CASES = [
 
         def f(x: time.time = None):
             pass
+    """, 1),
+    # The third block: the Store-context filter. Without it the alias's Store
+    # target is scanned too, resolves through alias propagation to time.sleep,
+    # and the same violation is reported twice. Measured 1 -> 2. (A chained
+    # `_a = _b = time.sleep` does NOT double, so it would not pin this.)
+    ("alias capture, reported once", """
+        import time
+
+        _sleep = time.sleep
     """, 1),
 ]
 
