@@ -16,7 +16,7 @@ import pytest
 
 from evals.cases import load_cases
 from evals.grade import full_registry, grade_trace
-from evals.report import build_report, render
+from evals.report import build_report, format_failures, render
 from evals.runner import run_trial
 
 CASES = Path(__file__).resolve().parents[1] / "evals/cases/pm"
@@ -53,4 +53,5 @@ def test_pm_suite():
     failed = [r for r in reports if r.failures]
     assert not failed, (
         "Tier S failures (blocking at 3/3): "
-        + "; ".join(f"{r.case} {r.fraction} {r.failures}" for r in failed))
+        + "; ".join(f"{r.case} {r.fraction} {format_failures(r.failures)}"
+                    for r in failed))
