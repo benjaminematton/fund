@@ -789,3 +789,63 @@ def test_execution_alert_is_not_reposted_on_a_resume(fund_db, sim_clock):
     run_execution(ctx, lambda: None)
     run_execution(ctx, lambda: None)
     assert len(_alert_texts(fund_db)) == 1
+
+
+def test_execution_alerts_when_the_turn_overran_the_tickets_ttl(fund_db, sim_clock):
+    """Issue #40's TTL hole. The turn burns past the 45-minute TTL and places
+    nothing, so the ticket is still 'open' when the alert pass runs — expiry
+    already swept at the start of the body, before the overrun. The old pass
+    asked open_tickets, whose clock filter dropped precisely this ticket, so
+    the loudest no-order day was the one that alerted least. Same code, same
+    text: the alert is about status, not about the clock."""
+    _open_ticket(fund_db, sim_clock)
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+
+    def overrunning_turn() -> None:
+        sim_clock.advance(minutes=46)          # past expires_at, nothing placed
+
+    assert run_execution(ctx, overrunning_turn) == "done"
+    assert _alert_texts(fund_db) == [
+        f"ticket {TID[:8]} open after exec turn — no order"]
+    assert _codes(fund_db) == ["ticket_open_after_exec"]
+
+
+def test_a_resumed_execution_stage_does_not_expire_the_ticket(fund_db, sim_clock):
+    """Issue #40. A day re-fired after the execution checkpoint reached 'done'
+    skips the body — so every repair path in it is skipped too. With expiry
+    sitting OUTSIDE the body it ran anyway, finalizing ticket AND decision to
+    'expired' on a resume that did no work. There is no legal edge out of
+    'expired', so a real fill sitting at the broker was locked out of the books
+    permanently. Expiry belongs to the stage, not to the resume."""
+    tid = _open_ticket(fund_db, sim_clock)
+    fund_db.execute("UPDATE decisions SET status='approved' WHERE ticker='NVDA'")
+    fund_db.commit()
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    assert run_execution(ctx, lambda: None) == "done"   # checkpoint -> done
+    sim_clock.advance(minutes=46)                       # past the ticket's TTL
+    assert run_execution(ctx, lambda: None) == "done"   # body skipped on resume
+    assert fund_db.execute("SELECT status FROM tickets WHERE id=?",
+                           (tid,)).fetchone()["status"] == "open"
+    assert fund_db.execute(
+        "SELECT status FROM decisions WHERE ticker='NVDA'"
+    ).fetchone()["status"] == "approved"
+    assert len(_alert_texts(fund_db)) == 1
+
+
+def test_execution_is_silent_when_the_ticket_was_past_ttl_on_entry(fund_db, sim_clock):
+    """Pins the ORDER of the two statements in the body. _alert_unexecuted_tickets
+    is clock-free, which is only safe because expire_open_tickets runs FIRST and
+    has already swept every ticket whose TTL passed before the stage started —
+    yesterday's included. Run the alert pass first and each of those stale open
+    tickets fires a spurious ticket_open_after_exec, reddening the audit and
+    paging a human for a ticket that was never this stage's to place. A false
+    positive is how people learn to ignore the alert."""
+    tid = _open_ticket(fund_db, sim_clock)
+    fund_db.execute("UPDATE decisions SET status='approved' WHERE ticker='NVDA'")
+    fund_db.commit()
+    sim_clock.advance(minutes=46)          # TTL passed BEFORE the stage runs
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    assert run_execution(ctx, lambda: None) == "done"
+    assert _alert_texts(fund_db) == []
+    assert fund_db.execute("SELECT status FROM tickets WHERE id=?",
+                           (tid,)).fetchone()["status"] == "expired"

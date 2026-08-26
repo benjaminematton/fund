@@ -18,11 +18,12 @@ from pathlib import Path
 from typing import Callable
 
 from gate.risk import Approved, Rejected, size
-from gate.tickets import create_ticket, expire_open_tickets, open_tickets
+from gate.tickets import (create_ticket, expire_open_tickets, open_tickets,
+                          open_tickets_without_orders)
 from orchestrator.clock import Clock, et_hhmm, iso
 from orchestrator.protection import (assert_positions_accounted,
                                      assert_positions_protected)
-from orchestrator.reconcile import reconcile_orders
+from orchestrator.reconcile import reconcile_stage
 from slackkit.outbox import append_alert, append_event, drain
 from state.critiques import insert_default_critiques
 from state.journal import append_entry
@@ -321,32 +322,38 @@ def run_gate(ctx: StageCtx) -> None:
 
 
 def _alert_unexecuted_tickets(ctx: StageCtx) -> None:
-    """D2: a ticket the gate approved that is STILL open and unexpired after
-    the trader turn, with no order row keyed by it (invariant 5:
-    orders.client_order_id IS the ticket id), means the turn produced nothing.
-    That is exactly the 2026-08-17 failure — turn billed, no order placed,
-    stage 'done', day reported a success. Alerting (not raising) is
-    deliberate: default HOLD stands, the day still finishes, and the alert
-    plus the reddened audit are the signal. Zero open tickets stays silent —
-    a hold day is normal."""
+    """D2: a ticket the gate approved that is STILL open after the trader
+    turn, with no order row keyed by it (invariant 5: orders.client_order_id
+    IS the ticket id), means the turn produced nothing. That is exactly the
+    2026-08-17 failure — turn billed, no order placed, stage 'done', day
+    reported a success. Alerting (not raising) is deliberate: default HOLD
+    stands, the day still finishes, and the alert plus the reddened audit are
+    the signal. Zero open tickets stays silent — a hold day is normal.
+
+    Keyed on STATUS, never on the clock (issue #40). Expiry sweeps at the
+    start of the body, before the turn, so the only way a past-TTL ticket is
+    still 'open' here is that its TTL passed DURING the turn — a turn that
+    overran its whole 45-minute budget and placed nothing. That is the loudest
+    case there is, and the clock filter in open_tickets silently deleted
+    exactly it from the answer."""
     now = iso(ctx.clock.now())
-    for ticket in open_tickets(ctx.conn, now):
-        placed = ctx.conn.execute(
-            "SELECT 1 FROM orders WHERE client_order_id = ?",
-            (ticket["id"],)).fetchone()
-        if placed is None:
-            append_alert(ctx.conn, "ticket_open_after_exec",
-                         f"ticket {ticket['id'][:8]} open after exec"
-                         " turn — no order", now_iso=now)
+    for ticket in open_tickets_without_orders(ctx.conn):
+        append_alert(ctx.conn, "ticket_open_after_exec",
+                     f"ticket {ticket['id'][:8]} open after exec"
+                     " turn — no order", now_iso=now)
 
 
 def run_execution(ctx: StageCtx, run_trader_turn: Callable[[], None] | None) -> str:
     """Trader stage. Zero open tickets -> no turn at all (no LLM spend on a
     hold day); the stage still drains and still checkpoints done."""
-    now = iso(ctx.clock.now())
-    expire_open_tickets(ctx.conn, now)   # clock-injected expiry (acceptance §0)
-
     def body() -> None:
+        # INSIDE the body (issue #40). run_stage skips the body entirely on a
+        # resumed day whose execution checkpoint is already 'done'; with expiry
+        # outside it, that resume still ran — finalizing the ticket AND its
+        # decision to 'expired' while every repair path was skipped. There is
+        # no legal edge out of 'expired', so a real fill sitting at the broker
+        # was locked out of the books permanently.
+        expire_open_tickets(ctx.conn, iso(ctx.clock.now()))   # clock-injected (acceptance §0)
         if run_trader_turn is not None and open_tickets(ctx.conn, iso(ctx.clock.now())):
             run_trader_turn()
         _alert_unexecuted_tickets(ctx)
@@ -474,8 +481,8 @@ def run_day(ctx: StageCtx, *, execution_turn: Callable[[], None] | None = None,
     run_execution(ctx, execution_turn if execution_turn is not None
                   else ctx.run_turn.get("execution"))
     run_stage(ctx, "reconciliation",
-              lambda: reconcile_orders(ctx.conn, clock=ctx.clock, broker=broker,
-                                       sleep=sleep or (lambda _s: None)))
+              lambda: reconcile_stage(ctx.conn, clock=ctx.clock, broker=broker,
+                                      sleep=sleep or (lambda _s: None)))
     # NOT a stage: an assertion must re-check on a resumed day, never be
     # skipped as 'done'. Drained explicitly because a resumed day can find
     # close already 'done', and run_stage returns before draining — which
