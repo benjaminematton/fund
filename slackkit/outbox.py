@@ -11,6 +11,7 @@ import logging
 import sqlite3
 
 from .port import PermanentPostError
+from .redact import redact
 from .render import render
 
 log = logging.getLogger(__name__)
@@ -44,8 +45,16 @@ def append_alert(conn: sqlite3.Connection, code: str, text: str, *,
     an `except`, and a raise here would turn "something needs review" into a
     dead trading day (invariant 4). scripts/check_alert_codes.py enforces the
     code's shape statically instead.
+
+    `text` — and only `text` — is redacted here rather than at the call sites:
+    the three scripts/run_day.py sites interpolate a raw exception, and the
+    stored row feeds BOTH egresses, Slack via drain() and GitHub via
+    scripts/file_alert_issues.py. `**payload` is stored as given;
+    orchestrator/preconditions.py:78 deliberately keeps a full uncapped
+    exception there, and no egress reads payload extras today. redact()
+    neither raises nor runs long, so this cannot cost an alert.
     """
-    body: dict = {"text": text, "code": code, **payload}
+    body: dict = {"text": redact(text), "code": code, **payload}
     if ticker is not None:
         body["ticker"] = ticker
     if clears:
