@@ -104,7 +104,7 @@ CREATE TABLE resolutions (
   realized_return REAL NOT NULL,
   alpha_vs_spy  REAL NOT NULL,
   invalidated   INTEGER NOT NULL DEFAULT 0,   -- invalidation condition hit early
-  reflection    TEXT,                         -- written by the deciding agent
+  reflection    TEXT,                         -- written by the reflect seat, never the deciding agent
   resolved_at   TEXT NOT NULL
 );
 
@@ -132,6 +132,46 @@ CREATE TABLE costs (
   session_id    TEXT NOT NULL,
   usd_estimate  REAL NOT NULL,                -- ResultMessage.total_cost_usd (client-side est.)
   recorded_at   TEXT NOT NULL
+);
+
+-- An append-only OBSERVATION LOG: one row each time the fund sees a protective
+-- order at the broker. Like events and costs it is a log, not a workflow table,
+-- so §1 has no state machine for it — there is no status column and nothing is
+-- ever closed, cancelled or rewritten. ADR-0004 records why.
+--
+-- IT IS NEVER THE SOURCE OF WHAT PROTECTION EXISTS. orchestrator/protection.py
+-- :_covering_qty reads the broker for that, always. A row says what the fund
+-- SAW and when; a table feeding the coverage number would recreate 2026-08-17,
+-- where the database asserted a stop the broker did not hold and nothing
+-- noticed for two sessions.
+--
+-- `id` is DERIVED, not minted: "<alpaca_order_id>@<observed_at>", the row's
+-- natural key. So no id_factory is threaded, assert_positions_protected's
+-- signature is untouched, and sim-day and replay stay deterministic without
+-- sharing ctx.id_factory with tickets.
+--
+-- `stop_price` is NULLABLE because trailing_stop carries none while
+-- _covering_qty still counts it toward cover; NOT NULL would silently skip an
+-- order the alert's own number includes.
+--
+-- In state/schema.sql this table is written CREATE TABLE IF NOT EXISTS, which
+-- is load-bearing there and not style: state/db.py:12 matches that exact
+-- string to build _TABLES, and a bare CREATE TABLE would create the table on
+-- fresh databases and never register it, so no existing database would gain
+-- it. The form here follows §2's convention; the form there is the mechanism.
+CREATE TABLE protection (
+  id                TEXT PRIMARY KEY,          -- "<alpaca_order_id>@<observed_at>"
+  symbol            TEXT NOT NULL,
+  qty               INTEGER NOT NULL CHECK (qty > 0),
+  stop_price        REAL CHECK (stop_price IS NULL OR stop_price > 0),
+  alpaca_order_id   TEXT NOT NULL,             -- the broker's UUID
+  client_order_id   TEXT,                      -- Alpaca-generated on an OTO leg
+  provenance_kind   TEXT NOT NULL              -- 'ticket' arrives with the amend path
+                    CHECK (provenance_kind IN ('observed','adopted')),
+  broker_expires_at TEXT,                      -- GTC expiry, read from the broker
+  observed_at       TEXT NOT NULL,             -- what makes a row an observation
+  created_at        TEXT NOT NULL,
+  UNIQUE (alpaca_order_id, observed_at)
 );
 ```
 
@@ -267,7 +307,23 @@ All schemas declare `"strict": true`. Handlers validate with the pydantic models
        "required": ["ticker","action","qty","thesis","invalidation"],
        "additionalProperties": False},
       strict=True)
+
+@tool("submit_reflection",
+      "Record your reflection on the resolved decision named in your prompt. Call it exactly once. The facts are stored alongside your words automatically — do not restate them, and do not invent any. Written once: there is no revising it.",
+      {"type": "object",
+       "properties": {
+         "prose": {"type": "string", "maxLength": 1000,
+                   "description": "What you would do differently, in your own words."}},
+       "required": ["prose"],
+       "additionalProperties": False},
+      strict=True)
 ```
+
+`submit_reflection` (reflect seat only) departs from the trade-pipeline framing above in three ways. It INSERTs once rather than UPSERTs — a reflection is written once, like `submit_spec_critique` (`specs/strategy-contracts.md` §3.4), not revised like a signal or a draft decision. It appends no projection event: `events` is the Slack outbox that `drain` posts in full, and one event per reflection would mean one Slack post per resolved decision every night, in a channel nobody asked to have that noisy — this lane is scoped to the `resolutions.reflection` column only. And the decision it is written against is not an argument at all.
+
+That last point is load-bearing. `decision_id` is bound **server-side, for the turn** — set once at server construction from the row the nightly job selected, never supplied by the seat and never present in the schema above. A seat that could name the row could write its prose onto a *different*, still-unreflected decision, and the result would look well-formed: the handler prepends that row's own computed frame (realized return, alpha vs. SPY, horizon) ahead of the seat's prose before storing either, so a mismatched row carries a frame and prose that both read as legitimate on their own. Binding the id server-side makes writing the wrong row structurally impossible instead of merely checkable. The 🔏 ruling above (2026-08-13) applies here too — the JSON schema is advisory to the model and the handler is the enforcement layer — except here the handler enforces from a value the seat cannot influence at all, because no field for it exists to falsify.
+
+When no decision is bound to the turn, the handler refuses outright — no row, no frame, no prose written — rather than writing blind.
 
 One read tool balances them — the only path INTO a decision seat's context, so that per-run values never have to be baked into a prompt (CLAUDE.md):
 
@@ -291,7 +347,7 @@ It writes nothing and returns a JSON object:
 
 The snapshot provider and journals root are bound into `build_fund_server` at composition time (like `conn` and `clock`); there is no snapshot table. **Failure semantics (invariant 4):** the handler never raises. A provider that errors or was never bound degrades only its own section to that section's empty default and appends a named entry to `unavailable`. For the PM an empty `allowed_actions` reads as "nothing is possible today" = HOLD; the orchestrator's own `pm_timeout` → hold/0 default remains the backstop underneath.
 
-Availability: `submit_signal` → analyst seats only; `submit_critique` → Critic only; `submit_decision` → PM only; `get_stage_brief` → analyst + PM only (never the exec seat — it acts on gate tickets alone, and it is the only seat that can trade). A tool called by the wrong seat returns an error (checked against the seat name baked into the server at construction).
+Availability: `submit_signal` → analyst seats only; `submit_critique` → Critic only; `submit_decision` → PM only; `get_stage_brief` → analyst + PM only (never the exec seat — it acts on gate tickets alone, and it is the only seat that can trade); `submit_reflection` → the `reflect` seat only, and that seat exists only on the nightly 16:35 job — it is never present in the daily trading cycle. A tool called by the wrong seat returns an error (checked against the seat name baked into the server at construction).
 
 Ordering within the Decision stage: PM draft (Slack only) → `submit_critique` → PM acknowledgment (Slack) → `submit_decision`. The handler for `submit_decision` refuses (tool error, PM retries) if no critique row exists yet for `(run_date, ticker)` — this enforces the draft→critique→final ordering without making the critique blocking: on critic timeout the orchestrator inserts the `clear`/`critic_timeout` row itself, and the PM proceeds. When no critic seat is configured (phases 1–2), the orchestrator inserts `clear`/`no_critic_seat` rows at stage start and the Decision stage runs as a single turn.
 

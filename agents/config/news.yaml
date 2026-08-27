@@ -3,9 +3,13 @@ model: claude-haiku-4-5-20251001
 fallback_model: claude-sonnet-5
 max_budget_usd: 0.50
 # Same P1 cost bound as the analyst seat. The measured analyst day (2026-08-17,
-# 2 tickers) was 7 turns / $0.0504, and this seat's charter budgets the same
-# shape of work — one brief call plus roughly two calls per ticker — so 16
-# carries the same headroom at the 3-ticker watchlist.
+# 2 tickers) was 7 turns / $0.0504. Charter v3 budgets one brief call plus
+# roughly three calls per ticker — its own single-symbol get_news, price
+# context, submit_signal — where v2 shared one pooled get_news across the whole
+# set. Measured production under v2 was 7-8 turns; the extra per-ticker call
+# puts the 3-ticker watchlist near 9-10, so 16 still carries headroom.
+# Note this now scales linearly with watchlist size where the pooled call was
+# constant, so the headroom shrinks as tickers are added.
 # INHERITED, NOT MEASURED: right-size from THIS seat's first live
 # ResultMessage.num_turns rather than leaving the analyst's number here
 # permanently. A news-heavy ticker may need more calls than a price-only one,

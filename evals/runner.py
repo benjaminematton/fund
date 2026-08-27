@@ -72,7 +72,13 @@ def git_sha() -> str:
 
 
 def _sdk_session(options, prompt, state):
-    """The live session. Mirrors scripts/run_day.py:_seat_session exactly."""
+    """The live session. Same client and same run_seat_turn call as
+    scripts/run_day.py:_seat_session, with ONE deliberate difference: no
+    wall-clock bound. run_day wraps its session in _bounded(SEAT_MAX_WALL_S)
+    because a hung turn there hangs an unattended trading day while holding the
+    flock, so the next day's timer exits 0 and the stall reads as a closed
+    market (#44). This harness is manual: a hang here is in front of an
+    operator, and Ctrl-C is the bound."""
     import asyncio
 
     from claude_agent_sdk import ClaudeSDKClient

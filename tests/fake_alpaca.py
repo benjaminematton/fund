@@ -21,6 +21,14 @@ from __future__ import annotations
 
 import json
 
+# A GTC order carries a broker-set expiry ~90 days out. This is the live NVDA
+# stop's actual value (order 5abc139f-…, placed 2026-08-19), reused as the
+# fake's fixed expiry so offline tests exercise a real shape rather than an
+# invented one. FIXED, not computed: the fake has no clock, and a value derived
+# from wall time would break replay. ISO with a T separator, matching
+# orchestrator.clock.iso() and every other timestamp in the database.
+GTC_EXPIRES_AT = "2026-11-17T21:00:00+00:00"
+
 # The prompt-injection guard the real server attaches (captured 2026-07-12).
 # It is NOT order data and NOT a risk gate — it marks the output untrusted.
 _ALPACA_MCP_SECURITY = {
@@ -47,16 +55,43 @@ def mcp_envelope(resp: dict) -> str:
                        "data": order})
 
 
+# The nine fields alpaca.trading.models.AccountConfiguration carries in pinned
+# alpaca-py 0.44.0. Values are ARBITRARY fixture placeholders, deliberately
+# NOT the real account's — the real account reports null for dtbp_check,
+# pdt_check and max_options_trading_level, where this dict below guesses a
+# value. The real captured values live in config/account_config_baseline.yaml.
+# A test that cares about a specific setting overrides it rather than editing
+# this dict.
+DEFAULT_ACCOUNT_CONFIG = {
+    "dtbp_check": "entry",
+    "fractional_trading": True,
+    "max_margin_multiplier": "4",
+    "max_options_trading_level": 0,
+    "no_shorting": False,
+    "pdt_check": "entry",
+    "ptp_no_exception_entry": False,
+    "suspend_trade": False,
+    "trade_confirm_email": "all",
+}
+
+
 class FakeAlpaca:
     def __init__(self, prices: dict[str, float],
                  fill_prices: dict[str, float] | None = None,
-                 mode: str = "fill") -> None:
+                 mode: str = "fill",
+                 account_config: dict | None = None) -> None:
         self.prices = dict(prices)
         self.fill_prices = dict(fill_prices or {})
         self.mode = mode
         self.orders: dict[str, dict] = {}
         self.place_attempts: list[dict] = []
         self.cancel_attempts: list[str] = []
+        self._account_config = dict(
+            DEFAULT_ACCOUNT_CONFIG if account_config is None else account_config)
+
+    def account_config(self) -> dict:
+        """Twin of market/source_alpaca.py:AlpacaSource.account_config."""
+        return dict(self._account_config)
 
     def place_order(self, args: dict) -> dict:
         self.place_attempts.append(dict(args))
@@ -110,6 +145,11 @@ class FakeAlpaca:
                 "filled_avg_price": None,
                 "order_class": "",
                 "order_type": "stop",
+                # The leg's OWN stop price, taken from the request args. The
+                # leg's stop_loss_stop_price stays None because a stop order
+                # does not carry a nested stop-loss instruction — it IS one.
+                "stop_price": args["stop_loss_stop_price"],
+                "expires_at": GTC_EXPIRES_AT,
                 "stop_loss_stop_price": None,
                 "stop_loss_limit_price": None,
                 "take_profit_limit_price": None,
@@ -212,9 +252,18 @@ class FakeAlpaca:
     def open_orders(self) -> list[dict]:
         """Every order still working, legs FLATTENED — matching
         AlpacaSource.open_orders (nested=False), which is what makes an OTO's
-        stop leg visible as the protective order it is."""
+        stop leg visible as the protective order it is.
+
+        'held' is EXCLUDED, because QueryOrderStatus.OPEN excludes it at the
+        real broker — measured 2026-08-19, cited in tests/test_live_smoke.py.
+        A held leg is protection that does not exist yet: the parent has not
+        filled, so there is no position to protect. Returning it here would
+        let a caller pass offline and see nothing in production, which is the
+        2026-08-17 shape. A leg becomes visible when its parent fills."""
         return [{"symbol": o["symbol"], "side": o["side"], "qty": str(o["qty"]),
-                 "type": o.get("order_type", "market"), "status": o["status"]}
+                 "type": o.get("order_type", "market"), "status": o["status"],
+                 "id": o["id"], "client_order_id": o["client_order_id"],
+                 "stop_price": o.get("stop_price"),
+                 "expires_at": o.get("expires_at")}
                 for o in self.orders.values()
-                if o["status"] in ("new", "accepted", "partially_filled",
-                                   "held")]
+                if o["status"] in ("new", "accepted", "partially_filled")]

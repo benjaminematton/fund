@@ -55,3 +55,8 @@ evals/_work/
 
 # snapshots pulled from the VM (runtime state, never code)
 backups-from-vm/
+
+# subagent-driven-development bookkeeping: task briefs, per-task reports, the
+# progress ledger. Controller scratch for one branch's execution, not repo
+# content — one report reached a commit before this entry existed.
+sdd/

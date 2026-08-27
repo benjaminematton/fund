@@ -139,7 +139,8 @@ def test_account_state_carries_last_equity():
     numbers the circuit breaker does."""
     class Trading:
         def get_account(self):
-            return _Clock(equity="101500", last_equity="101000", cash="30000")
+            return _Clock(equity="101500", last_equity="101000", cash="30000",
+                          long_market_value="71500")
         def get_all_positions(self):
             return []
 
@@ -157,7 +158,8 @@ def test_account_state_last_equity_is_nan_when_unparseable():
     a P&L computed from it fails closed instead of reporting a wrong day."""
     class Trading:
         def get_account(self):
-            return _Clock(equity="101500", last_equity=None, cash="30000")
+            return _Clock(equity="101500", last_equity=None, cash="30000",
+                          long_market_value="71500")
         def get_all_positions(self):
             return []
 
@@ -166,18 +168,83 @@ def test_account_state_last_equity_is_nan_when_unparseable():
     assert math.isnan(src.account_state()["last_equity"])
 
 
+def test_account_state_carries_long_market_value():
+    """The one number that tells an EMPTY positions payload apart from a LOST
+    one. orchestrator/ingest_guard.py refuses the day when the list is empty
+    and this is not zero: the account is carrying value the list did not
+    report, so every gate input computed from that list is a fiction."""
+    class Trading:
+        def get_account(self):
+            return _Clock(equity="101500", last_equity="101000", cash="30000",
+                          long_market_value="71500")
+        def get_all_positions(self):
+            return []
+
+    src = _bare_source()
+    src._trading = Trading()
+    assert src.account_state()["long_market_value"] == 71_500.0
+
+
+def test_account_state_long_market_value_is_nan_when_unparseable():
+    """Same posture as last_equity: NaN, not 0.0. A zero here would read as
+    'the account is flat' and license exactly the empty-book sizing this
+    field exists to block, so an unreadable value must fall through to
+    ingest_guard's records tie-breaker instead."""
+    class Trading:
+        def get_account(self):
+            return _Clock(equity="101500", last_equity="101000", cash="30000",
+                          long_market_value=None)
+        def get_all_positions(self):
+            return []
+
+    src = _bare_source()
+    src._trading = Trading()
+    assert math.isnan(src.account_state()["long_market_value"])
+
+
 # ---- open_positions / open_orders: the protection assertion's broker reads ----
 
 def test_installed_alpaca_py_exposes_the_read_apis_we_call():
     """Same posture as the cancel-wiring pin: a wrong alpaca-py method name
     can otherwise only fail LIVE, and this read is what stands between a naked
-    position and nobody noticing."""
+    position and nobody noticing. long_market_value is pinned for the same
+    reason one layer over: if the field is renamed away, account_state raises
+    at 09:00 instead of silently reporting a flat account."""
     from alpaca.trading.client import TradingClient
+    from alpaca.trading.models import TradeAccount
     from alpaca.trading.requests import GetOrdersRequest
     assert callable(TradingClient.get_all_positions)
     assert callable(TradingClient.get_orders)
     for field in ("status", "nested", "limit"):
         assert field in GetOrdersRequest.model_fields
+    assert "long_market_value" in TradeAccount.model_fields
+
+
+def test_long_market_value_is_the_type_ingest_guard_reasons_about():
+    """3374ec8's posture, applied one field over. ingest_guard's whole
+    unreadable-value branch rests on two properties of this field, and
+    neither is written down anywhere else: it arrives as a STRING (so
+    _safe_float, not float, is the right coercion), and it is OPTIONAL with
+    a None default (so Alpaca dropping it from the wire is a silent NaN, not
+    a raise — the reason account_state's comment calls that case quiet).
+
+    If a future alpaca-py makes it a float, _safe_float still works and this
+    test still passes. If it makes it REQUIRED, the silent-NaN branch becomes
+    unreachable and ingest_guard's docstring is stale — that is the change
+    worth being told about, so it is asserted rather than assumed."""
+    from alpaca.trading.models import TradeAccount
+
+    field = TradeAccount.model_fields["long_market_value"]
+    py_types = {a for a in getattr(field.annotation, "__args__",
+                                   (field.annotation,))
+                if a is not type(None)}
+    assert py_types == {str}, (
+        f"long_market_value is now {py_types}, not str — re-read"
+        " market/source_alpaca.py's coercion and ingest_guard._as_dollars")
+    assert not field.is_required() and field.default is None, (
+        "long_market_value is no longer optional-with-None — a dropped field"
+        " now raises instead of arriving as NaN, and"
+        " orchestrator/ingest_guard.py's unreadable branch is stale")
 
 
 def test_open_positions_unwraps_alpaca_enums():
@@ -214,7 +281,14 @@ def test_open_orders_requests_open_status_and_flattens_legs():
     """nested=False (the default) is deliberate: an OTO's stop leg must come
     back as its OWN row, because the leg is the protective order the check is
     looking for. Grouped under the parent it would be invisible. Built from
-    the REAL enums for the same reason as the positions test above."""
+    the REAL enums for the same reason as the positions test above.
+
+    The four id/price/expiry keys were added when the port's contract widened
+    to carry what a protection row references. expires_at goes through iso(),
+    so a datetime comes back with a T separator rather than a space — the
+    shape every other timestamp in the database has."""
+    from datetime import datetime, timezone
+
     from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
 
     seen = {}
@@ -224,15 +298,43 @@ def test_open_orders_requests_open_status_and_flattens_legs():
             seen["nested"] = filter.nested
             seen["limit"] = filter.limit
             return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="80",
-                           order_type=OrderType.STOP, status=OrderStatus.NEW)]
+                           order_type=OrderType.STOP, status=OrderStatus.NEW,
+                           id="5abc139f-4817-4a34-aedd-f2ca28203c5c",
+                           client_order_id="manual-protective-stop-nvda",
+                           stop_price="215.0",
+                           expires_at=datetime(2026, 11, 17, 21, 0,
+                                               tzinfo=timezone.utc))]
     src = _bare_source()
     src._trading = Trading()
     assert src.open_orders() == [
         {"symbol": "NVDA", "side": "sell", "qty": "80",
-         "type": "stop", "status": "new"}]
+         "type": "stop", "status": "new",
+         "id": "5abc139f-4817-4a34-aedd-f2ca28203c5c",
+         "client_order_id": "manual-protective-stop-nvda",
+         "stop_price": "215.0",
+         "expires_at": "2026-11-17T21:00:00+00:00"}]
     assert "open" in seen["status"].lower()
     assert not seen["nested"]
     assert seen["limit"] == 500
+
+
+def test_open_orders_carries_none_for_an_order_with_no_stop_or_expiry():
+    """A trailing stop has no stop_price and a DAY order has no expires_at.
+    Both must come back as None rather than raising or being dropped — the log
+    records a trailing stop, and _covering_qty counts one toward cover."""
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
+
+    class Trading:
+        def get_orders(self, filter=None):
+            return [_Clock(symbol="NVDA", side=OrderSide.SELL, qty="80",
+                           order_type=OrderType.TRAILING_STOP,
+                           status=OrderStatus.NEW, id="alp-1",
+                           client_order_id="c1", stop_price=None,
+                           expires_at=None)]
+    src = _bare_source()
+    src._trading = Trading()
+    row = src.open_orders()[0]
+    assert row["stop_price"] is None and row["expires_at"] is None
 
 
 def test_open_orders_raises_rather_than_returning_a_truncated_page():
@@ -259,3 +361,55 @@ def test_open_orders_propagates_broker_errors():
     src._trading = Trading()
     with pytest.raises(ConnectionError):
         src.open_orders()
+
+
+# ---- account_config: the live read behind orchestrator/preconditions.py ----
+
+def test_account_config_returns_every_field_as_plain_values():
+    """No filtering: a setting Alpaca adds must reach the drift check rather
+    than be dropped by a hand-written field list here. Three of the real
+    model's nine fields are (str, Enum) members (dtbp_check, pdt_check,
+    trade_confirm_email) -- built from the REAL model + REAL enums, same
+    posture as test_open_positions_unwraps_alpaca_enums above, because a fake
+    built from plain strings can't catch a missing enum coercion."""
+    from alpaca.trading.enums import DTBPCheck, PDTCheck, TradeConfirmationEmail
+    from alpaca.trading.models import AccountConfiguration
+    from market.source_alpaca import AlpacaSource
+
+    config = AccountConfiguration(
+        dtbp_check=DTBPCheck.ENTRY,
+        fractional_trading=True,
+        max_margin_multiplier="4",
+        no_shorting=False,
+        pdt_check=PDTCheck.BOTH,
+        suspend_trade=False,
+        trade_confirm_email=TradeConfirmationEmail.ALL,
+        ptp_no_exception_entry=True,
+        max_options_trading_level=2,
+    )
+
+    class _Trading:
+        def get_account_configurations(self):
+            return config
+
+    src = AlpacaSource.__new__(AlpacaSource)
+    src._trading = _Trading()
+    result = src.account_config()
+
+    assert result == {
+        "dtbp_check": "entry",
+        "fractional_trading": True,
+        "max_margin_multiplier": "4",
+        "no_shorting": False,
+        "pdt_check": "both",
+        "suspend_trade": False,
+        "trade_confirm_email": "all",
+        "ptp_no_exception_entry": True,
+        "max_options_trading_level": 2,
+    }
+    # Equality alone would pass even without coercion, since these enums
+    # subclass str ("entry" == DTBPCheck.ENTRY is True) -- assert the TYPE
+    # too, so the test genuinely fails if the coercion is removed.
+    for field in ("dtbp_check", "pdt_check", "trade_confirm_email"):
+        assert type(result[field]) is str, (
+            f"{field} is {type(result[field])!r}, not a plain str")

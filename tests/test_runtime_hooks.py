@@ -82,6 +82,7 @@ def test_order_gate_deny_appends_one_alert_naming_ticker_reason_and_ticket(
     assert reason in alerts[0]
     assert fund_db.execute(
         "SELECT created_at FROM events").fetchone()["created_at"] == NOW
+    assert _alert_payloads(fund_db)[0]["code"] == "order_gate_denied"
 
 
 def test_order_gate_allowed_order_appends_no_alert(fund_db, sim_clock):
@@ -105,6 +106,8 @@ def test_order_gate_deny_alert_survives_malformed_tool_input(fund_db, sim_clock)
                          "tool_input": bad}, "t1", None))
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert len(_alerts(fund_db)) == 3
+    assert all(p["code"] == "order_gate_denied"
+              for p in _alert_payloads(fund_db))
 
 
 # --- ungated broker verbs ----------------------------------------------------
@@ -385,6 +388,11 @@ def _alerts(conn):
         "SELECT payload FROM events WHERE kind = 'alert' ORDER BY id")]
 
 
+def _alert_payloads(conn):
+    return [json.loads(r["payload"]) for r in conn.execute(
+        "SELECT payload FROM events WHERE kind = 'alert' ORDER BY id")]
+
+
 def test_record_turn_result_writes_the_cost_row(fund_db):
     """The live wiring seam (scripts/run_day.py calls this after every seat
     turn): a ResultMessage with a populated estimate becomes exactly one row."""
@@ -410,6 +418,7 @@ def test_record_turn_result_none_cost_records_nothing_and_alerts(fund_db):
     assert _alerts(fund_db) == [
         "cost_unavailable pm — turn completed with no total_cost_usd estimate"
         " (session s2); the day's est. inference cost understates spend"]
+    assert _alert_payloads(fund_db)[0]["code"] == "cost_unavailable"
 
 
 def test_record_turn_result_missing_attributes_do_not_crash_the_day(fund_db):

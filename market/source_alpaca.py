@@ -4,10 +4,13 @@ from __future__ import annotations
 import math
 import os
 from datetime import timedelta
+from enum import Enum
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
+
+from orchestrator.clock import iso
 
 # Alpaca's free data plan excludes the most recent ~15 minutes of SIP data: a
 # bars request ending at "now" 403s with "subscription does not permit
@@ -132,9 +135,22 @@ class AlpacaSource:
             raise RuntimeError(
                 f"open-orders response hit the {_ORDER_PAGE_LIMIT}-row page"
                 " limit — cover cannot be computed from a truncated list")
+        # iso(), NOT _enum_str(). Order.expires_at is a datetime, and
+        # _enum_str would render it '2026-11-17 21:00:00+00:00' — a space
+        # separator, no T — which sorts and compares against nothing else in
+        # the database. This is the column the November expiry watch will read.
+        #
+        # Plain attribute access, not getattr with a default: alpaca-py 0.44's
+        # Order carries every one of these, and a silent None on a future
+        # rename would hide the failure instead of raising it.
         return [{"symbol": o.symbol, "side": _enum_str(o.side),
                  "qty": _enum_str(o.qty), "type": _enum_str(o.order_type),
-                 "status": _enum_str(o.status)}
+                 "status": _enum_str(o.status), "id": _enum_str(o.id),
+                 "client_order_id": o.client_order_id,
+                 "stop_price": (_enum_str(o.stop_price)
+                                if o.stop_price is not None else None),
+                 "expires_at": (iso(o.expires_at)
+                                if o.expires_at is not None else None)}
                 for o in orders]
 
     def market_clock(self) -> dict:
@@ -166,7 +182,53 @@ class AlpacaSource:
             # the percentage to recover the denominator would report a figure
             # derived from a different pair of numbers than the gate's.
             "last_equity": _safe_float(a.last_equity),
+            # The discriminator orchestrator/ingest_guard.py reads: an EMPTY
+            # positions list is ambiguous (a flat account and a dropped
+            # payload look identical), and this is the broker's own answer to
+            # which one it is. It works as a discriminator only because
+            # get_account() and get_all_positions() above are TWO INDEPENDENT
+            # API calls — this is a cross-call check, not a consistency check
+            # within one response, which could never disagree with itself.
+            #
+            # Excludes short_market_value, which is correct only while the
+            # fund is long-only (specs/design.md:21, _CLOSING_SIDE at
+            # protection.py:41-44) and
+            # becomes wrong the day shorting lands: a short book would report
+            # a non-zero market value with a legitimately empty LONG list.
+            #
+            # Plain attribute, not getattr(a, ..., None) — see the type pin in
+            # tests. Two different failures, and only one of them is loud: an
+            # alpaca-py RENAME raises AttributeError here, which guarded()
+            # turns into an alert and exit 1 (HOLD), and the offline pin test
+            # catches it before deploy. Alpaca dropping the field FROM THE
+            # WIRE is silent: alpaca-py 0.44.0 declares it `str | None`
+            # defaulting to None, so it arrives as None -> NaN -> the records
+            # tie-breaker in ingest_guard. Safe, but quiet; getattr with a
+            # default would make the loud case quiet too, for no gain.
+            "long_market_value": _safe_float(a.long_market_value),
             "daily_pnl_pct": _pnl_pct(a.equity, a.last_equity),
             "positions": {p.symbol: int(float(p.qty)) for p in pos},
             "prices": {p.symbol: float(p.current_price) for p in pos},
         }
+
+    def account_config(self) -> dict:
+        """Every account setting the broker reports, as plain values.
+
+        Deliberately unfiltered. orchestrator/preconditions.py diffs the whole
+        payload against a pinned baseline precisely so a setting nobody
+        classified still reddens the check. A field list here would
+        reintroduce the enumeration that config/broker_tool_surface.yaml's
+        comment already got wrong. (A field Alpaca adds on the wire is a
+        different case: `get_account_configurations()` returns alpaca-py's
+        AccountConfiguration, whose extra='ignore' default drops any field it
+        does not declare before this method ever sees it — this reddens on
+        the alpaca-py upgrade that declares the field, not on Alpaca shipping
+        it.)
+
+        Three of these fields (dtbp_check, pdt_check, trade_confirm_email) are
+        alpaca-py (str, Enum) members, not plain scalars, so each is coerced
+        via `_enum_str` -- the YAML baseline this gets diffed against holds
+        plain strings, bools, and ints only."""
+        c = self._trading.get_account_configurations()
+        return {k: (_enum_str(v) if isinstance(v, Enum) else v)
+                for k, v in c.model_dump().items()}

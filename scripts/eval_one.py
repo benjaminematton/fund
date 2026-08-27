@@ -10,6 +10,7 @@ Usage:  .venv/bin/python3 scripts/eval_one.py <case-id> [trial] [seat]
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,17 +25,58 @@ sys.path.insert(0, str(ROOT))
 EVAL_KEYS = ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
              "ALPACA_PAPER_TRADE")
 
+
+def _primary_checkout_env() -> Path | None:
+    """The primary checkout's .env, or None when git cannot say where it is.
+
+    Must never raise: this runs at import, so anything escaping here takes
+    eval_one and every module that imports it down with it. ValueError covers
+    the two path-shaped ways that can happen — text=True decodes strict, so a
+    non-UTF-8 byte in the repo path raises UnicodeDecodeError (a ValueError),
+    and .resolve() on a NUL-bearing path raises ValueError. Both mean the same
+    thing this returns None for: git could not name a usable path.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None                  # not a repo, or nothing to report
+        # --git-common-dir may be relative to ROOT; ROOT / absolute is absolute.
+        return (ROOT / proc.stdout.strip()).resolve().parent / ".env"
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None                      # no git, it hung, or an unusable path
+
+
 # .env.eval wins over .env when present. That is what lets eval credentials
 # live on a host the fund must never TRADE from — the Mac after the 2026-08-18
 # droplet cutover, where `.env` was renamed to `.env.MIGRATED-TO-VM` as one of
 # two barriers against the fund resurrecting there (PROGRESS.md "The Mac after
 # cutover"). Restoring a full `.env` to run evals would dissolve that barrier;
 # a file that cannot trade keeps it, by construction rather than by memory.
-# .env lives in the primary checkout; a worktree has none of its own.
+# .env lives in the primary checkout; a worktree has none of its own, so when
+# neither file sits next to this script we fall back to the primary checkout's
+# .env — derived, never hardcoded to anyone's home directory. Git reports the
+# main worktree's git dir as --git-common-dir (a linked worktree's own git dir
+# is .git/worktrees/<name> underneath it), and the primary checkout is that
+# dir's parent.
+#
+# That fallback is INERT on the Mac today, and will look like dead code: the
+# primary checkout has no `.env` post-cutover, only `.env.eval`, so it resolves
+# to a file that is not there and `make eval` still cannot run from a worktree.
+# Do not delete it on that evidence — the derivation is right, the missing leg
+# is the primary checkout's `.env.eval`, and whether to reach across a worktree
+# boundary for a real credentials file that tests/test_eval_env_cannot_trade.py
+# does not follow is the open question on issue #135.
+#
+# A checkout with no .env anywhere is the normal fresh-clone case, not an
+# error — main() reports it below.
 EVAL_ENV = ROOT / ".env.eval"
 ENV = EVAL_ENV if EVAL_ENV.exists() else ROOT / ".env"
 if not ENV.exists():
-    ENV = Path("/Users/benjaminmatton/Developer/fund/.env")
+    primary_env = _primary_checkout_env()
+    if primary_env is not None and primary_env.exists():
+        ENV = primary_env
 
 
 def load_env(path: Path) -> None:

@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve schema-pin surface-pin score-day preflight
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight dev-status
 .PHONY: staging-day staging-reset eval eval-report
 .PHONY: eval-critic-dev eval-critic-holdout
 
@@ -38,8 +38,10 @@ test: lint
 	$(PYTHON) -m pytest tests/
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
+# Alert-code lint: every alert carries a stable code (docs/agents/devops.md).
 lint: deps
 	$(PYTHON) scripts/check_purity.py
+	$(PYTHON) scripts/check_alert_codes.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,
 # real tool/gate/DB execution. No network, no API keys, no LLM cost.
@@ -100,7 +102,29 @@ surface-pin: deps
 # evals/traces/ is tracked in git, so leftovers dirty the droplet checkout.
 # No `deps` prerequisite: this runs /opt/fund/.venv as the fund user, and
 # `deps` would sync the invoking user's checkout instead.
+#
+# Step 1 opens the LIVE database at $$FUND_DB and reports its schema state.
+# Read-only: it never calls state.db.connect(), which would APPLY the pending
+# migration it exists to report (#17). It runs FIRST because it is free and
+# the eval suite is not — a live DB the code cannot run against should stop
+# the deploy before ~$$0.31 of real LLM turns, not after. Same uid and
+# EnvironmentFile as step 2: FUND_DB comes from /etc/fund/env, and the live DB
+# is owned by `fund`.
+#
+# The STEP's exit codes are 0 ok, 1 migrations pending, 2 unexplained
+# divergence, 3 cannot determine, and only 0 continues to step 2. They are not
+# this target's: make collapses any failed recipe line to its own exit 2, so
+# read which of the four it was off the step's stderr, never off `make`'s
+# status — a target exit 2 is make reporting failure, not "unexplained
+# divergence".
 preflight:
+	systemd-run --uid=fund --pipe --wait --quiet \
+	  --property=WorkingDirectory=/opt/fund \
+	  --property=EnvironmentFile=/etc/fund/env \
+	  --property=Environment=PATH=/home/fund/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin \
+	  --property=Environment=HOME=/home/fund \
+	  --property=TimeoutStartSec=1min \
+	  /opt/fund/.venv/bin/python3 scripts/preflight_schema.py
 	systemd-run --uid=fund --pipe --wait --quiet \
 	  --property=WorkingDirectory=/opt/fund \
 	  --property=EnvironmentFile=/etc/fund/env \
@@ -139,6 +163,24 @@ score-day: deps
 # safe to re-run — a decision that already resolved is not selected again.
 resolve: deps
 	$(PYTHON) scripts/resolve_day.py
+
+# Nightly reflection: resolutions with no reflection yet -> one seat turn each
+# (design §3, §7). Rides the same 16:35 timer, third, after close-pnl and
+# resolve — nothing is reflectable until resolve has written the outcome.
+reflect: deps
+	$(PYTHON) scripts/reflect_day.py
+
+# Read-only production health check for developers: is every stated invariant
+# and Phase 2 acceptance criterion still true on the box that trades?
+#
+# Reads the droplet over ssh, the broker, and the live DB with mode=ro. Writes
+# NOTHING anywhere — no order, no deploy, no migration. Exit 0 always, so a
+# check that cannot run renders as a finding instead of hiding the rest.
+#
+# Attended, not scheduled. Every finding is for a human to act on; this is
+# developer context, not the fund's own alerting, which already works.
+dev-status: deps
+	$(PYTHON) scripts/dev_status.py
 
 # Eval suite: REAL LLM turns against the REAL charters, 6 cases x 3 trials.
 # Needs .env loaded. MEASURED 2026-08-17: 18 trials, $0.81 est., ~7 minutes.

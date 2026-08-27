@@ -34,6 +34,14 @@ BANNED_BUILTINS = (
 
 SEATS = ("exec", "analyst", "news", "pm", "critic")
 
+# reflect is NOT in SEATS: its tool surface is legitimately narrower, and
+# folding it into that tuple would force an edit to
+# test_tools_are_exactly_the_two_mcp_globs — weakening the assertion that
+# protects the other five to accommodate a sixth. Every OTHER pin applies to
+# it unchanged, and a seat escaping those is the real risk, so they run over
+# this tuple instead.
+ALL_SEATS = SEATS + ("reflect",)
+
 
 def _cfg(seat: str) -> dict:
     return load_seat_config(f"agents/config/{seat}.yaml")
@@ -45,7 +53,7 @@ def _opts(seat: str, tmp_path):
     return build_seat_options(cfg, tmp_path / "fund.sqlite", clock)
 
 
-@pytest.mark.parametrize("seat", SEATS)
+@pytest.mark.parametrize("seat", ALL_SEATS)
 def test_tools_is_explicit_not_the_full_preset(seat, tmp_path):
     # None => the CLI applies the claude_code preset (Bash/Write/Task/...).
     # The seat MUST pass an explicit allow-array.
@@ -81,21 +89,21 @@ def test_the_alpaca_glob_is_safe_only_because_the_gate_denies_what_it_admits():
     assert _broker_verb_policy("mcp__alpaca__get_account_info") == "allow"
 
 
-@pytest.mark.parametrize("seat", SEATS)
+@pytest.mark.parametrize("seat", ALL_SEATS)
 def test_no_builtin_tool_is_available_to_the_seat(seat, tmp_path):
     tools = _opts(seat, tmp_path).tools or []
     leaked = [t for t in tools if t in BANNED_BUILTINS]
     assert leaked == [], f"seat can call built-in tools: {leaked}"
 
 
-@pytest.mark.parametrize("seat", SEATS)
+@pytest.mark.parametrize("seat", ALL_SEATS)
 def test_setting_sources_empty_no_claude_md_or_project_settings(seat, tmp_path):
     # setting_sources=[] => --setting-sources= (nothing). No CLAUDE.md, no
     # project/local settings.json feeding context or the permission allow-list.
     assert _opts(seat, tmp_path).setting_sources == []
 
 
-@pytest.mark.parametrize("seat", SEATS)
+@pytest.mark.parametrize("seat", ALL_SEATS)
 def test_permission_mode_is_dont_ask(seat, tmp_path):
     assert _opts(seat, tmp_path).permission_mode == "dontAsk"
 
@@ -133,7 +141,7 @@ def test_exec_carries_both_order_hooks(tmp_path):
     assert hooks and "PreToolUse" in hooks and "PostToolUse" in hooks
 
 
-@pytest.mark.parametrize("seat", SEATS)
+@pytest.mark.parametrize("seat", ALL_SEATS)
 def test_the_seat_yaml_budget_cap_is_threaded_into_the_options(seat, tmp_path):
     """max_budget_usd is the only hard stop on a runaway turn. A yaml value
     that is not actually threaded into the built options is inert — the SDK
@@ -145,3 +153,23 @@ def test_the_seat_yaml_budget_cap_is_threaded_into_the_options(seat, tmp_path):
     cap = _cfg(seat)["max_budget_usd"]
     assert isinstance(cap, (int, float)) and cap > 0
     assert _opts(seat, tmp_path).max_budget_usd == cap
+
+
+def test_the_reflect_seat_cannot_reach_the_broker_at_all(tmp_path):
+    """Stricter than every other seat, deliberately. The read-only seats need
+    prices; a reflection turn reads nothing — its facts are computed inside
+    its one tool before the seat ever sees them.
+
+    Omitting the alpaca glob from `tools` is what makes the broker
+    UNAVAILABLE. The alternative — carrying the glob with a narrow
+    ALPACA_TOOLSETS — would rest on what that env value means to
+    alpaca-mcp-server@2.2.1, a third-party behaviour no offline test can
+    check, and would resolve that unknown toward granting a toolset. This
+    assertion depends on no such fact.
+    """
+    cfg = _cfg("reflect")
+    options = _opts("reflect", tmp_path)
+    assert options.tools == ["mcp__fund__*"]
+    assert "mcp__alpaca__*" not in options.tools
+    assert "trading" not in cfg["alpaca_toolsets"]
+    assert options.hooks in (None, {})

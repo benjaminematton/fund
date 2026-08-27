@@ -57,6 +57,7 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 - [ ] Chaos tests: Alpaca MCP down at execution (retry→expire→alert), Slack down mid-day (outbox drains after recovery), agent container kill mid-debate (session resume, turn re-assigned).
 - [ ] Full-week sim under `SimClock` acceleration completes: 5 days, ≥1 resolution cycle, scoreboard posted.
 - [ ] Budget: any seat hitting `max_budget_usd` degrades gracefully (stage default applies, day completes, alert posted).
+- [ ] Wall clock: a seat turn that never returns is abandoned at `SEAT_MAX_WALL_S` and degrades the same way (stage default applies, day completes, `seat_turn_timeout` alert posted naming the seat and the ceiling). The ceiling binds every seat unconditionally — no per-seat opt-in — and a full day's four turns of it still fires before `ops/fund-daily.service`'s `TimeoutStartSec`.
 - [ ] 30-day paper burn-in (manual, not CI): zero invariant violations in DB audit query; est. cost within budget.
 
 ## Phase 5 — The lab (strategy platform, per `specs/strategy.md`)

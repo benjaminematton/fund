@@ -12,7 +12,9 @@ Never calls main(): that builds real clients.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -240,6 +242,10 @@ def test_a_raise_inside_the_day_alerts_slack_and_exits_nonzero(wired):
     assert "run_day_failed" in texts[0] and "OperationalError" in texts[0]
     assert conn.execute("SELECT COUNT(*) c FROM events WHERE kind = 'alert'"
                         " AND posted_at IS NOT NULL").fetchone()["c"] == 1
+    import json
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM events WHERE kind = 'alert'").fetchone()["payload"])
+    assert payload["code"] == "run_day_failed"
 
 
 def sqlite3_error():
@@ -273,7 +279,15 @@ class _DeadDataSource:
 
     def account_state(self) -> dict:
         return {"equity": 100000.0, "cash": 30000.0, "positions": {},
-                "position_count": 0, "daily_pnl_pct": 0.0}
+                "position_count": 0, "daily_pnl_pct": 0.0,
+                # Explicitly flat, not merely silent. Without this key
+                # orchestrator/ingest_guard.py reads the field as UNREADABLE
+                # and falls through to the fund's own order records, which
+                # this fixture's DB happens to have none of — so the day
+                # would run by accident, and would start halting the moment
+                # anyone gave the `wired` fixture an `orders` row. This
+                # fixture must fail at close_frame, not before it.
+                "long_market_value": 0.0}
 
     def close_frame(self, universe, end=None):
         raise ConnectionError("alpaca data api unreachable")
@@ -322,6 +336,7 @@ def test_a_held_ticker_with_no_price_history_is_named_in_an_alert(wired):
         conn, clock, close_df, {"AAPL": 40, "NVDA": 5})
     payloads = _alert_payloads(conn)
     assert len(payloads) == 1
+    assert payloads[0]["code"] == "missing_price_history"
     assert payloads[0]["tickers"] == ["AAPL"]
     assert "AAPL" in payloads[0]["text"] and "NVDA" not in payloads[0]["text"]
     assert "sizing is looser" in payloads[0]["text"]
@@ -361,6 +376,7 @@ def test_a_held_ticker_missing_from_sectors_yaml_is_named_in_an_alert(wired):
         conn, clock, {"AAPL": 40, "NVDA": 5}, {"NVDA": "tech"})
     payloads = _alert_payloads(conn)
     assert len(payloads) == 1
+    assert payloads[0]["code"] == "unmapped_sector"
     assert payloads[0]["tickers"] == ["AAPL"]
     assert "AAPL" in payloads[0]["text"] and "sectors.yaml" in payloads[0]["text"]
 
@@ -370,6 +386,21 @@ def test_a_fully_mapped_book_raises_no_sector_alert(wired):
     run_day_script.alert_unmapped_sectors(
         conn, clock, {"AAPL": 40, "NVDA": 5}, {"NVDA": "tech", "AAPL": "tech"})
     assert _alert_payloads(conn) == []
+
+
+def test_the_audit_rollup_keeps_its_self_alert_marker(wired, monkeypatch):
+    """audit_day.SELF_ALERT_KEY is how BOTH audit_day and the filer avoid
+    double-counting the rollup. Migrating must not drop it."""
+    conn, slack, clock = wired
+    monkeypatch.setattr(run_day_script.audit_day, "audit",
+                        lambda *a, **k: ["forced failure"])
+
+    code = run_day_script.report_audit(conn, slack, "db", "2026-07-06", clock)
+
+    assert code == 1
+    payload = _alert_payloads(conn)[-1]
+    assert payload["code"] == "audit_failed"
+    assert payload[run_day_script.audit_day.SELF_ALERT_KEY] is True
 
 
 # --- single-instance guard (Fix 5) ------------------------------------------
@@ -457,6 +488,73 @@ def test_a_turn_whose_tools_were_never_captured_says_so(capsys):
     assert "tools=n/a" in out and "tools=[]" not in out
 
 
+# --- _seat_session: the id-binding leg above make_turn --------------------
+
+def test_seat_session_threads_the_bound_id_to_build_seat_options(monkeypatch):
+    """The middle leg of the id-binding chain that scripts/reflect_day.py's
+    submit_reflection fix depends on end-to-end: _seat_session must forward
+    expected_decision_id into build_seat_options, not just accept it as a
+    parameter and drop it. ClaudeSDKClient and run_seat_turn are faked — a
+    live SDK session is exactly what this offline suite must never open."""
+    import asyncio
+
+    import claude_agent_sdk
+
+    seen = {}
+
+    def _fake_build_seat_options(cfg, db_path, clock, *, snapshot=None,
+                                 journals_root=None,
+                                 expected_decision_id=None):
+        seen["expected_decision_id"] = expected_decision_id
+        return object()          # opaque; only ClaudeSDKClient below sees it
+
+    class _FakeClient:
+        def __init__(self, options):
+            self.options = options
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_run_seat_turn(client, prompt, required):
+        return ([], None)
+
+    monkeypatch.setattr(run_day_script, "build_seat_options",
+                        _fake_build_seat_options)
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setattr(run_day_script, "run_seat_turn", _fake_run_seat_turn)
+
+    asyncio.run(run_day_script._seat_session(
+        {"seat": "reflect"}, ":memory:", SimClock(START), "p", None, None,
+        expected_decision_id=42))
+
+    assert seen["expected_decision_id"] == 42
+
+
+def test_make_turn_threads_the_bound_id_to_seat_session(wired, monkeypatch):
+    """The fourth leg of the id-binding chain, above _seat_session:
+    make_turn's own run() must forward expected_decision_id into the
+    _seat_session call. test_seat_session_threads_the_bound_id_to_
+    build_seat_options (above) calls _seat_session directly and so never
+    exercises this call site — deleting expected_decision_id from make_turn's
+    _seat_session call left that test, and all its siblings, green."""
+    conn, _, clock = wired
+    seen = {}
+
+    async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
+                                 journals_root, expected_decision_id=None):
+        seen["expected_decision_id"] = expected_decision_id
+        return ([], _Result(turns=1))
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _fake_seat_session)
+
+    _turn(conn, clock, seat="reflect", expected_decision_id=99)()
+
+    assert seen["expected_decision_id"] == 99
+
+
 # --- make_turn: a seat failure degrades to HOLD, it does not abort the day --
 
 def _turn(conn, clock, seat="analyst", **over):
@@ -520,6 +618,7 @@ def test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land(
     assert len(texts) == 1
     assert "analyst_turn_failed" in texts[0] and "TimeoutError" in texts[0]
     assert "default is HOLD" in texts[0]
+    assert _alert_payloads(conn)[0]["code"] == "seat_turn_failed"
 
     # ...and the stage that owns this turn still lands its own default: the
     # ticker gets neutral/0 "no report" instead of the day stopping.
@@ -532,6 +631,117 @@ def test_a_seat_turn_that_raises_alerts_and_lets_the_stage_default_land(
                        ).fetchone()
     assert (row["direction"], row["confidence"], row["summary"]) == (
         "neutral", 0, "no report")
+
+
+def test_seat_turn_failure_uses_a_literal_code_not_the_seat_name(
+        wired, monkeypatch):
+    """The seat belongs in the TEXT. A code of f"{seat}_turn_failed" mints a
+    new code — and therefore a new issue — for every seat that ever fails."""
+    conn, _, clock = wired
+
+    async def _boom(*a, **k):
+        raise TimeoutError("session never connected")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _boom)
+    _turn(conn, clock, seat="analyst")()
+
+    payload = _alert_payloads(conn)[-1]
+    assert payload["code"] == "seat_turn_failed"
+    assert payload["text"].startswith("analyst_turn_failed —")
+
+
+# --- a seat turn that HANGS is a different failure from one that raises -----
+
+def test_a_seat_turn_that_never_returns_is_abandoned_at_its_wall_clock_bound(
+        wired, monkeypatch):
+    """Issue #44. max_turns and max_budget_usd bound turns and dollars; a
+    stalled MCP tool call or model stream spends neither, so before this the
+    turn simply never came back. The stage default is triggered by an
+    EXCEPTION and by nothing else (orchestrator/daily.py's run_stage calls
+    body() with no time budget), so a hang reached no default at all: the day
+    hung forever holding the flock, and the next day's timer found the lock
+    and exited 0 — indistinguishable from a market-closed day.
+
+    The 30s sleep stands in for "never returns": it is 600x the bound this
+    test configures, so any pass is the bound firing and not the sleep
+    finishing — while an unbounded regression still ENDS the suite (with a
+    red assertion) instead of hanging it. The bound is shortened by patching
+    the module constant, which IS the production knob — there is no config
+    key to inject."""
+    conn, _, clock = wired
+
+    async def _hang(*a, **k):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _hang)
+    monkeypatch.setattr(run_day_script, "SEAT_MAX_WALL_S", 0.05)
+    run = _turn(conn, clock, seat="pm")
+    started = time.monotonic()
+    run()                                    # must NOT raise, must NOT hang
+    assert time.monotonic() - started < 5    # abandoned at the bound
+
+    payload = _alert_payloads(conn)[-1]
+    assert payload["code"] == "seat_turn_timeout"
+    assert payload["text"].startswith("pm_turn_timeout —")
+    assert "0.05s" in payload["text"] and "SEAT_MAX_WALL_S" in payload["text"]
+    assert "default is HOLD" in payload["text"]
+
+    # ...and because it now RAISES, the stage's own default finally lands:
+    # the ticker gets hold/0 instead of the day stopping dead.
+    from orchestrator.daily import StageCtx, run_decision
+    run_decision(StageCtx(conn=conn, run_date="2026-07-06", clock=clock,
+                          slack=None, research_seats=(),
+                          run_turn={"decision": run}), ["NVDA"])
+    row = conn.execute("SELECT action, qty FROM decisions"
+                       " WHERE run_date = '2026-07-06' AND ticker = 'NVDA'"
+                       ).fetchone()
+    assert (row["action"], row["qty"]) == ("hold", 0)
+
+
+def test_every_seat_turn_is_bounded_by_the_one_named_ceiling(
+        wired, monkeypatch):
+    """The ceiling is ONE module constant applied unconditionally, so a seat is
+    bounded by virtue of being a seat — no config, no opt-in. Make the bound
+    conditional on anything a yaml carries and today's six configs, none of
+    which carry it, go back to unbounded: the exact defect #44 reports."""
+    conn, _, clock = wired
+    seen = {}
+
+    async def _capture(*a, **k):
+        return [], _Result()
+
+    def _spy(coro, wall_s):
+        seen["wall_s"] = wall_s
+        return coro
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _capture)
+    monkeypatch.setattr(run_day_script, "_bounded", _spy)
+    _turn(conn, clock, seat="analyst", cfg={})()
+
+    assert seen["wall_s"] == run_day_script.SEAT_MAX_WALL_S
+
+
+def test_the_seat_wall_clock_ceiling_fires_before_systemd_sigterms_the_unit():
+    """The whole point of a per-seat bound is that it beats
+    ops/fund-daily.service's TimeoutStartSec=30min — that SIGTERM can land
+    between the broker accepting a place_stock_order and the PostToolUse
+    recorder committing the row. A day runs at most four seat turns (the two
+    research seats, the PM, the trader), so the ceiling must leave real room
+    for the non-turn work underneath: the broker snapshot, the market-data
+    fetch, reconcile's 90s wait, the audit and the drains.
+
+    A guard-rail on the constants, not on behaviour: it would still pass
+    against a SEAT_MAX_WALL_S with no bound behind it. The behaviour is pinned
+    by the abandoned-turn test above; this one exists so a later re-tune of
+    the ceiling cannot silently cross the unit's budget."""
+    turns_per_day = sum(len(seats) for seats in run_day_script.SEATS.values())
+    assert turns_per_day == 4
+    worst_case_s = turns_per_day * run_day_script.SEAT_MAX_WALL_S
+    # at most 60% of the unit's budget, leaving 40%+ for the non-turn work
+    assert worst_case_s <= 0.6 * 30 * 60
+    # ...and still far above any turn ever observed (exec's measured live turn
+    # was 3 tool-calling turns), so a slow real turn is not culled as a hang.
+    assert run_day_script.SEAT_MAX_WALL_S >= 120
 
 
 def test_an_exec_tool_call_violation_is_alerted_after_the_cost_is_recorded(
@@ -552,6 +762,7 @@ def test_an_exec_tool_call_violation_is_alerted_after_the_cost_is_recorded(
     assert len(texts) == 1 and "exec_turn_violation" in texts[0]
     assert "zero tool calls" in texts[0]
     assert conn.execute("SELECT COUNT(*) c FROM costs").fetchone()["c"] == 1
+    assert _alert_payloads(conn)[0]["code"] == "exec_turn_violation"
 
 
 def test_an_off_mandate_tool_call_is_alerted(wired, monkeypatch):
@@ -590,7 +801,16 @@ class _QuietSource:
 
     def account_state(self) -> dict:
         return {"equity": 100000.0, "cash": 0.0, "positions": {},
-                "prices": {}, "daily_pnl_pct": 0.0}
+                "prices": {}, "daily_pnl_pct": 0.0,
+                # Explicitly flat, not merely silent. Without this key
+                # orchestrator/ingest_guard.py reads the field as UNREADABLE
+                # and falls through to the fund's own order records, which
+                # this fixture's DB happens to have none of — so the day
+                # would run by accident, and would start halting the moment
+                # anyone gave the `wired` fixture an `orders` row. Zero cash
+                # and zero long market value is the state this docstring
+                # already claims.
+                "long_market_value": 0.0}
 
     def close_frame(self, universe, end=None):
         import pandas as pd
@@ -613,6 +833,19 @@ class _QuietSource:
 
     def open_orders(self) -> list[dict]:
         return []
+
+    # orchestrator/preconditions.py fails closed on a broker it cannot read,
+    # same as open_positions above — quiet means matching the baseline
+    # exactly, not staying silent. This reads the same file the production
+    # code compares against, rather than returning DEFAULT_ACCOUNT_CONFIG,
+    # so this stays quiet once the placeholder baseline is replaced with
+    # values captured from the real account. Tying the fake to its own
+    # defaults would pass today only by coincidence, and once a real capture
+    # made it red, the tempting "fix" would be to edit the captured baseline
+    # to match this fixture instead of the other way around.
+    def account_config(self) -> dict:
+        return yaml.safe_load(
+            run_day_script.ACCOUNT_BASELINE_YAML.read_text()) or {}
 
 
 def test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean(
@@ -676,6 +909,117 @@ def test_a_zero_ticker_day_writes_no_decisions_and_costs_nothing(
     for table in ("signals", "decisions", "tickets", "costs", "orders"):
         assert conn.execute(f"SELECT COUNT(*) c FROM {table}"
                             ).fetchone()["c"] == 0, table
+
+
+# --- the positions payload the whole day is sized from (issue #39) ----------
+
+class _LostPayloadSource(_QuietSource):
+    """The broker answers, plausibly, and is wrong: it reports long market
+    value and lists no positions. Everything else about the day is fine, which
+    is the point — nothing downstream would notice.
+
+    Keeps _QuietSource's zero cash on purpose. It is not what this test is
+    about, and a funded account would make every ticker active, open three
+    seat turns, and bury the assertion under seat_turn_failed noise."""
+
+    def account_state(self) -> dict:
+        return {"equity": 100000.0, "cash": 0.0, "last_equity": 100000.0,
+                "long_market_value": 8594.0, "positions": {}, "prices": {},
+                "daily_pnl_pct": 0.0}
+
+
+class _FlatSource(_QuietSource):
+    """The fund's genuinely-empty first day, said explicitly: no positions AND
+    the broker's own long market value is zero. Identical to _QuietSource
+    post-change; kept as its own name so the test that reads it says what it
+    is testing."""
+
+    def account_state(self) -> dict:
+        return {"equity": 100000.0, "cash": 0.0, "last_equity": 100000.0,
+                "long_market_value": 0.0, "positions": {}, "prices": {},
+                "daily_pnl_pct": 0.0}
+
+
+def _filled_buy_row(conn, symbol="NVDA", qty=80,
+                    tid="a3f90000-0000-4000-8000-000000000001",
+                    submitted_at="2026-07-02T19:59:00+00:00"):
+    """A filled buy and the ticket behind it — the fund's own record that it
+    holds something. Returns the ticket id, so a caller can tell the row it
+    seeded apart from one the day minted."""
+    cur = conn.execute(
+        "INSERT INTO decisions (run_date, ticker, action, qty, thesis,"
+        " invalidation, stop_price, status, created_at) VALUES"
+        " (?, ?, 'buy', ?, 't', 'i', NULL, 'executed', ?)",
+        (submitted_at[:10], symbol, qty, submitted_at))
+    conn.execute(
+        "INSERT INTO tickets (id, decision_id, ticker, side, max_qty,"
+        " stop_price, expires_at, status, created_at)"
+        " VALUES (?, ?, ?, 'buy', ?, NULL, ?, 'consumed', ?)",
+        (tid, cur.lastrowid, symbol, qty, submitted_at, submitted_at))
+    conn.execute(
+        "INSERT INTO orders (client_order_id, symbol, side, qty, status,"
+        " filled_qty, submitted_at) VALUES (?, ?, 'buy', ?, 'filled', ?, ?)",
+        (tid, symbol, qty, qty, submitted_at))
+    conn.commit()
+    return tid
+
+
+def test_a_lost_positions_payload_holds_the_whole_day(wired, tmp_path,
+                                                      monkeypatch):
+    """Issue #39 case (a). The fund's records hold filled positions, the broker
+    returns none, and the account is not flat. Nothing may be sized from that
+    payload: no checkpoint, no seat turn, no ticket — and #risk must be told
+    under a code the alert filer can key an issue on."""
+    conn, slack, clock = wired
+    seeded = _filled_buy_row(conn)
+
+    async def _no_llm(*a, **k):
+        raise AssertionError("a held day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _LostPayloadSource(), "2026-07-06",
+        str(tmp_path / "fund.sqlite"),
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    assert code == 1
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM checkpoints").fetchone()["c"] == 0
+    # Not a count of zero: orders.client_order_id REFERENCES tickets(id), so
+    # the seeded fill above CANNOT exist without a ticket row. Naming the
+    # seeded id is the stronger claim anyway — the day minted nothing of its
+    # own, and a ticket from any other source would fail this too.
+    assert [r["id"] for r in conn.execute("SELECT id FROM tickets")] == [seeded]
+    payloads = _alert_payloads(conn)
+    assert [p["code"] for p in payloads] == ["positions_payload_lost"]
+    assert any("long market value" in t for t in _risk_texts(slack))
+
+
+def test_a_genuinely_empty_first_day_still_trades(wired, tmp_path, monkeypatch):
+    """Issue #39 case (b), and the constraint the whole design bends around.
+    A flat broker and an empty book are the fund's normal first day: every
+    stage must still run, and market/features.py's 1.10x empty-book tier
+    (tests/test_features.py:335) must still be reachable."""
+    conn, slack, clock = wired
+
+    async def _no_llm(*a, **k):
+        raise AssertionError("a zero-ticker day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _FlatSource(), "2026-07-06",
+        str(tmp_path / "fund.sqlite"),
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    assert code == 0
+    assert [p["code"] for p in _alert_payloads(conn)
+            if p["code"] == "positions_payload_lost"] == []
+    assert {r["stage"]: r["status"] for r in conn.execute(
+        "SELECT stage, status FROM checkpoints WHERE run_date = '2026-07-06'")
+    } == {s: "done" for s in ("pre_gate", "research", "decision", "gate",
+                              "execution", "reconciliation", "close")}
 
 
 def test_the_open_ticket_count_reaches_check_tool_calls(wired, monkeypatch):
@@ -819,3 +1163,65 @@ def test_no_sink_configured_is_a_silent_no_op():
     run_day = _load()
     run_day.emit_trace_guarded("pm", _PM_CFG, "2026-08-18", itertools.count(),
                                None, [], _Res(), None)
+
+
+def test_account_baseline_yaml_parses_and_is_not_empty():
+    """An empty or unparseable baseline makes the drift check unable to fail,
+    so it is checked here rather than discovered at 09:00."""
+    baseline = yaml.safe_load(
+        run_day_script.ACCOUNT_BASELINE_YAML.read_text())
+    assert isinstance(baseline, dict) and baseline
+
+
+def test_a_drifted_account_setting_alerts_but_does_not_abort_the_day(
+        wired, tmp_path, monkeypatch):
+    """WIRING, not the assertion's own logic (that is test_preconditions.py's
+    job). `_trading_day`'s call to `assert_account_config_unchanged` is not
+    pinned by any existing test: deleting the `if
+    assert_account_config_unchanged(...)` block at scripts/run_day.py changes
+    no test result, because the three tests that look like they cover it do
+    not — one reads only the yaml file, one calls the assertion directly with
+    no import from run_day.py, and `make sim-day` never reaches `_trading_day`
+    at all. This drives the same entry point
+    test_a_zero_ticker_day_runs_the_whole_composition_and_audits_clean uses,
+    with a broker whose account_config() differs from the baseline in one
+    field, and proves the design's promised claim: the day still completes
+    when drift is present — alert-only, not blocking.
+
+    "Not blocking" is NOT the same as a clean exit code: audit_day.py counts
+    "no alert events TODAY" as part of a clean day by design (drift means the
+    fund traded under preconditions nobody verified, and that is meant to
+    surface), so a day with real drift genuinely returns 1 — that IS the
+    audit doing its job, not the day aborting. What "alert-only, not
+    blocking" actually promises, and what this asserts, is that every stage
+    still ran to completion and the day's digest still posted, rather than
+    the drift check stopping the day before a single stage runs."""
+    conn, slack, clock = wired
+    db_path = str(tmp_path / "fund.sqlite")
+
+    class _DriftingSource(_QuietSource):
+        def account_config(self) -> dict:
+            baseline = super().account_config()
+            return dict(baseline, suspend_trade=not baseline["suspend_trade"])
+
+    async def _no_llm(*a, **k):
+        raise AssertionError("a zero-ticker day must open no seat session")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _no_llm)
+
+    code = run_day_script._trading_day(
+        conn, slack, clock, _DriftingSource(), "2026-07-06", db_path,
+        {"FUND_JOURNALS": str(tmp_path / "journals")})
+
+    # The audit correctly reddens on a real drift alert (see docstring) — this
+    # is the load-bearing half of the proof: delete the call site and no
+    # alert fires at all, so this becomes 0 instead.
+    assert code == 1
+    assert any("suspend_trade" in t for t in _risk_texts(slack))
+
+    # ...but every stage still ran to completion — the check did not stop the
+    # day, which is what "alert-only, not blocking" actually means.
+    assert {r["stage"]: r["status"] for r in conn.execute(
+        "SELECT stage, status FROM checkpoints WHERE run_date = '2026-07-06'")
+    } == {s: "done" for s in ("pre_gate", "research", "decision", "gate",
+                              "execution", "reconciliation", "close")}

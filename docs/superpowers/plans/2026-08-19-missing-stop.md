@@ -1,5 +1,16 @@
 # Closing the Missing-Stop Class — Implementation Plan
 
+<!-- plan-status -->
+> **Status: DELIVERED — 2026-08-25.** `orchestrator/protection.py` is on `master` and the GTC validation is in `gate/tickets.py`.
+>
+> Follow-up on the board: #32 — `account_state` truncates a fractional position while `protection.py` alerts on the same field.
+>
+> **Checkbox state is not a progress signal and nothing reads it.** Measured 2026-08-24 across
+> every plan file in this directory: 359 unchecked boxes, zero checked, including plans whose work
+> demonstrably shipped. Ticking them is friction for the ticker and invisible to everyone else.
+> Work in flight lives on the board — the `wayfinder:map` issue and its children. This plan is the
+> *how*, referenced from an issue; it is never read as state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A protective stop can no longer silently stop existing — the gate refuses to place one that expires before the position does, and an assertion notices any position that ends up naked anyway.

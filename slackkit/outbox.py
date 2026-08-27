@@ -11,18 +11,55 @@ import logging
 import sqlite3
 
 from .port import PermanentPostError
+from .redact import redact
 from .render import render
 
 log = logging.getLogger(__name__)
 
 
-def append_event(conn: sqlite3.Connection, kind: str, payload: dict,
-                 now_iso: str) -> int:
+def _insert(conn: sqlite3.Connection, kind: str, payload: dict,
+            now_iso: str) -> int:
     cur = conn.execute(
         "INSERT INTO events (kind, payload, created_at) VALUES (?, ?, ?)",
         (kind, json.dumps(payload), now_iso))
     conn.commit()
     return cur.lastrowid
+
+
+def append_event(conn: sqlite3.Connection, kind: str, payload: dict,
+                 now_iso: str) -> int:
+    return _insert(conn, kind, payload, now_iso)
+
+
+def append_alert(conn: sqlite3.Connection, code: str, text: str, *,
+                 now_iso: str, ticker: str | None = None,
+                 clears: bool = False, **payload) -> int:
+    """Append an alert carrying a stable machine identity.
+
+    `code` is what scripts/file_alert_issues.py keys a GitHub issue on, so it
+    must be identical across runs: never interpolate a ticker, order id,
+    quantity or exception type into it. `ticker` is the only permitted
+    per-entity key, and only where fixing one position would not fix another.
+
+    Deliberately validates nothing. This runs on the alert path, often inside
+    an `except`, and a raise here would turn "something needs review" into a
+    dead trading day (invariant 4). scripts/check_alert_codes.py enforces the
+    code's shape statically instead.
+
+    `text` — and only `text` — is redacted here rather than at the call sites:
+    the three scripts/run_day.py sites interpolate a raw exception, and the
+    stored row feeds BOTH egresses, Slack via drain() and GitHub via
+    scripts/file_alert_issues.py. `**payload` is stored as given;
+    orchestrator/preconditions.py:78 deliberately keeps a full uncapped
+    exception there, and no egress reads payload extras today. redact()
+    neither raises nor runs long, so this cannot cost an alert.
+    """
+    body: dict = {"text": redact(text), "code": code, **payload}
+    if ticker is not None:
+        body["ticker"] = ticker
+    if clears:
+        body["clears"] = True
+    return _insert(conn, "alert", body, now_iso)
 
 
 def _dead_letter(conn: sqlite3.Connection, row, now_iso: str,

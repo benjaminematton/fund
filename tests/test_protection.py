@@ -15,6 +15,11 @@ def _alerts(conn):
         "SELECT payload FROM events WHERE kind='alert' ORDER BY id").fetchall()]
 
 
+def _payloads(conn):
+    return [json.loads(r["payload"]) for r in conn.execute(
+        "SELECT payload FROM events WHERE kind='alert' ORDER BY id").fetchall()]
+
+
 class Broker:
     """A broker with an exact answer for both reads."""
     def __init__(self, positions=(), orders=()):
@@ -121,6 +126,9 @@ def test_a_promised_stop_that_is_gone_alerts(fund_db):
     assert n == 1
     assert "NVDA" in _alerts(fund_db)[0]
     assert "80" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "unprotected_position"
+    assert payload["ticker"] == "NVDA"
 
 
 def test_a_position_that_was_never_promised_a_stop_is_silent(fund_db):
@@ -190,6 +198,9 @@ def test_a_stop_for_fewer_shares_than_held_alerts(fund_db):
         now_iso=NOW)
     assert n == 1
     assert "only 30 of 80" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "unprotected_position"
+    assert payload["ticker"] == "NVDA"
 
 
 def test_stops_across_several_orders_sum(fund_db):
@@ -223,6 +234,9 @@ def test_a_covered_symbol_and_a_naked_one_alert_exactly_once(fund_db):
     assert n == 1
     assert "NVDA" in _alerts(fund_db)[0]
     assert "MSFT" not in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "unprotected_position"
+    assert payload["ticker"] == "NVDA"
 
 
 def test_a_buy_order_does_not_protect_a_long(fund_db):
@@ -326,6 +340,9 @@ def test_a_positions_read_that_raises_alerts(fund_db):
     n = assert_positions_protected(fund_db, broker=Down(), now_iso=NOW)
     assert n == 1
     assert "ConnectionError" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "protection_unverified"
+    assert "ticker" not in payload
 
 
 def test_an_orders_read_that_raises_alerts(fund_db):
@@ -339,14 +356,53 @@ def test_an_orders_read_that_raises_alerts(fund_db):
     assert n == 1
     assert "ConnectionError" in _alerts(fund_db)[0]
     assert "401 unauthorized" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "protection_unverified"
+    assert "ticker" not in payload
+
+
+def test_a_re_read_failure_alerts_as_unverified(fund_db):
+    """The re-read (:251) can itself raise — a broker that answered once and
+    then dropped. That is exactly as unverifiable as the first read failing,
+    and must carry the same code, never `unprotected_position` (F1: an
+    unverifiable state must never be filed under the same code as a known,
+    ticker-keyed exposure)."""
+    class FlakesOnSecondRead(Broker):
+        def __init__(self):
+            super().__init__([_long()], [])
+            self.reads = 0
+
+        def open_positions(self):
+            self.reads += 1
+            if self.reads > 1:
+                raise ConnectionError("broker down")
+            return self._positions
+
+    _promised(fund_db)
+    n = assert_positions_protected(
+        fund_db, broker=FlakesOnSecondRead(), now_iso=NOW, sleep=lambda _s: None)
+    assert n == 1
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "protection_unverified"
+    assert "ticker" not in payload
 
 
 def test_a_missing_broker_alerts(fund_db):
     """A None broker in production is a wiring bug. It must scream, not skip:
     'no broker, so no check, so no alert' is the silent pass this whole module
-    exists to make impossible."""
+    exists to make impossible.
+
+    Its code is `protection_unverified`, not `unprotected_position` (F1): the
+    latter is reserved for a genuine per-position exposure and is always
+    ticker-keyed. Before this split, an open ticker-keyed
+    `unprotected_position` issue for one symbol silently satisfied `gh issue
+    list --label alert:unprotected_position` for THIS unkeyed, unrelated
+    finding — an unverifiable broker state hiding behind a known exposure."""
     n = assert_positions_protected(fund_db, broker=None, now_iso=NOW)
     assert n == 1
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "protection_unverified"
+    assert "ticker" not in payload
 
 
 def test_it_never_raises_no_matter_how_broken_the_broker_is(fund_db):
@@ -480,6 +536,10 @@ def test_a_recorded_buy_the_broker_no_longer_holds_alerts(fund_db):
     text = _alerts(fund_db)[0]
     assert "NVDA" in text and "80" in text
     assert "0" in text
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "accounting_shortfall"
+    assert payload["ticker"] == "NVDA"
+    assert "clears" not in payload
 
 
 def test_a_partial_disappearance_names_the_shortfall(fund_db):
@@ -551,6 +611,9 @@ def test_no_broker_fails_closed(fund_db):
     n = assert_positions_accounted(fund_db, broker=None, now_iso=NOW)
     assert n == 1
     assert "UNVERIFIED" in _alerts(fund_db)[0]
+    payload = _payloads(fund_db)[0]
+    assert payload["code"] == "accounting_unverified"
+    assert "ticker" not in payload
 
 
 def test_a_position_that_is_merely_slow_to_appear_is_not_a_discrepancy(fund_db):
@@ -595,6 +658,21 @@ def test_a_discrepancy_that_clears_and_recurs_alerts_again(fund_db):
     assert "closed" in texts[1]
 
 
+def test_the_accounting_clearing_alert_is_marked_clears(fund_db):
+    """assert_positions_accounted's clear path must be distinguishable, or
+    the filer reads a resolution as a new finding."""
+    _promised(fund_db)
+    assert assert_positions_accounted(
+        fund_db, broker=Broker([], []), now_iso=NOW) == 1
+    # the gap closes: the broker shows the shares again
+    assert assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "80")], []), now_iso=NOW) == 1
+    payload = _payloads(fund_db)[-1]
+    assert payload["code"] == "accounting_shortfall"
+    assert payload["clears"] is True
+    assert payload["accounting"]["cleared"] is True
+
+
 def test_a_standing_discrepancy_is_not_reported_as_cleared(fund_db):
     """The clear must fire on a real transition, not on every quiet run."""
     _promised(fund_db)
@@ -603,3 +681,70 @@ def test_a_standing_discrepancy_is_not_reported_as_cleared(fund_db):
         assert assert_positions_accounted(
             fund_db, broker=Broker([], []), now_iso=NOW) == 0
     assert _alerts(fund_db) == []
+
+
+# --- the log: what the fund SAW, written after the alerts are decided --------
+
+
+def _protection_rows(conn):
+    return conn.execute(
+        "SELECT * FROM protection ORDER BY id").fetchall()
+
+
+def test_a_protective_order_the_run_saw_is_logged(fund_db):
+    """The record layer. What the broker held is written down, so a later run
+    can say when protection was last seen — which the broker read alone can
+    never answer."""
+    _promised(fund_db)
+    leg = {**_stop(), "id": "alp-0002", "client_order_id": "t1-stop",
+           "stop_price": "215.0", "expires_at": "2026-11-17T21:00:00+00:00"}
+    assert assert_positions_protected(
+        fund_db, broker=Broker([_long()], [leg]), now_iso=NOW) == 0
+
+    rows = _protection_rows(fund_db)
+    assert len(rows) == 1
+    assert rows[0]["alpaca_order_id"] == "alp-0002"
+    assert rows[0]["qty"] == 80
+    assert rows[0]["observed_at"] == NOW
+
+
+def test_the_log_records_the_order_list_the_alert_was_decided_on(fund_db):
+    """SlowLeg returns nothing on the first read and the leg on the second.
+    The alert is computed from the RE-READ, so the log must record that same
+    list — logging the first read would write 'nothing was protecting NVDA'
+    on a day the fund correctly protected it."""
+    _promised(fund_db)
+    leg = {**_stop(), "id": "alp-0002", "client_order_id": "t1-stop",
+           "stop_price": "215.0", "expires_at": None}
+    assert assert_positions_protected(
+        fund_db, broker=SlowLeg([_long()], [leg]), now_iso=NOW) == 0
+    assert [r["alpaca_order_id"] for r in _protection_rows(fund_db)] == \
+        ["alp-0002"]
+
+
+def test_a_failure_to_log_cannot_cost_the_day_an_alert(fund_db):
+    """H4. The write happens AFTER the alerts are appended and in its own try,
+    so a SQLite failure in the recorder becomes its own alert and the day
+    continues. A bare write here would propagate through daily.py, emit zero
+    alerts and skip run_close.
+
+    A PARTIAL cover, not a naked position: the recorder must actually attempt
+    an INSERT for its failure to be reachable at all. With no orders to write
+    the writer touches nothing and this test would pass against a bare write,
+    proving nothing."""
+    _promised(fund_db)
+    short_leg = {**_stop(qty="40"), "id": "alp-0002",
+                 "client_order_id": "t1-stop", "stop_price": "215.0",
+                 "expires_at": None}
+    fund_db.execute("DROP TABLE protection")
+    fund_db.commit()
+
+    n = assert_positions_protected(
+        fund_db, broker=Broker([_long()], [short_leg]), now_iso=NOW)
+
+    texts = _alerts(fund_db)
+    assert any("the position is exposed" in t for t in texts), (
+        "the real finding must survive a recorder failure")
+    assert any("could not RECORD" in t for t in texts), (
+        "the recorder's failure must name recording, not reading")
+    assert n == len(texts)
