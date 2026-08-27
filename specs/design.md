@@ -116,7 +116,7 @@ Debate mechanics (TradingAgents' proven core): shared thread transcript, turn-sc
 - **Session lifecycle:** new session each morning seeded with a journal summary; `session_id` captured from `ResultMessage` and persisted; crash within the day → `resume=session_id`.
 - **Settings:** `setting_sources=["project"]` so `CLAUDE.md` loads for every seat. `system_prompt` = charter string.
 - **Models:** two tiers — fast (Haiku) for analysts/trader/ops, strong (Sonnet/Opus) for PM, researchers, risk. Per-seat `model=` + `fallback_model` in `agents/config/*.yaml`, never hardcoded. Pin exact model ids there.
-- **Cost control:** `max_budget_usd` per session, `max_turns` caps. `ResultMessage.total_cost_usd` is a **client-side estimate** — sum into the digest labeled "est." Budget exhaustion degrades to the stage default (day completes). Expect low single-digit $/day at 3–5 tickers.
+- **Cost control:** `max_budget_usd` per session, `max_turns` caps. `ResultMessage.total_cost_usd` is a **client-side estimate** — sum into the digest labeled "est." Budget exhaustion degrades to the stage default (day completes). Neither caps *seconds*, and a stalled tool call or model stream spends neither, so every seat turn also runs under a wall-clock ceiling (`SEAT_MAX_WALL_S`, `scripts/run_day.py`) and a turn that blows it is abandoned into the same stage default. Expect low single-digit $/day at 3–5 tickers.
 - **Pinned deps:** Python 3.12, `claude-agent-sdk`, `slack_bolt`, `pydantic` v2 — versions in `pyproject.toml`.
 
 ### Slack
