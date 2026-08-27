@@ -16,6 +16,8 @@ Posture (invariant 4: the default is HOLD):
   * market closed / clock unreadable  -> log, exit 0, trade nothing
   * a seat turn that raises            -> one `alert`, then the stage's own
                                           default (neutral/0, pm_timeout hold)
+  * a seat turn that HANGS             -> abandoned at SEAT_MAX_WALL_S, then
+                                          the same `alert`-and-default path
   * anything the audit flags           -> `alert` posted to Slack, exit 1
   * anything ELSE that raises after    -> one `alert`, drained to Slack, then
     connect() (a stage body, the           exit 1 — nobody is watching a
@@ -95,6 +97,28 @@ SEATS = {"research": ("analyst", "news"),
          "decision": ("pm",),
          "execution": ("exec",)}
 LOCK_NAME = "run_day.lock"
+# Wall-clock ceiling for ONE seat turn (issue #44). max_turns and
+# max_budget_usd bound turns and dollars; a stalled MCP tool call or model
+# stream spends neither, so without this a hung turn hangs the whole day —
+# holding the flock, so tomorrow's timer finds the lock and exits 0, which
+# reads exactly like a market-closed day.
+#
+# Sized to fire BEFORE ops/fund-daily.service's TimeoutStartSec=30min, whose
+# SIGTERM can land between the broker accepting a place_stock_order and the
+# PostToolUse recorder committing the row. SEATS runs four turns a day
+# (analyst, news, pm, exec) — a count fixed by the stages, not by how many
+# tickers are active — so the worst case is 4 x 240s = 16min, leaving 14min of
+# the unit's 30 for every non-turn thing underneath: the broker snapshot, the
+# market-data fetch, reconcile's 90s wait, the audit and the drains.
+#
+# ONE ceiling for all seats, not six tuned numbers. Only pm (5 turns/$0.1161),
+# analyst (7/$0.0504) and exec (3/$0.0332) have a measured basis at all;
+# critic is PROVISIONAL, news is "INHERITED, NOT MEASURED", and reflect's 4 is
+# reasoned from the turn's shape. Three invented ceilings sitting beside three
+# measured numbers would read as measured. #44's defect is UNBOUNDED, not
+# mis-bounded, so one conservative bound closes it and per-seat tuning is
+# separate work. Overridable per seat with an optional `max_wall_s` key.
+SEAT_MAX_WALL_S = 240.0
 
 
 def log(msg: str) -> None:
@@ -229,6 +253,32 @@ async def _seat_session(cfg: dict, db_path: str, clock, prompt: str,
         return await run_seat_turn(client, prompt, REQUIRED_SERVERS)
 
 
+class SeatTurnTimeout(Exception):
+    """A seat turn abandoned at its wall-clock ceiling (issue #44)."""
+
+
+async def _bounded(coro, wall_s: float):
+    """`coro` under a wall-clock ceiling, raising SeatTurnTimeout when it
+    blows it. Wraps the COROUTINE, inside asyncio.run: a bound needs a running
+    loop, so it cannot wrap asyncio.run itself.
+
+    asyncio.timeout rather than asyncio.wait_for because both raise the same
+    TimeoutError and only `.expired()` tells OUR bound apart from one the
+    session itself raised — and the session raises exactly that today
+    (await_servers_connected's 30s MCP-connect wait, an SDK stream timeout).
+    Conflating them would relabel a connect failure as a hang and lose the
+    exception text the seat_turn_failed alert reports."""
+    try:
+        async with asyncio.timeout(wall_s) as bound:
+            return await coro
+    except TimeoutError:
+        if not bound.expired():
+            raise                       # the session's own, not ours
+        raise SeatTurnTimeout(
+            f"no result after {wall_s:g}s (max_wall_s ceiling); the turn was"
+            " abandoned mid-flight") from None
+
+
 def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
                        snapshot, names, result, trace_sink, conn=None) -> None:
     """Record one seat turn as a Trace. Never costs the day.
@@ -283,10 +333,22 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
 
     def run() -> None:
         try:
-            names, result = asyncio.run(
+            names, result = asyncio.run(_bounded(
                 _seat_session(cfg, db_path, clock, prompt, snapshot,
                               journals_root,
-                              expected_decision_id=expected_decision_id))
+                              expected_decision_id=expected_decision_id),
+                float(cfg.get("max_wall_s", SEAT_MAX_WALL_S))))
+        except SeatTurnTimeout as exc:
+            # Its own code and text: TimeoutError's repr is the EMPTY string,
+            # so falling through the handler below would post
+            # "pm_turn_failed — TimeoutError: ; stage default applies",
+            # naming neither the seat's budget nor how long it burned. A hang
+            # and a crash also want different fixes, and the alert filer opens
+            # one issue per code.
+            _alert(conn, clock, "seat_turn_timeout",
+                   f"{seat}_turn_timeout — {exc}; stage default applies"
+                   " (default is HOLD)")
+            return
         except Exception as exc:
             _alert(conn, clock, "seat_turn_failed",
                    f"{seat}_turn_failed — {type(exc).__name__}: {exc};"

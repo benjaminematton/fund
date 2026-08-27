@@ -12,7 +12,9 @@ Never calls main(): that builds real clients.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -646,6 +648,91 @@ def test_seat_turn_failure_uses_a_literal_code_not_the_seat_name(
     payload = _alert_payloads(conn)[-1]
     assert payload["code"] == "seat_turn_failed"
     assert payload["text"].startswith("analyst_turn_failed —")
+
+
+# --- a seat turn that HANGS is a different failure from one that raises -----
+
+def test_a_seat_turn_that_never_returns_is_abandoned_at_its_wall_clock_bound(
+        wired, monkeypatch):
+    """Issue #44. max_turns and max_budget_usd bound turns and dollars; a
+    stalled MCP tool call or model stream spends neither, so before this the
+    turn simply never came back. The stage default is triggered by an
+    EXCEPTION and by nothing else (orchestrator/daily.py's run_stage calls
+    body() with no time budget), so a hang reached no default at all: the day
+    hung forever holding the flock, and the next day's timer found the lock
+    and exited 0 — indistinguishable from a market-closed day.
+
+    The 30s sleep stands in for "never returns": it is 600x the bound this
+    test configures, so any pass is the bound firing and not the sleep
+    finishing — while an unbounded regression still ENDS the suite (with a
+    red assertion) instead of hanging it."""
+    conn, _, clock = wired
+
+    async def _hang(*a, **k):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _hang)
+    run = _turn(conn, clock, seat="pm", cfg={"max_wall_s": 0.05})
+    started = time.monotonic()
+    run()                                    # must NOT raise, must NOT hang
+    assert time.monotonic() - started < 5    # abandoned at the bound
+
+    payload = _alert_payloads(conn)[-1]
+    assert payload["code"] == "seat_turn_timeout"
+    assert payload["text"].startswith("pm_turn_timeout —")
+    assert "0.05s" in payload["text"] and "max_wall_s" in payload["text"]
+    assert "default is HOLD" in payload["text"]
+
+    # ...and because it now RAISES, the stage's own default finally lands:
+    # the ticker gets hold/0 instead of the day stopping dead.
+    from orchestrator.daily import StageCtx, run_decision
+    run_decision(StageCtx(conn=conn, run_date="2026-07-06", clock=clock,
+                          slack=None, research_seats=(),
+                          run_turn={"decision": run}), ["NVDA"])
+    row = conn.execute("SELECT action, qty FROM decisions"
+                       " WHERE run_date = '2026-07-06' AND ticker = 'NVDA'"
+                       ).fetchone()
+    assert (row["action"], row["qty"]) == ("hold", 0)
+
+
+def test_a_seat_with_no_max_wall_s_still_gets_the_default_ceiling(
+        wired, monkeypatch):
+    """max_wall_s is optional and resolved from ONE named constant, so a seat
+    yaml that never mentions it is still bounded. A `cfg["max_wall_s"]`
+    subscript would instead leave every one of today's six configs unbounded —
+    the exact defect #44 reports."""
+    conn, _, clock = wired
+    seen = {}
+
+    async def _capture(*a, **k):
+        return [], _Result()
+
+    def _spy(coro, wall_s):
+        seen["wall_s"] = wall_s
+        return coro
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _capture)
+    monkeypatch.setattr(run_day_script, "_bounded", _spy)
+    _turn(conn, clock, seat="analyst", cfg={})()
+
+    assert seen["wall_s"] == run_day_script.SEAT_MAX_WALL_S
+
+
+def test_the_seat_wall_clock_ceiling_fires_before_systemd_sigterms_the_unit():
+    """The whole point of a per-seat bound is that it beats
+    ops/fund-daily.service's TimeoutStartSec=30min — that SIGTERM can land
+    between the broker accepting a place_stock_order and the PostToolUse
+    recorder committing the row. A day runs at most four seat turns (the two
+    research seats, the PM, the trader), so the ceiling must leave real room
+    for the non-turn work underneath: the broker snapshot, the market-data
+    fetch, reconcile's 90s wait, the audit and the drains."""
+    turns_per_day = sum(len(seats) for seats in run_day_script.SEATS.values())
+    assert turns_per_day == 4
+    worst_case_s = turns_per_day * run_day_script.SEAT_MAX_WALL_S
+    assert worst_case_s <= 0.6 * 30 * 60          # >= 40% of the unit's budget
+    # ...and still far above any turn ever observed (exec's measured live turn
+    # was 3 tool-calling turns), so a slow real turn is not culled as a hang.
+    assert run_day_script.SEAT_MAX_WALL_S >= 120
 
 
 def test_an_exec_tool_call_violation_is_alerted_after_the_cost_is_recorded(
