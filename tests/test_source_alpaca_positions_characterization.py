@@ -9,6 +9,7 @@ just the one named for it. Nothing here endorses truncation.
 The four account_state tests in tests/test_source_alpaca_helpers.py all use a
 fake returning no positions, so the comprehension has never run with a position
 in it. Same fake style as that file, reusing its helpers."""
+import pytest
 from alpaca.trading.enums import PositionSide
 
 from tests.test_source_alpaca_helpers import _Clock, _bare_source
@@ -43,27 +44,32 @@ def test_characterization_whole_share_qty_is_carried_exactly_as_int():
     assert isinstance(state["positions"]["NVDA"], int)
 
 
-def test_characterization_fractional_qty_is_truncated_toward_zero():
+@pytest.mark.parametrize("qty, truncated", [
+    ("10.5", 10),
+    ("10.7", 10),
+    ("-10.5", -10),
+])
+def test_characterization_fractional_qty_is_truncated_toward_zero(qty,
+                                                                 truncated):
     """DEFECT, pinned as current behaviour: int(float("10.5")) is 10, so a
     fractional broker position silently loses its fraction. Known defect,
     tracked in #32, unruled — expected to change when #32 is ruled, and
     rewriting it is that fix's job.
 
-    Three fixtures, because "toward zero" is a directional claim and 10.5
-    alone cannot back it — int(), floor() and round() all give 10 there.
-    -10.5 separates int() from floor() (floor gives -11); 10.7 separates it
-    from round() (round gives 11). The fund is long-only today
-    (specs/design.md), so a negative qty is latent rather than live — and
-    state/protection.py:50 qty_of REFUSES negatives outright. Two readers of
-    one broker field disagreeing is #32's opening thesis."""
-    state = _source_holding(_position("NVDA", "10.5", "214.70")).account_state()
-    assert state["positions"] == {"NVDA": 10}
+    Three cases, because "toward zero" is a directional claim and 10.5 alone
+    cannot back it — int(), floor() and round() all give 10 there. -10.5
+    separates int() from floor() (floor gives -11); 10.7 separates it from
+    round() (round gives 11). The fund is long-only today (specs/design.md),
+    so a negative qty is latent rather than live — and state/protection.py:50
+    qty_of REFUSES negatives outright. Two readers of one broker field
+    disagreeing is #32's opening thesis.
 
-    state = _source_holding(_position("NVDA", "10.7", "214.70")).account_state()
-    assert state["positions"] == {"NVDA": 10}
-
-    state = _source_holding(_position("NVDA", "-10.5", "214.70")).account_state()
-    assert state["positions"] == {"NVDA": -10}
+    Parametrized, not three asserts in one body, because a #32 ruling may
+    treat positives and negatives DIFFERENTLY (carry the true value for
+    positives, refuse negatives as qty_of does). Sequential asserts would
+    report only the first, hiding the split behind a rerun."""
+    state = _source_holding(_position("NVDA", qty, "214.70")).account_state()
+    assert state["positions"] == {"NVDA": truncated}
 
 
 def test_characterization_sub_one_share_qty_becomes_zero_but_keeps_its_key():
