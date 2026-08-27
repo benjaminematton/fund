@@ -10,6 +10,7 @@ Usage:  .venv/bin/python3 scripts/eval_one.py <case-id> [trial] [seat]
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,17 +25,40 @@ sys.path.insert(0, str(ROOT))
 EVAL_KEYS = ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
              "ALPACA_PAPER_TRADE")
 
+
+def _primary_checkout_env() -> Path | None:
+    """The primary checkout's .env, or None when git cannot say where it is."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None                      # no git, or it hung
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None                      # not a repo, or nothing to report
+    # --git-common-dir may be relative to ROOT; ROOT / absolute is absolute.
+    return (ROOT / proc.stdout.strip()).resolve().parent / ".env"
+
+
 # .env.eval wins over .env when present. That is what lets eval credentials
 # live on a host the fund must never TRADE from — the Mac after the 2026-08-18
 # droplet cutover, where `.env` was renamed to `.env.MIGRATED-TO-VM` as one of
 # two barriers against the fund resurrecting there (PROGRESS.md "The Mac after
 # cutover"). Restoring a full `.env` to run evals would dissolve that barrier;
 # a file that cannot trade keeps it, by construction rather than by memory.
-# .env lives in the primary checkout; a worktree has none of its own.
+# .env lives in the primary checkout; a worktree has none of its own, so we
+# fall back to the primary checkout's .env — derived, never hardcoded. Git
+# reports the main worktree's git dir as --git-common-dir (a linked worktree's
+# own git dir is .git/worktrees/<name> underneath it), and the primary checkout
+# is that dir's parent. Do not delete this as dead code: without it `make eval`
+# cannot run from a worktree at all. A checkout with no .env anywhere is the
+# normal fresh-clone case, not an error — main() reports it below.
 EVAL_ENV = ROOT / ".env.eval"
 ENV = EVAL_ENV if EVAL_ENV.exists() else ROOT / ".env"
 if not ENV.exists():
-    ENV = Path("/Users/benjaminmatton/Developer/fund/.env")
+    primary_env = _primary_checkout_env()
+    if primary_env is not None and primary_env.exists():
+        ENV = primary_env
 
 
 def load_env(path: Path) -> None:
