@@ -8,13 +8,17 @@ these two test modules move together.
 """
 import json
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from slackkit import redact as redact_mod
 from slackkit.outbox import append_alert
-from slackkit.redact import redact
+from slackkit.redact import _MAX_CHARS, redact
 
+ROOT = Path(__file__).resolve().parents[1]
 SECRET = "aB3dEfGhIjKlMnOpQrSt9zZ"
 
 
@@ -55,9 +59,14 @@ def test_redacts_secret_key_with_no_recognized_value_prefix():
     assert "REDACTED" in text
 
 
-def test_redacts_every_real_env_var_in_this_project():
-    """The name rule is anchored to ALL_CAPS env-var shape. Every credential
-    this fund actually carries is that shape — see .env."""
+def test_redacts_the_prefixed_credential_env_vars():
+    """The name rule is anchored to ALL_CAPS env-var shape AND to a KEY /
+    TOKEN / SECRET / PASSWORD substring, so it covers exactly the variables
+    named here and claims nothing beyond them. It does NOT cover every secret
+    the fund carries: HC_PING_URL (ops/README.md:150, injected at
+    ops/fund-daily.service:57) is bearer-equivalent and matches no rule on
+    either side. That gap is shared with the shell twin and is filed
+    separately — closing it here alone would desync the two."""
     for name in ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
                  "SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN_EXEC", "SLACK_APP_TOKEN_EXEC"):
         assert SECRET not in redact(f"{name}={SECRET}"), f"{name} leaked"
@@ -120,6 +129,21 @@ def test_does_not_redact_ordinary_lines_with_colons_or_equals():
     assert "qty=80 stop=215" in text
 
 
+def test_a_match_cannot_run_across_a_newline():
+    """Pins the one design decision in the port: _SP is `[^\\S\\n]`, not `\\s`.
+
+    sed is line-oriented, so no shell match can span lines. Python's `\\s`
+    matches a newline, so `\\s*[=:]` would let a name at the end of one line
+    pair with a delimiter at the start of the next and swallow it — here, the
+    runbook step that is the whole point of the message. Every other case in
+    this module is complete on a single line and would pass either way."""
+    text = redact("run_day_failed — KeyError: ALPACA_SECRET_KEY\n"
+                  ": not in /etc/fund/env — load it, then restart fund-daily")
+    assert ": not in /etc/fund/env — load it, then restart fund-daily" in text
+    assert "ALPACA_SECRET_KEY" in text
+    assert "REDACTED" not in text, f"a match ran across the newline: {text}"
+
+
 def test_the_exec_turn_violation_alert_shape_survives_intact():
     """`exec_turn_violation — {exc}` is one of the three leaky sites. Its
     ordinary output is an exception type followed by a colon, which is exactly
@@ -135,7 +159,82 @@ def test_the_seat_turn_failed_alert_keeps_its_diagnosis():
     assert redact(original) == original
 
 
-# --- must never cost an alert ----------------------------------------------
+# --- must never cost an alert: bounded runtime ------------------------------
+
+# The cubic shape. Two unbounded [A-Z0-9_]* straddling the keyword alternation
+# made this input take ~2.4s at 4KB and ~20s at 8KB — 2x length for 8x time,
+# extrapolating to ~40 minutes at 40KB. Flat "A"*n is only quadratic and hides
+# the worst of it, so it is not the shape to test with.
+_CUBIC = "('A'*40 + 'KEY' + 'A'*40) * 1205"          # ~100KB, no '=' or ':'
+_HANG_BUDGET_S = 30.0        # subprocess kill: bounds an unbounded regression
+_SLOW_BUDGET_S = 5.0         # assertion: bounds a finite-but-slow one
+
+
+def test_adversarial_input_cannot_hang_the_alert_path():
+    """redact() cannot raise — which makes running LONG its remaining way to
+    kill a day, and a worse one. A raise is caught and logged at
+    run_day.py:471; a regex grinding inside guarded() is a dead trading day
+    with no signal at all.
+
+    Reachable from exactly the three sites this module exists for:
+    run_day.py:291-293, :306-307 and :464-466 interpolate `{exc}` with no
+    length cap (contrast orchestrator/protection.py:203, which caps at 120),
+    and the analyst seat reads attacker-authorable news (issue #42).
+
+    Runs in a subprocess so an unbounded regression fails in bounded time
+    instead of hanging the suite — the pre-fix code needs ~10 hours on this
+    input. Both budgets are 400x+ over the measured ~12ms: this must catch
+    minutes-versus-milliseconds, never scheduler noise."""
+    src = (f"import sys, time\n"
+           f"sys.path.insert(0, {str(ROOT)!r})\n"
+           f"from slackkit.redact import redact\n"
+           f"s = {_CUBIC}\n"
+           f"t = time.perf_counter()\n"
+           f"redact(s)\n"
+           f"print(time.perf_counter() - t)\n")
+    try:
+        proc = subprocess.run([sys.executable, "-c", src], capture_output=True,
+                              text=True, timeout=_HANG_BUDGET_S)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"redact() did not finish on {len(('A'*40+'KEY'+'A'*40)*1205)}"
+                    f" adversarial chars within {_HANG_BUDGET_S}s — catastrophic"
+                    " backtracking is back")
+    assert proc.returncode == 0, proc.stderr
+    elapsed = float(proc.stdout.strip())
+    assert elapsed < _SLOW_BUDGET_S, f"redact() took {elapsed:.2f}s"
+
+
+def test_input_past_the_cap_is_truncated_not_scanned():
+    """The cap is half the fix; the bounded repeats are the other half.
+
+    The repeats alone are enough for every shape found so far — with them,
+    100KB runs in ~6ms and this assertion cannot tell a 64KB cap from a 10MB
+    one. The cap earns its place against the shape nobody found: it makes
+    total work O(cap x 64 x 64), a ceiling that holds no matter what a later
+    rule does. So the ceiling itself is asserted, not just the truncation."""
+    assert _MAX_CHARS <= 65536, "the cap must stay a real ceiling"
+    out = redact("A" * (_MAX_CHARS + 500))
+    assert len(out) < _MAX_CHARS + 100
+    assert "500 chars truncated" in out
+
+
+def test_truncation_drops_the_tail_rather_than_passing_it_through():
+    """Redaction stops at the cap, so text past it must not survive: passing
+    an unscanned tail through would leak precisely what the cap skipped."""
+    out = redact("x" * _MAX_CHARS + f" ALPACA_SECRET_KEY={SECRET}")
+    assert SECRET not in out, "unscanned tail passed through"
+
+
+def test_a_credential_just_inside_the_cap_is_still_redacted():
+    """The cap must not become a way to push a secret out of reach by padding
+    in front of it — everything up to it is still scanned."""
+    lead = "x" * (_MAX_CHARS - 60)
+    out = redact(lead + f" ALPACA_SECRET_KEY={SECRET}" + "y" * 400)
+    assert SECRET not in out, out[-120:]
+    assert "ALPACA_SECRET_KEY=REDACTED" in out
+
+
+# --- must never cost an alert: no raise -------------------------------------
 
 class _Boom:
     """Stands in for a compiled pattern whose .sub() blows up."""
@@ -218,7 +317,9 @@ def test_append_alert_leaves_an_ordinary_alert_untouched(fund_db):
 def test_the_github_egress_title_cannot_carry_a_credential(fund_db, name):
     """scripts/file_alert_issues.py:43-46 slices the stored text into a public
     issue TITLE. Truncation is not redaction — the secret must already be gone
-    by the time it is stored."""
+    from the TEXT by the time it is stored. Says nothing about `payload`
+    extras, which are stored unredacted and which no egress reads today (see
+    slackkit/redact.py's SCOPE note)."""
     rowid = append_alert(fund_db, "seat_turn_failed",
                          f"seat_turn_failed — RuntimeError: {name}={SECRET}",
                          now_iso="2026-08-27T13:00:00+00:00")

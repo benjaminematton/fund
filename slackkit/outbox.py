@@ -46,11 +46,13 @@ def append_alert(conn: sqlite3.Connection, code: str, text: str, *,
     dead trading day (invariant 4). scripts/check_alert_codes.py enforces the
     code's shape statically instead.
 
-    `text` is redacted here rather than at the call sites: the three
-    scripts/run_day.py sites interpolate a raw exception, and the stored row
-    feeds BOTH egresses — Slack via drain(), GitHub via
-    scripts/file_alert_issues.py. redact() never raises, so this cannot cost
-    an alert.
+    `text` — and only `text` — is redacted here rather than at the call sites:
+    the three scripts/run_day.py sites interpolate a raw exception, and the
+    stored row feeds BOTH egresses, Slack via drain() and GitHub via
+    scripts/file_alert_issues.py. `**payload` is stored as given;
+    orchestrator/preconditions.py:78 deliberately keeps a full uncapped
+    exception there, and no egress reads payload extras today. redact()
+    neither raises nor runs long, so this cannot cost an alert.
     """
     body: dict = {"text": redact(text), "code": code, **payload}
     if ticker is not None:

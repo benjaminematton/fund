@@ -8,6 +8,16 @@ GitHub, via scripts/file_alert_issues.py, which writes it into an issue title
 and body. Redacting in append_alert covers both, because both read the stored
 row.
 
+SCOPE — this covers alert TEXT only, and nothing else claims to be clean.
+append_alert's `**payload` extras are stored unredacted, and one site relies on
+that: orchestrator/preconditions.py:77-78 caps the text at 120 chars and keeps
+the FULL uncapped exception in `payload["error"]` on purpose, so the cap never
+costs the only diagnostic there is. No renderer or filer egresses payload
+extras today. Separately, scripts/run_day.py:350 logs the RAW text before
+append_alert ever sees it, so logs/run_day.err.log keeps an unredacted copy on
+the box. Neither is in scope here; do not read this module as a promise that a
+credential cannot reach disk.
+
 TWIN: the `redact()` shell function in ops/notify_failure.sh:25-32 applies
 these same five rules to the journal tail. That script is deliberately
 dependency-free of the fund (its header: "the alert path must not share a
@@ -28,9 +38,52 @@ import re
 
 log = logging.getLogger(__name__)
 
+# Longest input the rules run over; the rest is dropped, not passed through
+# unredacted. The three run_day.py sites interpolate `{exc}` with no length
+# cap of their own (unlike orchestrator/protection.py:203 and
+# preconditions.py:77, which use str(e)[:120]), and an attacker-influenced
+# exception message is the ordinary shape here — the analyst seat reads
+# attacker-authorable news (issue #42).
+#
+# The bound is what keeps redaction from becoming the outage. This module's
+# whole thesis is that it must never cost an alert, and a regex that runs for
+# minutes is strictly worse than one that raises: a raise is caught and logged
+# at run_day.py:471, while a hang inside guarded() is a dead trading day with
+# no signal at all (invariant 4, violated in effect rather than in form).
+#
+# DIVERGENCE from the shell twin, deliberate: over this length the two
+# implementations no longer agree, because sed is fed a bounded journal tail
+# (-n 20) and has no equivalent exposure. Under it they agree byte for byte.
+_MAX_CHARS = 8192
+
 # Whitespace except newline. sed is line-oriented, so a shell match can never
-# span log lines; \s alone would let one.
+# span log lines; \s here would let one run off the end of a line and eat the
+# next one, destroying the diagnosis that follows. Pinned by
+# test_a_match_cannot_run_across_a_newline.
 _SP = r"[^\S\n]"
+
+# The two halves of a NAME, either side of its keyword. The unbounded `*` these
+# replace was the cubic term: two of them straddling the alternation made 8KB
+# of `("A"*40 + "KEY" + "A"*40)` take ~20 seconds and 40KB roughly 40 minutes.
+#
+# HEAD must still backtrack — the keyword follows it, so it has to give back to
+# let KEY|TOKEN|... match. Its bound costs no fidelity: on a name with more
+# than 64 characters before its keyword the match simply starts further right,
+# the skipped characters are copied through verbatim, and the rendered line is
+# byte-identical.
+#
+# TAIL is possessive, which is both exact and 11x faster (215ms -> 19ms on the
+# worst input found). Giving back cannot rescue a failed match: everything that
+# may follow the name is `['"]?`, horizontal space or `[=:]`, and none of those
+# match a [A-Z0-9_] character.
+#
+# TAIL's bound is the one real divergence from the shell twin. sed redacts
+# `AKEY` + 70 more capitals + `=v`; this does not. Real credential names run
+# under 30 characters, and an unbounded-but-possessive tail measured 3.5x
+# SLOWER than the plain bound, so the bound stays and the gap is documented
+# rather than closed.
+_NAME_HEAD = r"[A-Z0-9_]{0,63}"
+_NAME_TAIL = r"[A-Z0-9_]{0,63}+"
 
 # Applied in order, exactly as ops/notify_failure.sh chains its -e expressions:
 # prefix rules catch known token shapes, then the name rule catches secrets
@@ -44,8 +97,9 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"xoxb-[A-Za-z0-9-]+"), "xoxb-REDACTED"),
     (re.compile(r"xapp-[A-Za-z0-9-]+"), "xapp-REDACTED"),
     (re.compile(r"PK[A-Z0-9]{16,}"), "PK-REDACTED"),
-    (re.compile(r"""['"]?([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)"""
-                r"""[A-Z0-9_]*)['"]?""" + _SP + r"""*[=:]""" + _SP
+    (re.compile(r"""['"]?([A-Z]""" + _NAME_HEAD
+                + r"""(?:KEY|TOKEN|SECRET|PASSWORD)""" + _NAME_TAIL
+                + r""")['"]?""" + _SP + r"""*[=:]""" + _SP
                 + r"""*['"]?\S+"""), r"\1=REDACTED"),
 )
 
@@ -53,16 +107,30 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 def redact(text: str) -> str:
     """Return `text` with credential-shaped substrings replaced.
 
-    Never raises. This runs on the alert path, inside `except` blocks, where a
-    raise would turn "something needs review" into a dead trading day
-    (invariant 4; slackkit/outbox.py:44-47). A redactor that can lose an alert
-    is worse than the leak it fixes, so any failure passes the ORIGINAL text
-    through untouched.
+    Never raises, and never runs long. This is on the alert path, inside
+    `except` blocks, where a raise would turn "something needs review" into a
+    dead trading day (invariant 4; slackkit/outbox.py:44-47) — and where a
+    regex that grinds for minutes would do the same thing, silently. A
+    redactor that can lose an alert is worse than the leak it fixes, so any
+    failure passes the ORIGINAL text through untouched, and input past
+    _MAX_CHARS is dropped rather than scanned.
+
+    Truncation drops the tail; it never passes it through. A cut can only
+    remove credential material, never expose it: a value split by the cut is
+    still preceded by its NAME= and still redacted, and a NAME split by the
+    cut carries no secret.
     """
     try:
         out = text
+        if len(out) > _MAX_CHARS:
+            dropped = len(out) - _MAX_CHARS
+            out = out[:_MAX_CHARS]
+        else:
+            dropped = 0
         for pattern, replacement in _RULES:
             out = pattern.sub(replacement, out)
+        if dropped:
+            out += f"…[{dropped} chars truncated before redaction]"
         return out
     except Exception:
         log.exception("redact: failed; alert text passes through unredacted")
