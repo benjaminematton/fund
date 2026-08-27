@@ -60,7 +60,7 @@ Measured against each branch's own remote, not against `master`. Four locations,
 
 | Where | Branch | Ahead of remote | Dirty | What it is |
 |---|---|---|---|---|
-| `fund-wt/reflection-stage` | `feat/reflection-stage` | **4 commits** | 4 files | **#4's implementation.** The reflect seat, `submit_reflection`, the nightly job. Its author (`fund-c6`) is gone. |
+| `fund-wt/reflection-stage` | `feat/reflection-stage` | **4 commits** | 4 files | **#4's implementation.** The reflect seat, `submit_reflection`, the nightly job. **Owner is LIVE** — `fund-c6`, now named `fund-34`, sessionId `25602639-…`, mid-amend. ~~Its author is gone.~~ (Cell rewritten 10:50; see the ⛔ block above. A table cell gets read out of order, so the false claim is corrected here rather than only in prose.) |
 | `fund-wt/reflection-idempotent` | `fix/reflection-writer-idempotent` | 1 commit (`0b754ad`) | 0 | #4's idempotency fix. **Deliberately held**, not stranded — hold was the lane's own recommendation. |
 | `Developer/fund` (root) | detached `HEAD` | **21 commits** | 14 files | Standup-dispatch spec work. See §2. |
 | `fund-wt/dev-status` | `feat/dev-status` | ~~2 commits~~ **7 and growing** | 1 file | ~~Unknown provenance; predates this run.~~ **`fund-91`'s live lane**, all seven commits made today 09:54–10:03. Corrected 10:10. |
@@ -134,6 +134,28 @@ intent unknown.
 
 **Do not fix it by editing the file** — the rule being deleted is precisely the one saying you
 cannot settle a rule that way. It goes to Benjamin as-is.
+
+> ### ⚠ The `CLAUDE.md` deletion is not one file's problem. The mechanism is the checkout.
+>
+> Two things follow from the root checkout's `HEAD` being 21 commits divergent, and both were
+> demonstrated on 2026-08-26:
+>
+> **1. `git status` reports files as untracked (`??`) that are on `master`.** The status is
+> computed against the divergent `HEAD`, not against `master`. Of ten docs that looked untracked
+> there, **six were already on `master`** — three byte-identical. The real exposure was four.
+>
+> **2. The checkout's copy can be OLDER than master's, and "rescuing" it reverts work.**
+> `docs/superpowers/plans/2026-08-18-critic-seat.md` shows `??` in `git status`, is on `master`,
+> and differs by 740 lines — the local copy **lacks** master's `DELIVERED` status header, its
+> pointer to `map.md` for the current owner, and its measured finding that checkbox state is not
+> a progress signal. Committing it would have deleted all three.
+>
+> Same shape as the `CLAUDE.md` deletion above, and that is the point: **the checkout silently
+> holds older content that undoes work on `master`.** Caught by `fund-f5` mid-rescue.
+>
+> **Never use `git status` in the root checkout to decide whether a file exists upstream.**
+> `git show origin/master:<path>` is the instrument. This is the §7 rule again — the wrong
+> instrument answering confidently.
 
 **Consequences for you:** never `git checkout` in the root checkout; never read a file's state
 from it (`git show master:<path>` instead — its HEAD is a divergent line, not an ancestor);
