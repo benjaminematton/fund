@@ -665,14 +665,17 @@ def test_a_seat_turn_that_never_returns_is_abandoned_at_its_wall_clock_bound(
     The 30s sleep stands in for "never returns": it is 600x the bound this
     test configures, so any pass is the bound firing and not the sleep
     finishing — while an unbounded regression still ENDS the suite (with a
-    red assertion) instead of hanging it."""
+    red assertion) instead of hanging it. The bound is shortened by patching
+    the module constant, which IS the production knob — there is no config
+    key to inject."""
     conn, _, clock = wired
 
     async def _hang(*a, **k):
         await asyncio.sleep(30)
 
     monkeypatch.setattr(run_day_script, "_seat_session", _hang)
-    run = _turn(conn, clock, seat="pm", cfg={"max_wall_s": 0.05})
+    monkeypatch.setattr(run_day_script, "SEAT_MAX_WALL_S", 0.05)
+    run = _turn(conn, clock, seat="pm")
     started = time.monotonic()
     run()                                    # must NOT raise, must NOT hang
     assert time.monotonic() - started < 5    # abandoned at the bound
@@ -680,7 +683,7 @@ def test_a_seat_turn_that_never_returns_is_abandoned_at_its_wall_clock_bound(
     payload = _alert_payloads(conn)[-1]
     assert payload["code"] == "seat_turn_timeout"
     assert payload["text"].startswith("pm_turn_timeout —")
-    assert "0.05s" in payload["text"] and "max_wall_s" in payload["text"]
+    assert "0.05s" in payload["text"] and "SEAT_MAX_WALL_S" in payload["text"]
     assert "default is HOLD" in payload["text"]
 
     # ...and because it now RAISES, the stage's own default finally lands:
@@ -695,12 +698,12 @@ def test_a_seat_turn_that_never_returns_is_abandoned_at_its_wall_clock_bound(
     assert (row["action"], row["qty"]) == ("hold", 0)
 
 
-def test_a_seat_with_no_max_wall_s_still_gets_the_default_ceiling(
+def test_every_seat_turn_is_bounded_by_the_one_named_ceiling(
         wired, monkeypatch):
-    """max_wall_s is optional and resolved from ONE named constant, so a seat
-    yaml that never mentions it is still bounded. A `cfg["max_wall_s"]`
-    subscript would instead leave every one of today's six configs unbounded —
-    the exact defect #44 reports."""
+    """The ceiling is ONE module constant applied unconditionally, so a seat is
+    bounded by virtue of being a seat — no config, no opt-in. Make the bound
+    conditional on anything a yaml carries and today's six configs, none of
+    which carry it, go back to unbounded: the exact defect #44 reports."""
     conn, _, clock = wired
     seen = {}
 
@@ -716,25 +719,6 @@ def test_a_seat_with_no_max_wall_s_still_gets_the_default_ceiling(
     _turn(conn, clock, seat="analyst", cfg={})()
 
     assert seen["wall_s"] == run_day_script.SEAT_MAX_WALL_S
-
-
-@pytest.mark.parametrize("bad", [0, 0.0, -1, -0.05, "soon", None, [240]])
-def test_a_max_wall_s_that_is_not_a_positive_number_is_rejected_at_wiring(
-        wired, bad):
-    """agents/seats.py's loader is a bare yaml.safe_load with no schema, so a
-    `max_wall_s: 0` typo reaches the bound unchecked — and a non-positive
-    ceiling insta-times-out EVERY turn into its stage default: a whole trading
-    day of HOLDs whose only trace is one seat_turn_timeout per stage, with
-    nothing saying the cause was one yaml line. Invariant 4 makes HOLD the
-    answer to genuine ambiguity; a config typo is not ambiguity.
-
-    Checked when the turn is BUILT, not when it runs: make_turn is called from
-    _trading_day's wiring, before the first stage, so a bad value stops the day
-    inside guarded() — one alert, drained to Slack, exit 1 — rather than after
-    the gate has already minted tickets."""
-    conn, _, clock = wired
-    with pytest.raises(SystemExit, match="max_wall_s"):
-        _turn(conn, clock, seat="pm", cfg={"max_wall_s": bad})
 
 
 def test_the_seat_wall_clock_ceiling_fires_before_systemd_sigterms_the_unit():

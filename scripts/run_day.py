@@ -126,13 +126,10 @@ LOCK_NAME = "run_day.lock"
 #     the day continues, and reconciliation recovers it. Abandoning a turn is
 #     therefore strictly LESS harmful than the 30min timeout it pre-empts.
 #
-# ONE ceiling for all seats, not six tuned numbers. Only pm (5 turns/$0.1161),
-# analyst (7/$0.0504) and exec (3/$0.0332) have a measured basis at all;
-# critic is PROVISIONAL, news is "INHERITED, NOT MEASURED", and reflect's 4 is
-# reasoned from the turn's shape. Three invented ceilings sitting beside three
-# measured numbers would read as measured. #44's defect is UNBOUNDED, not
-# mis-bounded, so one conservative bound closes it and per-seat tuning is
-# separate work. Overridable per seat with an optional `max_wall_s` key.
+# ONE ceiling for every seat, applied unconditionally — there is no per-seat
+# knob. Only half the seats have a measured turn cost, and an invented ceiling
+# sitting beside a measured one reads as measured. #44's defect is UNBOUNDED,
+# not mis-bounded, so one conservative bound closes it; per-seat tuning is #131.
 SEAT_MAX_WALL_S = 240.0
 
 
@@ -321,30 +318,8 @@ async def _bounded(coro, wall_s: float):
         if not bound.expired():
             raise                       # the session's own, not ours
         raise SeatTurnTimeout(
-            f"no result after {wall_s:g}s (max_wall_s ceiling); the turn was"
-            " abandoned mid-flight") from None
-
-
-def seat_wall_s(seat: str, cfg: dict) -> float:
-    """This seat's ceiling, validated. agents/seats.py's load_seat_config is a
-    bare yaml.safe_load with no schema, so `max_wall_s: 0` — or a stray unit
-    like '4m' — arrives here unchecked, and a non-positive bound expires every
-    turn instantly: a whole trading day of stage defaults, one
-    seat_turn_timeout per stage, and nothing naming the one yaml line that did
-    it. Invariant 4 makes HOLD the answer to genuine ambiguity; a config typo
-    is not ambiguity, so it stops the day loudly instead."""
-    raw = cfg.get("max_wall_s", SEAT_MAX_WALL_S)
-    try:
-        wall_s = float(raw)
-    except (TypeError, ValueError):
-        wall_s = float("nan")
-    if not wall_s > 0:                  # also rejects nan
-        raise SystemExit(
-            f"run_day: seat {seat!r} has max_wall_s={raw!r} — it must be a"
-            " positive number of seconds. Fix agents/config/"
-            f"{seat}.yaml or drop the key to take the"
-            f" {SEAT_MAX_WALL_S:g}s default.")
-    return wall_s
+            f"no result after {wall_s:g}s (SEAT_MAX_WALL_S ceiling); the turn"
+            " was abandoned mid-flight") from None
 
 
 def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
@@ -398,19 +373,13 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
     `alert` and lets the stage's own default land (invariant 4). The cost is
     recorded BEFORE the exec seat's tool-call assertions run — a violating
     turn still spent real money."""
-    # Resolved HERE rather than inside run(): make_turn is called from
-    # _trading_day's wiring, so a bad max_wall_s stops the day before the
-    # first stage — inside guarded(), which alerts and drains — instead of
-    # after the gate has already minted tickets.
-    wall_s = seat_wall_s(seat, cfg)
-
     def run() -> None:
         try:
             names, result = asyncio.run(_bounded(
                 _seat_session(cfg, db_path, clock, prompt, snapshot,
                               journals_root,
                               expected_decision_id=expected_decision_id),
-                wall_s))
+                SEAT_MAX_WALL_S))
         except SeatTurnTimeout as exc:
             # Its own code, because the alert filer opens one issue per code
             # and a hang and a crash want different fixes — the handler below
