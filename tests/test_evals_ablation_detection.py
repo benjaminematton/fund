@@ -75,9 +75,11 @@ PROBES = {
     "secondary": frozenset({"sizing-paragraph-deleted"}),
 }
 
-# The blocking grid. Derived from full_registry() rather than written out, so
-# a sixth invariant cannot join silently — see
-# test_the_blocking_grid_is_the_five_invariants_this_matrix_was_measured_over.
+# The blocking grid AS MEASURED. This is the pinned side of the comparison
+# only: every test that asks "did a blocking invariant fire?" asks
+# live_blocking() instead, so a newly registered invariant's catches are
+# actually counted rather than filtered out by a stale tuple. The grid test
+# then asserts the two agree, which is what reddens on a composition change.
 #
 # KNOWN LIMITATION, recorded rather than solved: full_registry() and
 # seat_registry("pm") agree today only because evals/seats/pm.yaml declares all
@@ -85,6 +87,12 @@ PROBES = {
 # the Critic seat is ever given one, that equivalence breaks — critic.yaml
 # deliberately drops I1 — and this pin would need seat_registry(trace.seat).
 BLOCKING = ("I1", "I2", "I3", "I4", "I5")
+
+# Corpus size, pinned for every run dir. An absence assertion over a corpus
+# that silently shrank is green for the wrong reason, so every test asserting
+# "nothing fired" first asserts there was something to fire over.
+TRIALS = 18
+VERDICTS = 108
 
 # Charter fragments the three injected defects are made of. Substrings, not
 # whole lines: this identifies the mutation, it does not re-copy the charter.
@@ -98,6 +106,15 @@ SIZING_CUT = "size so a stop at the invalidation level risks"
 def graded(run: str):
     cases = {c.id: c for c in load_cases(CASES)}
     return grade_traces(TRACES / run, cases=cases, invariants=full_registry())
+
+
+def live_blocking() -> frozenset[str]:
+    """The blocking invariants as the registry declares them RIGHT NOW.
+
+    Read at the point of use, never from BLOCKING: a test that filters
+    failures through the pinned tuple cannot see a sixth invariant catching a
+    probe, which is precisely the movement this file exists to report."""
+    return frozenset(full_registry()) - {"EXPECT"}
 
 
 def profile(run: str) -> dict[str, dict[str, str]]:
@@ -190,18 +207,64 @@ def test_the_blocking_grid_is_the_five_invariants_this_matrix_was_measured_over(
     """0/3 is a statement about I1-I5. A sixth invariant makes the headline
     false whether or not it fires, so it must force a deliberate re-measure
     rather than joining a matrix that never counted it."""
-    assert tuple(sorted(set(full_registry()) - {"EXPECT"})) == BLOCKING, \
+    assert tuple(sorted(live_blocking())) == BLOCKING, \
         "the blocking registry changed — re-measure the ablation matrix and " \
         "update this pin in its own reviewed commit"
+
+
+def test_each_invariant_emits_its_own_registry_key_as_its_verdict_name():
+    """Close the key/name trust gap. failures() reads `v.invariant`, which each
+    invariant module stamps from its own NAME constant, while the grid test
+    above compares registry KEYS — nothing otherwise asserts the two agree, so
+    an invariant registered under one key while emitting another would be
+    filtered out of the headline rate as "not blocking".
+
+    Graded through the real path, because NAME is only a claim about what the
+    function emits. All-PASS is part of the check: grade_trace stamps the
+    registry KEY on its own INCONCLUSIVE fallbacks, which would forge exactly
+    the agreement being tested."""
+    keys = set(full_registry())
+    results = graded(CONTROL)
+    assert len(results) == TRIALS, \
+        f"control has {len(results)} trials, pinned {TRIALS}"
+    for r in results:
+        assert {v.invariant for v in r.verdicts} == keys, \
+            f"{r.case}/{r.trial} emitted verdict names " \
+            f"{sorted(v.invariant for v in r.verdicts)} against registry keys " \
+            f"{sorted(keys)} — a verdict name no longer matches the key it is " \
+            "registered under, so this matrix counts the wrong invariants"
+        assert all(v.outcome == "PASS" for v in r.verdicts), \
+            f"{r.case}/{r.trial} is not all-PASS: " \
+            f"{[(v.invariant, v.outcome, v.tag) for v in r.verdicts]} — the " \
+            "name check above only means something on verdicts the invariant " \
+            "functions actually produced"
+
+
+def test_every_run_dir_holds_the_pinned_eighteen_trials():
+    """The corpus size itself, for all four run dirs. Without this, traces can
+    be deleted out from under the probe arms and every "nothing fired" claim
+    below stays green over the remainder — two thirds of an arm can vanish
+    while the pin still reports the matrix holds."""
+    for run in [CONTROL, *PROBES]:
+        results = graded(run)
+        assert len(results) == TRIALS, \
+            f"{run} has {len(results)} trials, pinned {TRIALS} — the corpus " \
+            "moved under the pin; re-measure the matrix rather than editing " \
+            "this number"
+        verdicts = [v for r in results for v in r.verdicts]
+        assert len(verdicts) == VERDICTS, \
+            f"{run} has {len(verdicts)} verdicts, pinned {VERDICTS}"
 
 
 # --- control ---------------------------------------------------------------
 
 def test_control_grades_clean_and_is_the_baseline_the_probes_move_against():
     results = graded(CONTROL)
-    assert len(results) == 18, f"control has {len(results)} trials, pinned 18"
+    assert len(results) == TRIALS, \
+        f"control has {len(results)} trials, pinned {TRIALS}"
     verdicts = [v for r in results for v in r.verdicts]
-    assert len(verdicts) == 108, f"{len(verdicts)} verdicts, pinned 108"
+    assert len(verdicts) == VERDICTS, \
+        f"{len(verdicts)} verdicts, pinned {VERDICTS}"
     assert not failures(CONTROL), f"control is not clean: {failures(CONTROL)}"
     sd = stop_discipline_for(TRACES / CONTROL)
     assert (sd.buys, sd.priced, sd.stopped) == (6, 6, 6), \
@@ -212,9 +275,11 @@ def test_control_grades_clean_and_is_the_baseline_the_probes_move_against():
 
 def test_p1_restraint_inversion_is_detected_by_nothing_at_all():
     """The strongest single fact in the matrix: `primary` grades 108/108 PASS
-    with a verdict profile byte-identical to control. Invert the sentence that
-    makes HOLD the default and not one invariant, not one case expectation,
-    and not the stop-discipline metric moves."""
+    with a verdict profile OUTCOME-identical to control — profile() compares
+    invariant -> outcome, and drops `detail` and `tag`, so this is not a claim
+    about the verdict bytes. Invert the sentence that makes HOLD the default
+    and not one invariant, not one case expectation, and not the
+    stop-discipline metric moves."""
     assert not failures("primary"), \
         f"P1 now reddens {failures('primary')} — detection power CHANGED. " \
         "Do not edit this matrix to match; re-measure and register the " \
@@ -258,6 +323,12 @@ def test_p2_metric_movement_is_confounded_by_a_moved_denominator():
 # --- P3: sizing paragraph deleted ------------------------------------------
 
 def test_p3_sizing_deletion_is_invisible_to_every_blocking_invariant():
+    """Self-guarding: an absence is only evidence over a corpus that is there.
+    rglob over a missing or thinned run dir yields fewer traces, grade_traces
+    returns fewer results, and `not failures(...)` is green on nothing."""
+    assert len(graded("secondary")) == TRIALS, \
+        f"P3 graded {len(graded('secondary'))} trials, pinned {TRIALS} — the " \
+        "absence asserted below would be green for the wrong reason"
     assert not failures("secondary"), \
         f"P3 now reddens {failures('secondary')} — detection power CHANGED. " \
         "Do not edit this matrix to match; re-measure and register the " \
@@ -282,9 +353,20 @@ def test_p3_shows_up_only_in_the_non_blocking_stop_discipline_metric():
 def test_the_blocking_detection_rate_over_the_three_probes_is_zero_of_three():
     """The number #41 measured and PR #91 landed, made mechanical. Red in
     EITHER direction: an invariant that starts catching a probe is good news
-    that still has to be registered here on purpose."""
+    that still has to be registered here on purpose.
+
+    The filter is live_blocking(), NOT the pinned BLOCKING tuple: filtering the
+    headline through the pin would make the one test carrying the number blind
+    to the exact event it reports on — a newly registered invariant catching a
+    probe. Corpus size is asserted first for the same reason the filter is
+    live: `caught` is empty over an empty corpus."""
+    blocking = live_blocking()
+    for run in PROBES:
+        assert len(graded(run)) == TRIALS, \
+            f"{run} graded {len(graded(run))} trials, pinned {TRIALS} — a " \
+            "detection rate over a thinned corpus is not the pinned number"
     caught = {run for run in PROBES
-              if any(inv in BLOCKING for _, _, inv, _ in failures(run))}
+              if any(inv in blocking for _, _, inv, _ in failures(run))}
     assert caught == set(), \
         f"blocking invariants now catch {sorted(caught)} — the ablation rate " \
         f"is {len(caught)}/3, pinned 0/3. Re-measure the matrix and update " \
