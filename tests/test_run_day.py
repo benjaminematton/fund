@@ -718,6 +718,25 @@ def test_a_seat_with_no_max_wall_s_still_gets_the_default_ceiling(
     assert seen["wall_s"] == run_day_script.SEAT_MAX_WALL_S
 
 
+@pytest.mark.parametrize("bad", [0, 0.0, -1, -0.05, "soon", None, [240]])
+def test_a_max_wall_s_that_is_not_a_positive_number_is_rejected_at_wiring(
+        wired, bad):
+    """agents/seats.py's loader is a bare yaml.safe_load with no schema, so a
+    `max_wall_s: 0` typo reaches the bound unchecked — and a non-positive
+    ceiling insta-times-out EVERY turn into its stage default: a whole trading
+    day of HOLDs whose only trace is one seat_turn_timeout per stage, with
+    nothing saying the cause was one yaml line. Invariant 4 makes HOLD the
+    answer to genuine ambiguity; a config typo is not ambiguity.
+
+    Checked when the turn is BUILT, not when it runs: make_turn is called from
+    _trading_day's wiring, before the first stage, so a bad value stops the day
+    inside guarded() — one alert, drained to Slack, exit 1 — rather than after
+    the gate has already minted tickets."""
+    conn, _, clock = wired
+    with pytest.raises(SystemExit, match="max_wall_s"):
+        _turn(conn, clock, seat="pm", cfg={"max_wall_s": bad})
+
+
 def test_the_seat_wall_clock_ceiling_fires_before_systemd_sigterms_the_unit():
     """The whole point of a per-seat bound is that it beats
     ops/fund-daily.service's TimeoutStartSec=30min — that SIGTERM can land
@@ -725,11 +744,17 @@ def test_the_seat_wall_clock_ceiling_fires_before_systemd_sigterms_the_unit():
     recorder committing the row. A day runs at most four seat turns (the two
     research seats, the PM, the trader), so the ceiling must leave real room
     for the non-turn work underneath: the broker snapshot, the market-data
-    fetch, reconcile's 90s wait, the audit and the drains."""
+    fetch, reconcile's 90s wait, the audit and the drains.
+
+    A guard-rail on the constants, not on behaviour: it would still pass
+    against a SEAT_MAX_WALL_S with no bound behind it. The behaviour is pinned
+    by the abandoned-turn test above; this one exists so a later re-tune of
+    the ceiling cannot silently cross the unit's budget."""
     turns_per_day = sum(len(seats) for seats in run_day_script.SEATS.values())
     assert turns_per_day == 4
     worst_case_s = turns_per_day * run_day_script.SEAT_MAX_WALL_S
-    assert worst_case_s <= 0.6 * 30 * 60          # >= 40% of the unit's budget
+    # at most 60% of the unit's budget, leaving 40%+ for the non-turn work
+    assert worst_case_s <= 0.6 * 30 * 60
     # ...and still far above any turn ever observed (exec's measured live turn
     # was 3 tool-calling turns), so a slow real turn is not culled as a hang.
     assert run_day_script.SEAT_MAX_WALL_S >= 120

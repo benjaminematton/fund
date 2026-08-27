@@ -111,6 +111,21 @@ LOCK_NAME = "run_day.lock"
 # the unit's 30 for every non-turn thing underneath: the broker snapshot, the
 # market-data fetch, reconcile's 90s wait, the audit and the drains.
 #
+# Beating that SIGTERM is also what makes an abandoned EXEC turn recoverable
+# rather than lost, which is the strongest safety argument for this bound:
+#   * agents/runtime.py's record_order is `async def` with NO await in its
+#     body, so once the PostToolUse hook starts it runs to its commit —
+#     cancelling the turn mid-flight cannot tear it in half.
+#   * the window that IS real is a response lost between the broker accepting
+#     the order and the hook seeing it. orchestrator/daily.py's run_day runs
+#     run_execution and then the reconciliation stage IN THE SAME PROCESS, and
+#     reconcile_stage calls reconcile.recover_lost_orders first — the issue-#40
+#     repair pass for exactly that row.
+#   * under the unit's SIGTERM the process DIES, so that repair never runs and
+#     the order is permanently unrecorded. Under this bound the turn raises,
+#     the day continues, and reconciliation recovers it. Abandoning a turn is
+#     therefore strictly LESS harmful than the 30min timeout it pre-empts.
+#
 # ONE ceiling for all seats, not six tuned numbers. Only pm (5 turns/$0.1161),
 # analyst (7/$0.0504) and exec (3/$0.0332) have a measured basis at all;
 # critic is PROVISIONAL, news is "INHERITED, NOT MEASURED", and reflect's 4 is
@@ -262,12 +277,43 @@ async def _bounded(coro, wall_s: float):
     blows it. Wraps the COROUTINE, inside asyncio.run: a bound needs a running
     loop, so it cannot wrap asyncio.run itself.
 
-    asyncio.timeout rather than asyncio.wait_for because both raise the same
-    TimeoutError and only `.expired()` tells OUR bound apart from one the
-    session itself raised — and the session raises exactly that today
-    (await_servers_connected's 30s MCP-connect wait, an SDK stream timeout).
-    Conflating them would relabel a connect failure as a hang and lose the
-    exception text the seat_turn_failed alert reports."""
+    asyncio.timeout rather than asyncio.wait_for because `.expired()` is the
+    only reliable way to tell OUR expiry from a TimeoutError raised INSIDE the
+    turn. wait_for reports both as a bare TimeoutError and offers nothing to
+    separate them: not the type, and not the message either — an inner one
+    keeps its text where an expiry's is empty, but that is a property of
+    whoever raised it, not a contract, so it is no discriminator. The
+    consequence is already pinned: three tests in tests/test_run_day.py raise
+    TimeoutError("session never connected") from inside the turn and assert
+    the alert stays seat_turn_failed carrying that text, and a blanket
+    `except TimeoutError` would relabel all three as hangs.
+
+    Nothing under agents/, orchestrator/ or scripts/ raises TimeoutError today
+    — agents/exec_turn.py's await_servers_connected raises ExecTurnViolation,
+    not TimeoutError — but the SDK, an HTTP client or a broker call can
+    (tests/test_order_recovery.py already models a gateway TimeoutError), so
+    the discriminator has to be structural rather than a source audit. Note
+    that await_servers_connected's 30s is not a wall-clock bound at all: it
+    accumulates `elapsed += poll_s` across an injected sleep, so a
+    get_mcp_status() that itself hangs never reaches the check. That is one
+    more hang THIS bound is the only thing covering.
+
+    NOT a hard ceiling: asyncio.timeout cancels ONCE. _seat_session exits
+    through `async with ClaudeSDKClient(...)`, whose __aexit__ tears down the
+    CLI subprocess and the MCP servers, and nothing re-arms the bound around
+    that teardown — a teardown that ignored the cancel would run past wall_s
+    (measured: 3.05s against a 0.05s bound). Left unbounded deliberately, on
+    two measurements: the SDK's own transport close() bounds every await
+    (~20s) and documents that its anyio shield does NOT hold against a raw
+    asyncio cancel, so it aborts here rather than hanging; and for a teardown
+    that truly refused cancellation no in-process bound helps, because
+    asyncio.run's own shutdown re-awaits the same task — a task+grace rewrite
+    measured 3.06s against the same 3.05s. The residual is a hang inside SDK
+    teardown only; #44's defect — a stalled model stream or MCP tool call,
+    the common case — is closed. The cost of that abort is a CLI child that
+    skips the terminate/kill escalation; the SDK keeps it in _ACTIVE_CHILDREN
+    for its atexit reaper, so at most one per timed-out turn survives to the
+    end of the day's single process."""
     try:
         async with asyncio.timeout(wall_s) as bound:
             return await coro
@@ -277,6 +323,28 @@ async def _bounded(coro, wall_s: float):
         raise SeatTurnTimeout(
             f"no result after {wall_s:g}s (max_wall_s ceiling); the turn was"
             " abandoned mid-flight") from None
+
+
+def seat_wall_s(seat: str, cfg: dict) -> float:
+    """This seat's ceiling, validated. agents/seats.py's load_seat_config is a
+    bare yaml.safe_load with no schema, so `max_wall_s: 0` — or a stray unit
+    like '4m' — arrives here unchecked, and a non-positive bound expires every
+    turn instantly: a whole trading day of stage defaults, one
+    seat_turn_timeout per stage, and nothing naming the one yaml line that did
+    it. Invariant 4 makes HOLD the answer to genuine ambiguity; a config typo
+    is not ambiguity, so it stops the day loudly instead."""
+    raw = cfg.get("max_wall_s", SEAT_MAX_WALL_S)
+    try:
+        wall_s = float(raw)
+    except (TypeError, ValueError):
+        wall_s = float("nan")
+    if not wall_s > 0:                  # also rejects nan
+        raise SystemExit(
+            f"run_day: seat {seat!r} has max_wall_s={raw!r} — it must be a"
+            " positive number of seconds. Fix agents/config/"
+            f"{seat}.yaml or drop the key to take the"
+            f" {SEAT_MAX_WALL_S:g}s default.")
+    return wall_s
 
 
 def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
@@ -330,6 +398,11 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
     `alert` and lets the stage's own default land (invariant 4). The cost is
     recorded BEFORE the exec seat's tool-call assertions run — a violating
     turn still spent real money."""
+    # Resolved HERE rather than inside run(): make_turn is called from
+    # _trading_day's wiring, so a bad max_wall_s stops the day before the
+    # first stage — inside guarded(), which alerts and drains — instead of
+    # after the gate has already minted tickets.
+    wall_s = seat_wall_s(seat, cfg)
 
     def run() -> None:
         try:
@@ -337,14 +410,14 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
                 _seat_session(cfg, db_path, clock, prompt, snapshot,
                               journals_root,
                               expected_decision_id=expected_decision_id),
-                float(cfg.get("max_wall_s", SEAT_MAX_WALL_S))))
+                wall_s))
         except SeatTurnTimeout as exc:
-            # Its own code and text: TimeoutError's repr is the EMPTY string,
-            # so falling through the handler below would post
-            # "pm_turn_failed — TimeoutError: ; stage default applies",
-            # naming neither the seat's budget nor how long it burned. A hang
-            # and a crash also want different fixes, and the alert filer opens
-            # one issue per code.
+            # Its own code, because the alert filer opens one issue per code
+            # and a hang and a crash want different fixes — the handler below
+            # would file this beside genuine crashes. Its own text, because
+            # the generic one reports only the exception class, while this
+            # names the seat, the ceiling it blew and that the turn was
+            # abandoned mid-flight.
             _alert(conn, clock, "seat_turn_timeout",
                    f"{seat}_turn_timeout — {exc}; stage default applies"
                    " (default is HOLD)")
