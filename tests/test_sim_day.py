@@ -204,6 +204,27 @@ def _event_payloads(sim: SimResult, kind: str) -> list[dict]:
         "SELECT payload FROM events WHERE kind = ? ORDER BY id", (kind,))]
 
 
+def _cost_pairs(sim: SimResult) -> list[tuple[str, str]]:
+    """(agent, session_id) per cost row. The criterion is "per seat per
+    session" (#158) — a COUNT cannot tell four seats turning once from one
+    seat turning four times."""
+    return [(r["agent"], r["session_id"]) for r in sim.conn.execute(
+        "SELECT agent, session_id FROM costs ORDER BY agent")]
+
+
+def _participating_seats(sim: SimResult) -> set[str]:
+    """The seats run_close owes a journal to, derived the way it derives them
+    (orchestrator/daily.py:460-467) rather than named literally — so a new
+    seat is covered here without editing the test."""
+    seats = {r["agent"] for r in sim.conn.execute(
+        "SELECT DISTINCT agent FROM signals WHERE run_date = ?",
+        (sim.run_date,))} | {"pm"}
+    if sim.conn.execute("SELECT COUNT(*) c FROM orders"
+                        " WHERE filled_qty > 0").fetchone()["c"]:
+        seats.add("exec")
+    return seats
+
+
 def _brief(sim: SimResult, stage: str) -> dict:
     """The stage brief the seat actually received that turn, straight off the
     replayed tool result — not re-derived, or the assertion would be circular."""
@@ -290,13 +311,18 @@ def test_golden_day(tmp_path):
 
     # every turn that ran recorded its cost, and the digest reports the sum
     assert sim.turns == {"research": 2, "decision": 1, "execution": 1}
-    assert _count(sim, "costs") == 4   # analyst + news + pm + exec
+    # per SEAT per SESSION, not four-of-something (#158)
+    assert _cost_pairs(sim) == [("analyst", "sim-analyst"), ("exec", "sim-exec"),
+                                ("news", "sim-news"), ("pm", "sim-pm")]
     digest = _event_payloads(sim, "digest")[0]["text"]
     assert "decisions: NVDA buy 80 (executed)" in digest
     assert "fills: NVDA buy 66@180.14" in digest
     assert "est. inference cost $0.04" in digest   # 4 turns: +news seat
 
     assert (sim.journals / "exec.md").read_text().count("NVDA buy 66@180.14") == 1
+    # EVERY participating seat, not just the two named by hand: the news seat
+    # signalled today and owes a journal exactly as the analyst does (#158)
+    assert {p.stem for p in sim.journals.glob("*.md")} == _participating_seats(sim)
     _assert_day_completed(sim)
 
 
