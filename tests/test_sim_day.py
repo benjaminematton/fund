@@ -510,6 +510,48 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
     _assert_day_completed(sim)
 
 
+# --- 7. the HOLD-only ticker never reaches a seat ---------------------------
+
+def test_a_hold_only_ticker_never_reaches_the_pipeline(tmp_path):
+    """acceptance.md Phase 2, criterion 7: a ticker the pre-gate resolves to
+    {buy:0, sell:0} "never reaches the LLM pipeline (assert zero agent turns
+    for it)" (#157). The chain was pinned link by link in test_daily_stages.py
+    and joined nowhere -- and the joins are what a refactor breaks, since
+    run_research and run_decision take `active` as a parameter.
+
+    Turn counts are per STAGE, not per ticker (`turns` above), so the
+    per-ticker form of "zero agent turns" is: the ticker is absent from the
+    snapshot the PM decides on, and NEITHER stage default fired for it. The
+    defaults are what make the negative observable -- an ACTIVE ticker nobody
+    covers still gets a row (run_research writes neutral/0 and run_decision
+    writes hold/0, exactly as test_mixed_day's MSFT does), so no row at all is
+    reachable only by never having been active.
+
+    AAPL carries no cash and no shares: nothing to buy, nothing to sell. NVDA
+    trades its normal golden day beside it, so this is a drop and not an empty
+    day."""
+    sim = sim_day(tmp_path,
+                  market={"NVDA": _nvda(),
+                          "AAPL": _nvda(ticker="AAPL", price=232.0,
+                                        cash=0.0, held_qty=0)},
+                  analyst_recs=("mvf_analyst_brief.jsonl",),
+                  pm_recs=("mvf_pm_brief.jsonl",))
+
+    # the snapshot the PM was actually shown, off the replayed tool result
+    assert list(_brief(sim, "decision")["allowed_actions"]) == ["NVDA"]
+
+    # neither stage default fired for it: no row, not a zero row
+    assert [r["ticker"] for r in sim.conn.execute(
+        "SELECT DISTINCT ticker FROM signals ORDER BY ticker")] == ["NVDA"]
+    assert [r["ticker"] for r in sim.conn.execute(
+        "SELECT DISTINCT ticker FROM decisions ORDER BY ticker")] == ["NVDA"]
+
+    # a drop, not an empty day -- NVDA still ran the whole golden pipeline
+    assert _decision(sim, "NVDA")["action"] == "buy"
+    assert _count(sim, "tickets") == 1
+    _assert_day_completed(sim)
+
+
 # --- 5. the stop that expired at the bell (2026-08-19) ----------------------
 
 def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path):
