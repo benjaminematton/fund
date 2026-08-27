@@ -16,6 +16,8 @@ Posture (invariant 4: the default is HOLD):
   * market closed / clock unreadable  -> log, exit 0, trade nothing
   * a seat turn that raises            -> one `alert`, then the stage's own
                                           default (neutral/0, pm_timeout hold)
+  * a seat turn that HANGS             -> abandoned at SEAT_MAX_WALL_S, then
+                                          the same `alert`-and-default path
   * anything the audit flags           -> `alert` posted to Slack, exit 1
   * anything ELSE that raises after    -> one `alert`, drained to Slack, then
     connect() (a stage body, the           exit 1 — nobody is watching a
@@ -95,6 +97,40 @@ SEATS = {"research": ("analyst", "news"),
          "decision": ("pm",),
          "execution": ("exec",)}
 LOCK_NAME = "run_day.lock"
+# Wall-clock ceiling for ONE seat turn (issue #44). max_turns and
+# max_budget_usd bound turns and dollars; a stalled MCP tool call or model
+# stream spends neither, so without this a hung turn hangs the whole day —
+# holding the flock, so tomorrow's timer finds the lock and exits 0, which
+# reads exactly like a market-closed day.
+#
+# Sized to fire BEFORE ops/fund-daily.service's TimeoutStartSec=30min, whose
+# SIGTERM can land between the broker accepting a place_stock_order and the
+# PostToolUse recorder committing the row. SEATS runs four turns a day
+# (analyst, news, pm, exec) — a count fixed by the stages, not by how many
+# tickers are active — so the worst case is 4 x 240s = 16min, leaving 14min of
+# the unit's 30 for every non-turn thing underneath: the broker snapshot, the
+# market-data fetch, reconcile's 90s wait, the audit and the drains.
+#
+# Beating that SIGTERM is also what makes an abandoned EXEC turn recoverable
+# rather than lost, which is the strongest safety argument for this bound:
+#   * agents/runtime.py's record_order is `async def` with NO await in its
+#     body, so once the PostToolUse hook starts it runs to its commit —
+#     cancelling the turn mid-flight cannot tear it in half.
+#   * the window that IS real is a response lost between the broker accepting
+#     the order and the hook seeing it. orchestrator/daily.py's run_day runs
+#     run_execution and then the reconciliation stage IN THE SAME PROCESS, and
+#     reconcile_stage calls reconcile.recover_lost_orders first — the issue-#40
+#     repair pass for exactly that row.
+#   * under the unit's SIGTERM the process DIES, so that repair never runs and
+#     the order is permanently unrecorded. Under this bound the turn raises,
+#     the day continues, and reconciliation recovers it. Abandoning a turn is
+#     therefore strictly LESS harmful than the 30min timeout it pre-empts.
+#
+# ONE ceiling for every seat, applied unconditionally — there is no per-seat
+# knob. Only half the seats have a measured turn cost, and an invented ceiling
+# sitting beside a measured one reads as measured. #44's defect is UNBOUNDED,
+# not mis-bounded, so one conservative bound closes it; per-seat tuning is #131.
+SEAT_MAX_WALL_S = 240.0
 
 
 def log(msg: str) -> None:
@@ -229,6 +265,63 @@ async def _seat_session(cfg: dict, db_path: str, clock, prompt: str,
         return await run_seat_turn(client, prompt, REQUIRED_SERVERS)
 
 
+class SeatTurnTimeout(Exception):
+    """A seat turn abandoned at its wall-clock ceiling (issue #44)."""
+
+
+async def _bounded(coro, wall_s: float):
+    """`coro` under a wall-clock ceiling, raising SeatTurnTimeout when it
+    blows it. Wraps the COROUTINE, inside asyncio.run: a bound needs a running
+    loop, so it cannot wrap asyncio.run itself.
+
+    asyncio.timeout rather than asyncio.wait_for because `.expired()` is the
+    only reliable way to tell OUR expiry from a TimeoutError raised INSIDE the
+    turn. wait_for reports both as a bare TimeoutError and offers nothing to
+    separate them: not the type, and not the message either — an inner one
+    keeps its text where an expiry's is empty, but that is a property of
+    whoever raised it, not a contract, so it is no discriminator. The
+    consequence is already pinned: three tests in tests/test_run_day.py raise
+    TimeoutError("session never connected") from inside the turn and assert
+    the alert stays seat_turn_failed carrying that text, and a blanket
+    `except TimeoutError` would relabel all three as hangs.
+
+    Nothing under agents/, orchestrator/ or scripts/ raises TimeoutError today
+    — agents/exec_turn.py's await_servers_connected raises ExecTurnViolation,
+    not TimeoutError — but the SDK, an HTTP client or a broker call can
+    (tests/test_order_recovery.py already models a gateway TimeoutError), so
+    the discriminator has to be structural rather than a source audit. Note
+    that await_servers_connected's 30s is not a wall-clock bound at all: it
+    accumulates `elapsed += poll_s` across an injected sleep, so a
+    get_mcp_status() that itself hangs never reaches the check. That is one
+    more hang THIS bound is the only thing covering.
+
+    NOT a hard ceiling: asyncio.timeout cancels ONCE. _seat_session exits
+    through `async with ClaudeSDKClient(...)`, whose __aexit__ tears down the
+    CLI subprocess and the MCP servers, and nothing re-arms the bound around
+    that teardown — a teardown that ignored the cancel would run past wall_s
+    (measured: 3.05s against a 0.05s bound). Left unbounded deliberately, on
+    two measurements: the SDK's own transport close() bounds every await
+    (~20s) and documents that its anyio shield does NOT hold against a raw
+    asyncio cancel, so it aborts here rather than hanging; and for a teardown
+    that truly refused cancellation no in-process bound helps, because
+    asyncio.run's own shutdown re-awaits the same task — a task+grace rewrite
+    measured 3.06s against the same 3.05s. The residual is a hang inside SDK
+    teardown only; #44's defect — a stalled model stream or MCP tool call,
+    the common case — is closed. The cost of that abort is a CLI child that
+    skips the terminate/kill escalation; the SDK keeps it in _ACTIVE_CHILDREN
+    for its atexit reaper, so at most one per timed-out turn survives to the
+    end of the day's single process."""
+    try:
+        async with asyncio.timeout(wall_s) as bound:
+            return await coro
+    except TimeoutError:
+        if not bound.expired():
+            raise                       # the session's own, not ours
+        raise SeatTurnTimeout(
+            f"no result after {wall_s:g}s (SEAT_MAX_WALL_S ceiling); the turn"
+            " was abandoned mid-flight") from None
+
+
 def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
                        snapshot, names, result, trace_sink, conn=None) -> None:
     """Record one seat turn as a Trace. Never costs the day.
@@ -280,13 +373,24 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
     `alert` and lets the stage's own default land (invariant 4). The cost is
     recorded BEFORE the exec seat's tool-call assertions run — a violating
     turn still spent real money."""
-
     def run() -> None:
         try:
-            names, result = asyncio.run(
+            names, result = asyncio.run(_bounded(
                 _seat_session(cfg, db_path, clock, prompt, snapshot,
                               journals_root,
-                              expected_decision_id=expected_decision_id))
+                              expected_decision_id=expected_decision_id),
+                SEAT_MAX_WALL_S))
+        except SeatTurnTimeout as exc:
+            # Its own code, because the alert filer opens one issue per code
+            # and a hang and a crash want different fixes — the handler below
+            # would file this beside genuine crashes. Its own text, because
+            # the generic one reports only the exception class, while this
+            # names the seat, the ceiling it blew and that the turn was
+            # abandoned mid-flight.
+            _alert(conn, clock, "seat_turn_timeout",
+                   f"{seat}_turn_timeout — {exc}; stage default applies"
+                   " (default is HOLD)")
+            return
         except Exception as exc:
             _alert(conn, clock, "seat_turn_failed",
                    f"{seat}_turn_failed — {type(exc).__name__}: {exc};"
