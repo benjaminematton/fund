@@ -247,7 +247,8 @@ def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None, 
     """
     try:
         from market.source_alpaca import AlpacaSource
-        from orchestrator.protection import _CLOSING_SIDE, _covering_qty, _qty
+        from orchestrator.protection import _covering_qty
+        from state.protection import CLOSING_SIDE, qty_of
     except Exception as exc:
         return None, [], None, f"broker client unavailable: {exc}"
 
@@ -270,8 +271,8 @@ def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None, 
     for raw in raw_positions:
         p = raw if isinstance(raw, dict) else {}
         symbol = str(p.get("symbol") or "?")
-        held = _qty(p.get("qty"))
-        closing_side = _CLOSING_SIDE.get(str(p.get("side") or "").lower())
+        held = qty_of(p.get("qty"))
+        closing_side = CLOSING_SIDE.get(str(p.get("side") or "").lower())
         if held is None or closing_side is None:
             # Unreadable: report zero cover so it alerts. Never silently ok.
             out.append(Position(symbol, qty=1.0, covering_qty=0.0))
