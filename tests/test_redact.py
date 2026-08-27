@@ -165,12 +165,27 @@ def test_the_seat_turn_failed_alert_keeps_its_diagnosis():
 # made this input take ~2.4s at 4KB and ~20s at 8KB — 2x length for 8x time,
 # extrapolating to ~40 minutes at 40KB. Flat "A"*n is only quadratic and hides
 # the worst of it, so it is not the shape to test with.
-_CUBIC = "('A'*40 + 'KEY' + 'A'*40) * 1205"          # ~100KB, no '=' or ':'
+# Two shapes, because they stress opposite halves of the name rule.
+#
+# CUBIC is what the pre-fix code died on: the two unbounded name repeats
+# straddling the keyword alternation. Sized to 7968 chars — just UNDER the
+# cap, and deliberately so. It holds no whitespace, so at any length past the
+# cap the cut-back now drops the whole thing and the rules never see it; a
+# 100KB version of this input measures 0.04ms and would guard nothing. Under
+# the cap it is scanned in full, and is the exact 19.85s pre-fix case.
+#
+# SPACES is the current worst, and it is NOT the half that was fixed — a long
+# capitals run, a delimiter, then thousands of spaces ended by a newline, so
+# `\S+` fails at every backtrack position of the trailing `_SP*`. ~0.18s, flat
+# at 64KB, 1MB and 10MB. Keep both: a future edit to either half has a guard.
+_CUBIC = "('A'*40 + 'KEY' + 'A'*40) * 96"                         # 7968 ch
+_SPACES = "((('KEY'*44)[:129] + ' ' + '=' + ' '*4096 + '\\n') * 250)"  # ~1MB
 _HANG_BUDGET_S = 30.0        # subprocess kill: bounds an unbounded regression
 _SLOW_BUDGET_S = 5.0         # assertion: bounds a finite-but-slow one
 
 
-def test_adversarial_input_cannot_hang_the_alert_path():
+@pytest.mark.parametrize("shape", [_CUBIC, _SPACES], ids=["cubic", "spaces"])
+def test_adversarial_input_cannot_hang_the_alert_path(shape):
     """redact() cannot raise — which makes running LONG its remaining way to
     kill a day, and a worse one. A raise is caught and logged at
     run_day.py:471; a regex grinding inside guarded() is a dead trading day
@@ -182,13 +197,13 @@ def test_adversarial_input_cannot_hang_the_alert_path():
     and the analyst seat reads attacker-authorable news (issue #42).
 
     Runs in a subprocess so an unbounded regression fails in bounded time
-    instead of hanging the suite — the pre-fix code needs ~10 hours on this
-    input. Both budgets are 400x+ over the measured ~12ms: this must catch
-    minutes-versus-milliseconds, never scheduler noise."""
+    instead of hanging the suite. Both budgets are 25x+ over the measured
+    worst (~0.18s): this must catch minutes-versus-milliseconds, never
+    scheduler noise."""
     src = (f"import sys, time\n"
            f"sys.path.insert(0, {str(ROOT)!r})\n"
            f"from slackkit.redact import redact\n"
-           f"s = {_CUBIC}\n"
+           f"s = {shape}\n"
            f"t = time.perf_counter()\n"
            f"redact(s)\n"
            f"print(time.perf_counter() - t)\n")
@@ -196,26 +211,34 @@ def test_adversarial_input_cannot_hang_the_alert_path():
         proc = subprocess.run([sys.executable, "-c", src], capture_output=True,
                               text=True, timeout=_HANG_BUDGET_S)
     except subprocess.TimeoutExpired:
-        pytest.fail(f"redact() did not finish on {len(('A'*40+'KEY'+'A'*40)*1205)}"
-                    f" adversarial chars within {_HANG_BUDGET_S}s — catastrophic"
-                    " backtracking is back")
+        pytest.fail(f"redact() did not finish on {shape} within"
+                    f" {_HANG_BUDGET_S}s — catastrophic backtracking is back")
     assert proc.returncode == 0, proc.stderr
     elapsed = float(proc.stdout.strip())
-    assert elapsed < _SLOW_BUDGET_S, f"redact() took {elapsed:.2f}s"
+    assert elapsed < _SLOW_BUDGET_S, f"redact() took {elapsed:.2f}s on {shape}"
 
 
 def test_input_past_the_cap_is_truncated_not_scanned():
-    """The cap is half the fix; the bounded repeats are the other half.
+    """Two mutations, and the measured matrix for each (verified, not
+    assumed — an earlier version of this note had it wrong):
 
-    The repeats alone are enough for every shape found so far — with them,
-    100KB runs in ~6ms and this assertion cannot tell a 64KB cap from a 10MB
-    one. The cap earns its place against the shape nobody found: it makes
-    total work O(cap x 64 x 64), a ceiling that holds no matter what a later
-    rule does. So the ceiling itself is asserted, not just the truncation."""
-    assert _MAX_CHARS <= 65536, "the cap must stay a real ceiling"
+    * REMOVING the truncation fails 6 tests: the length assertion below, the
+      [spaces] timing case, and the four bisect cases.
+    * RAISING the cap to 1_000_000 fails 2: the ceiling assertion below and
+      the [spaces] timing case, which stops being flat once a 1MB input is
+      scanned whole. The length assertion does NOT catch it — truncation
+      still happens, just later, so it scales with the cap and passes.
+
+    The ceiling is asserted directly anyway. It is what makes total work
+    O(cap x 64 x 64) whatever a later rule does, and it says so at a size a
+    reader can act on rather than leaving it to a timing case to notice."""
+    assert _MAX_CHARS <= 65536, (
+        "the cap must stay a real ceiling: with it disabled the name rule runs"
+        " ~22us/char on its worst shape — 1MB takes 23s and 4MB takes 97s,"
+        " inside an except on the trading path")
     out = redact("A" * (_MAX_CHARS + 500))
     assert len(out) < _MAX_CHARS + 100
-    assert "500 chars truncated" in out
+    assert "chars truncated" in out
 
 
 def test_truncation_drops_the_tail_rather_than_passing_it_through():
@@ -225,13 +248,60 @@ def test_truncation_drops_the_tail_rather_than_passing_it_through():
     assert SECRET not in out, "unscanned tail passed through"
 
 
+@pytest.mark.parametrize("kept", [1, 2, 5, 8, 15, 16, 17, 18, 25])
+def test_the_cap_cannot_bisect_a_credential_token(kept):
+    """The cap introduced a leak the uncapped scan did not have.
+
+    PK[A-Z0-9]{16,} needs 16 characters after its prefix, so a PK token cut
+    short by the cap simply was not a match, and its first 1-17 characters
+    went out verbatim — into an alert TITLE, on a public GitHub issue. The
+    `+` rules (sk-ant-, xoxb-, xapp-) never had this: they match any fragment
+    and give up only their non-secret prefix.
+
+    `kept` is how much of the token falls before the cut. Every value must be
+    clean, which is what cutting back to a whitespace boundary buys and a hard
+    cut does not: the straddling token is dropped whole."""
+    token = "PKABCDEFGHIJKLMNOP01"
+    out = redact("x " * ((_MAX_CHARS - kept) // 2) + token + "y" * 50)
+    assert token[:kept] not in out, f"emitted {kept} chars of the token"
+    assert "PKABC" not in out
+
+
+def test_the_cap_cannot_bisect_a_token_with_no_whitespace_to_fall_back_on():
+    """The cut-back is unbounded on purpose. A bounded lookback would fall
+    back to a hard cut on an unbroken run longer than the window and bisect
+    the token again — the exact class this closes, and reachable by anyone
+    who can influence the exception text. The price is that the whole run is
+    dropped, which is why the marker reports the size."""
+    out = redact("x" * (_MAX_CHARS - 10) + "PKABCDEFGHIJKLMNOP01")
+    assert "PKABC" not in out, out[-60:]
+    assert "chars truncated" in out
+
+
 def test_a_credential_just_inside_the_cap_is_still_redacted():
     """The cap must not become a way to push a secret out of reach by padding
-    in front of it — everything up to it is still scanned."""
+    in front of it — everything up to the cut is still scanned, and a
+    credential that ends before it is redacted in place, not dropped."""
+    lead = "x" * (_MAX_CHARS - 60)
+    out = redact(lead + f" ALPACA_SECRET_KEY={SECRET} " + "y" * 400)
+    assert SECRET not in out, out[-120:]
+    assert "ALPACA_SECRET_KEY=REDACTED" in out
+
+
+def test_a_credential_straddling_the_cap_is_dropped_rather_than_redacted():
+    """The other side of the same boundary, and the reason the test above
+    needs that trailing space. With no whitespace between the credential and
+    what follows, the two are ONE token spanning the cut, so it is dropped
+    whole — no `NAME=REDACTED` survives to show it was there.
+
+    That is a deliberate trade: dropping a straddling token is what stops the
+    cap emitting a prefix of it, and losing the marker is cheaper than
+    leaking 17 characters of a key."""
     lead = "x" * (_MAX_CHARS - 60)
     out = redact(lead + f" ALPACA_SECRET_KEY={SECRET}" + "y" * 400)
     assert SECRET not in out, out[-120:]
-    assert "ALPACA_SECRET_KEY=REDACTED" in out
+    assert "ALPACA_SECRET_KEY" not in out
+    assert "chars truncated" in out
 
 
 # --- must never cost an alert: no raise -------------------------------------

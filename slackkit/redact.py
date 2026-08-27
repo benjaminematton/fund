@@ -54,7 +54,26 @@ log = logging.getLogger(__name__)
 # DIVERGENCE from the shell twin, deliberate: over this length the two
 # implementations no longer agree, because sed is fed a bounded journal tail
 # (-n 20) and has no equivalent exposure. Under it they agree byte for byte.
+#
+# Raising it is not free and not linear-cheap: with the cap disabled, cost runs
+# ~22 us/char on the worst shape below — 1MB takes 23s and 4MB takes 97s,
+# inside an `except` on the trading path.
 _MAX_CHARS = 8192
+
+# Truncation cuts back to the last of these, so the cap can never bisect a
+# token. It otherwise can: PK[A-Z0-9]{16,} needs 16 characters after its
+# prefix, so a PK token cut short by the cap is not a match and its first
+# 1-17 characters were emitted in the clear — the cap introducing a leak the
+# uncapped scan did not have. The `+` rules (sk-ant-, xoxb-, xapp-) never had
+# it; they match any fragment and give up only the non-secret prefix.
+#
+# The lookback is deliberately UNBOUNDED, unlike the shell-style bounded
+# window: a bound reopens exactly this class, because a non-whitespace run
+# longer than the window falls back to the hard cut and bisects a token again.
+# The cost is that a truncated alert ending in one huge unbroken blob loses
+# that blob — and a whitespace-free 8KB run carries no readable diagnosis
+# anyway. If the kept region holds no whitespace at all, all of it is dropped.
+_WHITESPACE = " \t\n\r\f\v"
 
 # Whitespace except newline. sed is line-oriented, so a shell match can never
 # span log lines; \s here would let one run off the end of a line and eat the
@@ -85,6 +104,13 @@ _SP = r"[^\S\n]"
 _NAME_HEAD = r"[A-Z0-9_]{0,63}"
 _NAME_TAIL = r"[A-Z0-9_]{0,63}+"
 
+# COST CENTRE, for whoever edits these next: it is the TAIL of the name rule,
+# `_SP*[=:]_SP*['"]?\S+`, not the name halves above. The worst input found is a
+# long capitals run, a delimiter, then thousands of spaces ended by a newline,
+# so `\S+` fails at every backtrack position of the second `_SP*`: ~0.19s at
+# and above the cap. The name halves, having been bounded, no longer dominate.
+# Anything added to this half needs the same adversarial measurement.
+#
 # Applied in order, exactly as ops/notify_failure.sh chains its -e expressions:
 # prefix rules catch known token shapes, then the name rule catches secrets
 # with no recognizable prefix (e.g. ALPACA_SECRET_KEY), written as NAME=VALUE,
@@ -115,18 +141,26 @@ def redact(text: str) -> str:
     failure passes the ORIGINAL text through untouched, and input past
     _MAX_CHARS is dropped rather than scanned.
 
-    Truncation drops the tail; it never passes it through. A cut can only
-    remove credential material, never expose it: a value split by the cut is
-    still preceded by its NAME= and still redacted, and a NAME split by the
-    cut carries no secret.
+    Truncation drops the tail; it never passes it through. The cut lands on a
+    whitespace boundary, so every token the scan sees is whole: a value cut in
+    half is dropped rather than emitted as a prefix of itself, and a value that
+    survives is still preceded by its NAME= and still redacted.
+
+    The `…[N chars truncated]` marker reaches the GitHub egress but not the
+    Slack one: slackkit/render.py:33-38 clips section text at 3000 characters,
+    so anything long enough to have been truncated here is clipped again well
+    before the marker. The operator sees render's own `…` and learns the size
+    of the drop only from the issue body.
     """
     try:
         out = text
+        dropped = 0
         if len(out) > _MAX_CHARS:
-            dropped = len(out) - _MAX_CHARS
-            out = out[:_MAX_CHARS]
-        else:
-            dropped = 0
+            head = out[:_MAX_CHARS]
+            boundary = max(head.rfind(ws) for ws in _WHITESPACE)
+            head = head[:boundary + 1]          # -1 -> drop the lot
+            dropped = len(out) - len(head)
+            out = head
         for pattern, replacement in _RULES:
             out = pattern.sub(replacement, out)
         if dropped:
