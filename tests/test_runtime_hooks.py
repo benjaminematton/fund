@@ -484,14 +484,34 @@ def test_a_resolved_id_still_matches_the_configured_alias(fund_db):
 
 def test_a_genuine_fallback_is_recorded(fund_db):
     """analyst pins haiku with a sonnet fallback — the live divergence path.
-    The payload names what served, so the reader is not left diffing lists."""
+    The payload names what served, so the reader is not left diffing lists.
+
+    Asserted field by field rather than by whole-dict equality, and NOT
+    because equality became inconvenient. `sdk` carries the installed
+    claude-agent-sdk version, which differs per box by design — local resolves
+    0.2.116 and the droplet 0.2.139, both legal under `~=0.2.116`. A literal
+    in this assertion would pass here and fail on the machine that trades,
+    which is the worst available place to learn it. The fields whose values
+    are contractual are still pinned exactly; only the environment-dependent
+    one is asserted by shape. specs/contracts.md declares event payload fields
+    additive, so a later field must not redden this test either."""
     record_turn_result(fund_db, "2026-07-06", "analyst",
                        _Result(total_cost_usd=0.01, session_id="s",
                                model_usage={"claude-sonnet-5": {"in": 10}}),
                        NOW, configured_model="claude-haiku-4-5-20251001")
-    assert _divergences(fund_db) == [
-        {"seat": "analyst", "configured": "claude-haiku-4-5-20251001",
-         "served": ["claude-sonnet-5"]}]
+    rows = _divergences(fund_db)
+    assert len(rows) == 1
+    # The key SET is asserted, not just the keys this test reads. Field-by-field
+    # alone cannot fail on an unexpected EXTRA field, so a payload that silently
+    # grew one would stay green here — additive means new fields are allowed,
+    # not that they arrive unnoticed. Same failure shape as issue #26, where
+    # test_state.py's subset assertion let two tables land unregistered.
+    assert set(rows[0]) == {"seat", "configured", "served", "usage", "sdk"}
+    assert rows[0]["seat"] == "analyst"
+    assert rows[0]["configured"] == "claude-haiku-4-5-20251001"
+    assert rows[0]["served"] == ["claude-sonnet-5"]
+    assert rows[0]["usage"] == {"claude-sonnet-5": {"in": 10}}
+    assert isinstance(rows[0]["sdk"], str) and rows[0]["sdk"]
 
 
 def test_a_mixed_turn_flags_only_the_unmatched_key(fund_db):
@@ -557,6 +577,85 @@ def test_a_divergence_is_recorded_even_when_the_cost_estimate_is_missing(fund_db
                        NOW, configured_model="claude-haiku-4-5-20251001")
     assert len(_alerts(fund_db)) == 1              # cost_unavailable
     assert len(_divergences(fund_db)) == 1
+
+
+# --- model divergence: the usage figures that make it adjudicable -----------
+#
+# The event named WHICH models served and not HOW MUCH each one served. That
+# omission is why the 2026-08-20 firing could not be adjudicated: the SDK
+# routes an auxiliary Haiku call on Sonnet-configured seats, and an auxiliary
+# call and a genuine fallback are the same event under a keys-only payload.
+# No threshold over `served` can separate them, and archived traces cannot
+# retroactively supply a number nobody recorded.
+#
+# `record_turn_result` already HOLDS the whole model_usage dict at the write
+# site (:376) and `_unmatched_models` extracts only its keys (:328). This is
+# not new instrumentation; it is keeping the half already in hand.
+
+
+def test_the_payload_carries_usage_for_every_served_model_not_just_unmatched(
+        fund_db):
+    """A SHARE NEEDS A DENOMINATOR. Recording usage for only the unmatched
+    models would say "sonnet burned 10" with nothing to divide by — which is
+    the same dead end as recording no figures at all.
+
+    So the usage map covers every key in model_usage, configured included."""
+    record_turn_result(
+        fund_db, "2026-07-06", "pm",
+        _Result(total_cost_usd=0.01, session_id="s",
+                model_usage={"claude-sonnet-5": {"input_tokens": 900},
+                             "claude-haiku-4-5-20251001": {"input_tokens": 100}}),
+        NOW, configured_model="claude-sonnet-5")
+    rows = _divergences(fund_db)
+    assert len(rows) == 1
+    assert rows[0]["served"] == ["claude-haiku-4-5-20251001"]   # unchanged
+    assert rows[0]["usage"] == {
+        "claude-sonnet-5": {"input_tokens": 900},
+        "claude-haiku-4-5-20251001": {"input_tokens": 100}}
+
+
+def test_the_payload_records_the_sdk_version_that_produced_it(fund_db):
+    """The droplet resolved claude-agent-sdk 0.2.139 while local runs 0.2.116,
+    both legal under `~=0.2.116` with no lockfile — so the box can change
+    underneath a dataset mid-collection with no commit marking it. Volumes
+    without the version that produced them are an anecdote about one box.
+
+    Asserted as "present and non-empty", not as a literal: pinning the value
+    would redden on every legitimate upgrade, which is the opposite of what
+    this records."""
+    record_turn_result(
+        fund_db, "2026-07-06", "analyst",
+        _Result(total_cost_usd=0.01, session_id="s",
+                model_usage={"claude-sonnet-5": {"input_tokens": 10}}),
+        NOW, configured_model="claude-haiku-4-5-20251001")
+    sdk = _divergences(fund_db)[0]["sdk"]
+    assert isinstance(sdk, str) and sdk
+
+
+def test_exotic_usage_values_do_not_take_down_the_turn(fund_db):
+    """model_usage's VALUES are SDK-shaped and unpinned — the same drift this
+    event exists to track can change them. A value that will not serialize
+    must cost the usage figure, never the event and never the trading day
+    (invariant 4): the divergence itself is the load-bearing half.
+
+    The `object()` here is not hypothetical caution. A usage value arriving as
+    an SDK dataclass rather than a dict is exactly what a 23-patch-version gap
+    is capable of, and json.dumps would raise inside the write."""
+    class _Exotic:
+        pass
+
+    record_turn_result(
+        fund_db, "2026-07-06", "analyst",
+        _Result(total_cost_usd=0.01, session_id="s",
+                model_usage={"claude-sonnet-5": _Exotic(),
+                             "claude-haiku-4-5-20251001": {"input_tokens": 5}}),
+        NOW, configured_model="claude-haiku-4-5-20251001")
+    rows = _divergences(fund_db)
+    assert len(rows) == 1
+    assert rows[0]["served"] == ["claude-sonnet-5"]
+    # the serialisable half survives; the exotic one degrades to no figures
+    assert rows[0]["usage"]["claude-haiku-4-5-20251001"] == {"input_tokens": 5}
+    assert rows[0]["usage"]["claude-sonnet-5"] == {}
 
 
 def test_hooks_reuse_one_connection_per_factory_binding(fund_db, sim_clock):

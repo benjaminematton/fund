@@ -175,6 +175,33 @@ def _failed_executions(conn, run_date: str) -> list[dict]:
                 (run_date,))]
 
 
+def _stranded_decisions(conn, run_date: str) -> list[dict]:
+    """A decision the gate APPROVED that never reached a terminal status.
+
+    `approved` is not terminal (specs/contracts.md:9:
+    `approved -> executed | failed | expired`), so a row still sitting there
+    at day's end is one every other band is blind to: the gate said yes, so
+    there is no `gate_rejected`; nothing set a failure status, so there is no
+    `execution_failed`. The fund believed it had decided and nothing happened.
+
+    This is the band 2026-08-20 needed and did not have. A full-size
+    protective stop reserved all 80 NVDA shares, so the approved sell of 40
+    was unfillable; the scorecard ranked one severity-3 model divergence —
+    since established as a false positive — and stayed silent on the trade the
+    fund failed to make. The only ranked line was the wrong one.
+
+    Severity 2, with execution_failed: same class, an approved decision that
+    did not become a trade. Deliberately above the severity-3 divergence band.
+
+    Reads the decision ROW, never a fill or an event: the status column is the
+    durable fact, and events are a projection queue a prune could empty."""
+    return [_row(2, "decision_stranded",
+                 f"{r['ticker']} {r['action']} approved, never executed")
+            for r in conn.execute(
+                "SELECT ticker, action FROM decisions WHERE run_date = ?"
+                " AND status = 'approved' ORDER BY ticker", (run_date,))]
+
+
 # --- severity 3: outliers and divergence -------------------------------------
 
 def _model_divergences(conn, run_date: str) -> list[dict]:
@@ -268,7 +295,8 @@ def _coverage_gaps(conn, run_date: str) -> list[dict]:
 
 
 CHECKS = (_silent_seats, _silent_pm, _timed_out_critic, _gate_rejections,
-          _failed_executions, _model_divergences, _cost_outliers,
+          _failed_executions, _stranded_decisions,
+          _model_divergences, _cost_outliers,
           _confidence_outliers, _coverage_gaps)
 
 

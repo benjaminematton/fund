@@ -330,6 +330,53 @@ def _unmatched_models(model_usage, configured: str) -> list[str]:
                   if not _served_matches(k, configured))
 
 
+def _sdk_version() -> str:
+    """The claude-agent-sdk version that served this turn.
+
+    Recorded on every divergence because the version is NOT pinned:
+    pyproject.toml says `claude-agent-sdk~=0.2.116`, which under PEP 440 means
+    `>= 0.2.116, == 0.2.*` and admits 0.2.139 — the droplet resolved exactly
+    that on 2026-08-18 while local kept 0.2.116, both legal, no lockfile.
+    Model routing is SDK-mediated, so the box can change underneath a dataset
+    mid-collection with no commit marking it. Volumes without the version that
+    produced them are an anecdote about one box.
+
+    Never raises: a turn must not fail because it could not name its own SDK.
+    'unknown' is the honest value and is distinguishable from any real one."""
+    try:
+        from importlib.metadata import version
+        return version("claude-agent-sdk")
+    except Exception:
+        return "unknown"
+
+
+def _usage_figures(model_usage) -> dict:
+    """Per-model figures for EVERY key, configured model included.
+
+    The denominator is the point. `_unmatched_models` answers WHICH models
+    served; without how much each one served, an auxiliary call and a genuine
+    fallback are indistinguishable — which is precisely why the 2026-08-20
+    firing could not be adjudicated. A share needs both terms, so this does
+    not filter to the unmatched keys.
+
+    Values are SDK-shaped and unpinned: the same drift this exists to track
+    can change them. Anything that will not survive the JSON round-trip
+    degrades to {} for that model rather than raising, because the divergence
+    is the load-bearing half and a usage figure must never cost the event
+    (invariant 4). Kept per-key, not summed: summing would bake in today's
+    field names, and field names are exactly what version drift moves."""
+    if not isinstance(model_usage, dict):
+        return {}
+    out = {}
+    for key, value in model_usage.items():
+        try:
+            json.dumps(value)
+            out[str(key)] = value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            out[str(key)] = {}
+    return out
+
+
 def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
                        result, now_iso: str,
                        configured_model: str = "") -> bool:
@@ -379,7 +426,10 @@ def record_turn_result(conn: sqlite3.Connection, run_date: str, seat: str,
     if unmatched:
         append_event(conn, "model_fallback_used",
                      {"seat": seat, "configured": configured_model,
-                      "served": unmatched}, now_iso)
+                      "served": unmatched,
+                      "usage": _usage_figures(
+                          getattr(result, "model_usage", None)),
+                      "sdk": _sdk_version()}, now_iso)
 
     usd = getattr(result, "total_cost_usd", None)
     session_id = str(getattr(result, "session_id", None) or "unknown")
