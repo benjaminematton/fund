@@ -9,7 +9,7 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 3. **`gate/`, `stratgate/`, and `calibration/` import no LLM code.** No `claude_agent_sdk`, no `anthropic`, no prompt strings. Pure Python + SQLite. Enforced in CI by `scripts/check_purity.py` (AST lint: forbidden imports + wall-clock calls; runs in `make test`). Gate thresholds (risk and strategy-validation) change only by human commit — never by an agent.
 4. **Default is HOLD.** Any error, timeout, malformed tool input, or ambiguity anywhere in the pipeline resolves to no action — never to a guess.
 5. **Orders are idempotent.** `client_order_id` = gate ticket id, always. Alpaca 422-rejects duplicates; never mint a new id on retry.
-6. **SQLite is the source of truth; Slack is a projection.** Never read workflow state from Slack; never trigger execution from a Slack event.
+6. **SQLite is the source of truth; Slack is never where a decision comes from.** Agents may post to Slack, read each other's prose there, and answer when asked (`specs/design.md` §3–§4, `VISION.md`). Never read *workflow state* from Slack — turn assignment, stage, decision or ticket status — and never let a Slack event produce a decision, an order, or a state transition; the orchestrator assigns every workflow-critical turn. Outbound delivery goes through the `events` outbox, so a crash or retry can neither lose nor duplicate a post.
 7. **Agents emit structured data only through MCP tools** (`submit_signal`, `submit_decision`, strict schemas) — never as free text that code parses.
 
 ## Commands
