@@ -454,6 +454,16 @@ can only cause a false alarm, never silence. The check must be in **cron** mode
 (`35 9 * * 1-5`); the default simple period mode would make Friday's ping set
 Saturday's deadline and page every weekend.
 
+**Nothing else is scheduled, and one thing that looks scheduled is not.**
+`scripts/file_alert_issues.py` turns alert codes into GitHub issues, but no
+unit, timer, Makefile target or CI job invokes it, and `--apply` is opt-in
+(`:157-158`) so a bare run is a dry run. **An alert reaches Slack unattended and
+becomes a tracked issue only when a human runs the filer.** That also means a
+repeat of an already-filed alert changes nothing on GitHub: the filer returns
+`skip` when an open issue with the same `(code, ticker)` labels exists
+(`:110`), so a re-alert's only effect is reddening the day audit
+(`scripts/audit_day.py:148-152`).
+
 The timezone is pinned **in the `OnCalendar` expression** as well as on the
 host, so the schedule survives a host timezone change. `Persistent=false`
 reproduces the old plists' `RunAtLoad=false`: a day starts because the market
