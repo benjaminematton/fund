@@ -365,6 +365,13 @@ def test_all_hold_day(tmp_path):
     assert _event_payloads(sim, "alert") == []
     assert "#risk" not in sim.slack.posts
 
+    # No fill, so no exec journal — the negative arm of the rule test_golden_day
+    # asserts positively. Without a no-fill day here, _participating_seats'
+    # exec branch is never exercised and an unconditional add("exec") would
+    # pass every test in this file.
+    assert _participating_seats(sim) == {"analyst", "news", "pm"}
+    assert {p.stem for p in sim.journals.glob("*.md")} == _participating_seats(sim)
+
     _assert_day_completed(sim)
 
 

@@ -189,7 +189,7 @@ _NO_HEADROOM = Rejected("no_headroom")
     (59820.00, Approved(max_qty=1, pre_sector_qty=105, side="buy")),
     (59820.01, _NO_HEADROOM),   # headroom 179.99 -> floors to zero
     (60000.00, _NO_HEADROOM),   # headroom exactly 0.0 -> sitting ON the cap
-    (61000.00, _NO_HEADROOM),   # already OVER -> clamped, never a negative qty
+    (61000.00, _NO_HEADROOM),   # already OVER the cap -> rejected, not sized
 ])
 def test_sector_cap_boundaries(sector_value, expected):
     """The sixth boundary the Phase-2 criterion names, and the only one that
