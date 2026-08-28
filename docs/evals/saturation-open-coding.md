@@ -473,7 +473,11 @@ Caught by: **I4** (`invented-subject`). Correct verdict; the cause is
 case rewritten after it was recorded. Count: **6** — `critic-v2-r1/a04/{1,2,3}`,
 `critic-v2-r1/h01/{1,2,3}`, where `trace.brief_subjects != case.subjects`.
 Caught by: **I4**, but **mislabelled** — the tag says `schema-reject`
-("the handler refused the submission"); nothing was refused.
+("the handler refused the submission"); nothing was refused. Also by `EXPECT`
+(`missing-row`) on all 6, and **equally spurious**: `case.subjects` names a spec
+the trace never critiqued, so the lookup misses at `evals/expectations.py:47-50`
+before a verdict is compared. The seat submitted correctly for the spec it was
+shown — this is added false-positive surface, not added coverage.
 `grade_traces` checks that trace and case agree on *seat*
 (`evals/grade.py:119-124`) but not that they agree on *subject*.
 
