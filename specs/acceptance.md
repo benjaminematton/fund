@@ -27,16 +27,16 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 
 ## Phase 2 — The desk (PM + 2 analysts + real gate)
 
-- [ ] Gate unit tests (pure, exhaustive): vol tiers (14.9/15/49.9/50%), correlation multipliers at boundaries, cash cap, max position count, sector weight, daily-loss circuit breaker, and **any malformed/NaN/missing input → REJECT `gate_error`**.
-- [ ] Golden-day vector: fixture inputs produce the exact ticket in `fixtures/golden-day.md` (max_qty **66** — 105 is the pre-sector-cap intermediate; assert both step values).
-- [ ] Pre-gate (advisory mode): same fixture at 08:45 yields allowed actions `{buy: 66, sell: 0}` for NVDA (full computation incl. sector cap — same code path as enforcement, no ticket); a fixture ticker with no cash headroom and no held shares yields `{buy: 0, sell: 0}` and is dropped from the active set.
-- [ ] Sim full day (replayed decisions, real execution): both analysts' `submit_signal` rows present → PM `submit_decision` row → gate ticket → order → all checkpoints `done`.
-- [ ] Missing-signal default: one analyst recording omits a ticker → `neutral/0` row auto-inserted, day completes.
-- [ ] PM timeout: no decision recorded for a ticker → decision row `hold/0`, `pm_timeout` event exists.
-- [ ] HOLD-only skip: ticker where the 08:45 pre-gate computes `{buy:0, sell:0}` never reaches the LLM pipeline (assert zero agent turns for it).
-- [ ] PM inputs: the decision-stage prompt context includes the allowed-actions snapshot for every active ticker (assert on the rendered stage input, not the prompt text — no per-run values in prompts).
-- [ ] Journals: after sim day each participating seat's journal has an entry via `state/journal.py`; reflection job at `SimClock`+5 trading days writes `resolutions` with correct realized return & alpha from fixture prices.
-- [ ] Cost rows recorded per seat per session.
+- [x] Gate unit tests (pure, exhaustive): vol tiers (14.9/15/49.9/50%), correlation multipliers at boundaries, cash cap, max position count, sector weight, daily-loss circuit breaker, and **any malformed/NaN/missing input → REJECT `gate_error`**.
+- [x] Golden-day vector: fixture inputs produce the exact ticket in `fixtures/golden-day.md` (max_qty **66** — 105 is the pre-sector-cap intermediate; assert both step values).
+- [x] Pre-gate (advisory mode): same fixture at 08:45 yields allowed actions `{buy: 66, sell: 0}` for NVDA (full computation incl. sector cap — same code path as enforcement, no ticket); a fixture ticker with no cash headroom and no held shares yields `{buy: 0, sell: 0}` and is dropped from the active set.
+- [x] Sim full day (replayed decisions, real execution): both analysts' `submit_signal` rows present → PM `submit_decision` row → gate ticket → order → all checkpoints `done`.
+- [x] Missing-signal default: one analyst recording omits a ticker → `neutral/0` row auto-inserted, day completes.
+- [x] PM timeout: no decision recorded for a ticker → decision row `hold/0`, `pm_timeout` event exists.
+- [x] HOLD-only skip: ticker where the 08:45 pre-gate computes `{buy:0, sell:0}` never reaches the LLM pipeline (assert zero agent turns for it).
+- [x] PM inputs: the decision-stage prompt context includes the allowed-actions snapshot for every active ticker (assert on the rendered stage input, not the prompt text — no per-run values in prompts).
+- [x] Journals: after sim day each participating seat's journal has an entry via `state/journal.py`; reflection job at `SimClock`+5 trading days writes `resolutions` with correct realized return & alpha from fixture prices.
+- [x] Cost rows recorded per seat per session.
 
 ## Phase 3 — The firm (debates, risk persona, macro, ops, CEO gate)
 
