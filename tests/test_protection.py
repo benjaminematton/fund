@@ -593,6 +593,47 @@ def test_a_discrepancy_that_changes_shape_alerts_again(fund_db):
     assert len(_alerts(fund_db)) == 2
 
 
+def test_a_standing_gap_is_silent_when_the_symbol_trades_again(fund_db):
+    """#141, from production. A 40-share hole stood since 08-24. The fund then
+    bought 28 more NVDA, moving both numbers by +28 — recorded 80->108, held
+    40->68 — while the gap stayed 40. Nothing new went wrong, so nothing new is
+    said. Under the old (recorded, held) key this alerted and reddened the day.
+
+    Discriminating: fails against the pair key with assert (1, 1) == (1, 0)."""
+    _promised(fund_db)                                    # recorded 80
+    first = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "40")], []), now_iso=NOW)
+    _promised(fund_db, qty=28, tid="a3f90000-0000-4000-8000-000000000002",
+              submitted_at="2026-08-27T19:59:00+00:00")   # recorded 80 + 28
+    second = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "68")], []), now_iso=NOW)
+    assert (first, second) == (1, 0)
+    assert len(_alerts(fund_db)) == 1
+
+
+def test_a_new_unrecorded_exit_alerts_even_when_it_leaves_the_gap_unchanged(
+        fund_db):
+    """The guard on the guard above, and the reason `want >= standing` is in
+    the condition rather than the gap test alone.
+
+    `_shortfall_text` tells the operator to record the exit. Doing so shrinks
+    `recorded` — 80 -> 40 — which is not a broker movement. If a NEW unrecorded
+    exit takes held 40 -> 0 in the same window, the gap is still 40 while a
+    second lot of shares has left the account unrecorded. That is a new fault
+    of exactly the kind this guard exists to catch and it must alert.
+
+    Discriminating: fails against a gap-only key with assert (1, 0) == (1, 1),
+    which is why PR #161 was closed."""
+    _promised(fund_db)                                    # recorded 80
+    first = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "40")], []), now_iso=NOW)
+    _recorded_sell(fund_db, qty=40)                       # recorded 80 -> 40
+    second = assert_positions_accounted(                  # held 40 -> 0
+        fund_db, broker=Broker([], []), now_iso=NOW)
+    assert (first, second) == (1, 1)
+    assert len(_alerts(fund_db)) == 2
+
+
 def test_unreadable_positions_fail_closed(fund_db):
     """Same rule as the rest of the module: a check that can pass while lying
     is worse than no check at all."""
