@@ -397,7 +397,11 @@ def assert_positions_accounted(conn: sqlite3.Connection, *, broker,
     audit is what masks the next new failure. That is a narrower argument than
     crying wolf: the sanctioned stopless position above is a correct state,
     while this is a fault that is still a fault on day two. Worth saying once,
-    not worth saying daily."""
+    not worth saying daily.
+
+    A distinct discrepancy is a distinct GAP (recorded - held) that arrived
+    without anything being written off — not a distinct (recorded, held) pair.
+    See the condition below for why it takes both halves."""
     nap = sleep or (lambda _s: None)
 
     def alert(text: str, accounting: dict) -> None:
@@ -465,8 +469,25 @@ def assert_positions_accounted(conn: sqlite3.Connection, *, broker,
                       {"symbol": symbol, "cleared": True})
                 appended += 1
             continue
-        if (last.get("recorded"), last.get("held")) == (want, have):
-            continue                      # same finding, already standing
+        # The finding is the GAP, not the pair. A later buy in the same symbol
+        # moves recorded and held together and leaves the shortfall untouched:
+        # 80/40 became 108/68 on 2026-08-27 with the same 40 shares missing,
+        # and the audit reddened on a day nothing new had gone wrong (#141).
+        #
+        # `want >= standing` is NOT redundant with the gap test, and dropping
+        # it is a regression rather than a simplification (PR #161 was closed
+        # for exactly that). `recorded` does not only move on fills — it also
+        # falls when a human writes the missing exit down, which is precisely
+        # what _shortfall_text instructs. So a write-off can cancel out a NEW
+        # unrecorded exit and hold the gap constant: 80/40 -> 40/0 is still a
+        # gap of 40, and the second 40 shares left the account unrecorded.
+        # Requiring that recorded never shrank keeps the #141 win and still
+        # alerts on that. A cleared record carries no `recorded`, so it never
+        # matches, which keeps a recurrence after a clear reportable.
+        standing = last.get("recorded")
+        if (standing is not None and want >= standing
+                and standing - last.get("held", 0) == want - have):
+            continue                      # same gap, nothing written off
         alert(_shortfall_text(symbol, want, have),
               {"symbol": symbol, "recorded": want, "held": have,
                "cleared": False})
