@@ -380,7 +380,9 @@ class _Result:
 
 
 def _costs(conn):
-    return conn.execute("SELECT * FROM costs").fetchall()
+    # ORDER BY id like _alerts below: positional assertions on insertion order
+    # are only meaningful if the order is asked for.
+    return conn.execute("SELECT * FROM costs ORDER BY id").fetchall()
 
 
 def _alerts(conn):
@@ -404,6 +406,39 @@ def test_record_turn_result_writes_the_cost_row(fund_db):
     assert (rows[0]["run_date"], rows[0]["agent"], rows[0]["session_id"],
             rows[0]["usd_estimate"], rows[0]["recorded_at"]) == (
         "2026-07-06", "analyst", "s1", 0.0123, NOW)
+    assert _alerts(fund_db) == []
+
+
+def test_every_seat_turn_records_its_own_agent_and_session(fund_db):
+    """acceptance.md Phase 2: "Cost rows recorded per seat per session". That
+    is a property of the SET of rows, not their count (#158) -- and the count
+    is all the day-level tests assert, which cannot tell four seats turning
+    once from one seat turning four times."""
+    for seat, session in (("analyst", "s-a"), ("news", "s-n"),
+                          ("pm", "s-p"), ("exec", "s-e")):
+        assert record_turn_result(
+            fund_db, "2026-07-06", seat,
+            _Result(total_cost_usd=0.01, session_id=session), NOW) is True
+
+    assert [(r["agent"], r["session_id"]) for r in _costs(fund_db)] == [
+        ("analyst", "s-a"), ("news", "s-n"), ("pm", "s-p"), ("exec", "s-e")]
+    assert _alerts(fund_db) == []
+
+
+def test_a_seat_that_turns_twice_owes_two_rows(fund_db):
+    """The row count equals the seat count only because each seat happens to
+    turn once -- a coincidence the count assertion then depends on. A seat
+    that turns twice (a retried research turn) owes one row per SESSION, and
+    the day's spend is their sum."""
+    for session in ("s-1", "s-2"):
+        assert record_turn_result(
+            fund_db, "2026-07-06", "analyst",
+            _Result(total_cost_usd=0.02, session_id=session), NOW) is True
+
+    rows = _costs(fund_db)
+    assert [(r["agent"], r["session_id"]) for r in rows] == [
+        ("analyst", "s-1"), ("analyst", "s-2")]
+    assert sum(r["usd_estimate"] for r in rows) == pytest.approx(0.04)
     assert _alerts(fund_db) == []
 
 
