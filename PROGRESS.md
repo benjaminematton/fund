@@ -6,10 +6,11 @@ session. `README.md` explains what the system *is*; this file explains what the 
 
 Update it when a milestone lands or an open item closes — not per commit.
 
-> **⚠ STALE — a snapshot, not current state.** Despite "read this first" above, this file
-> has not been updated since 2026-08-20 (`git log -1 -- PROGRESS.md`). Nothing below is
-> current state, and this header deliberately quotes no commit, count, or phase number —
+> **⚠ A snapshot, not current state.** Despite "read this first" above, nothing below is
+> live state, and this header deliberately quotes no commit, count, or phase number —
 > a number that depends on state outside this file will eventually be wrong inside it.
+> Check the date on the Status section against `git log -1 -- PROGRESS.md`; if they disagree,
+> someone edited the file without moving the date and the section is older than it claims.
 >
 > For what is actually true right now: board issue **#49** and its children for what to work
 > on, open issues and PRs for what is in flight, `git log` on `master` for what shipped, and
@@ -17,20 +18,26 @@ Update it when a milestone lands or an open item closes — not per commit.
 
 ---
 
-## Status — 2026-08-19
+## Status — 2026-08-28
 
-The following table summarizes where the fund stands:
+**This table carries only facts that do not rot.** Anything that changes without a commit to
+this file — positions, test counts, issue counts, the deployed SHA — is a **pointer**, not a
+value, for the reason the header above gives: a number that depends on state outside this file
+will eventually be wrong inside it. The 2026-08-19 version of this table stated a test count, a
+CI count and an open position; all three were wrong within days, and the position was wrong in
+the direction that mattered.
 
 | Item | Value |
 |---|---|
 | **Mode** | Alpaca **paper** only (invariant 1) |
 | **Live since** | 2026-08-17 — first clean end-to-end day |
-| **Tests** | 955 offline green at `51bc7eb`, identical on macOS arm64, linux/amd64 and linux/arm64 |
-| **CI** | runs all 909 (was 36); **first green run in the repo's history on 2026-08-19** |
-| **Seats** | PM, exec, and **two** analysts — `analyst` (price/fundamentals) and `news` (news/sentiment, read-only, blind to the book). The `news` seat is deployed but **defective**, see #6 |
-| **Watchlist** | NVDA, MSFT, AAPL |
-| **Open position** | NVDA 80 @ 227.09, stop 215 gtc (expires 2026-11-17) — **hand-placed 2026-08-19 11:46 PDT** after two sessions unprotected (see below) |
-| **Scheduled on** | **DigitalOcean droplet `fund-vm` (NYC3, Debian 13, ET clock)** since 2026-08-18 |
+| **Phase** | **Phase 2 complete** — all ten of `specs/acceptance.md`'s Phase 2 criteria are ticked as of 2026-08-28 (PR #160 closed four real gaps first). **Phase 3 is not started**; its criteria are unticked in the same file, which is the build order |
+| **Seats** | PM, exec, and two analysts — `analyst` (price/fundamentals) and `news` (news/sentiment, read-only, blind to the book). The **Critic is built and eval-gated but still outside the daily cycle**: `orchestrator/daily.py:201` pre-inserts `no_critic_seat` |
+| **Deployed** | **DigitalOcean droplet `fund-vm`** (NYC3, Debian 13, ET clock) since 2026-08-18. `/opt/fund` is a plain checkout; a deploy is a pull. **The dev loop (`devloop/`) has never run there** — no `.baseline`, no `logs/`, no unit, no cron entry (measured 2026-08-28) |
+| **Deployed SHA** | → `make dev-status`, check `deploy_state`. Never stated here |
+| **Tests / CI** | → the CI run on `master`. Never stated here |
+| **Open position** | → the broker, via `make dev-status`. **Never stated here** — `specs/design.md` §4 forbids inferring position state from the database, and this file is further from the truth than the database is |
+| **What to work on** | → board issue **#49** and its children, in map order |
 
 ### 2026-08-19 — the stop that expired at the bell
 
