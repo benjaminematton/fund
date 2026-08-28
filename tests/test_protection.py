@@ -593,6 +593,40 @@ def test_a_discrepancy_that_changes_shape_alerts_again(fund_db):
     assert len(_alerts(fund_db)) == 2
 
 
+def test_a_standing_gap_is_silent_when_the_symbol_trades_again(fund_db):
+    """The 2026-08-27 red day (#141). A 40-share hole stood unreconciled from
+    08-24. On 08-27 the fund bought 28 more NVDA, moving both numbers by the
+    same +28 — recorded 80->108, held 40->68 — while the gap stayed exactly
+    40. Nothing new went wrong, and the audit reddened anyway: dedup keyed on
+    the absolute (recorded, held) pair saw a new tuple. The discrepancy is
+    the gap, so that is what 'same finding' has to mean."""
+    _promised(fund_db, qty=80)
+    first = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "40")], []), now_iso=NOW)
+    _promised(fund_db, qty=28, tid="59d360b5-be75-4230-b2d7-24728dcf202c",
+              submitted_at="2026-08-27T13:38:52+00:00")
+    second = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "68")], []), now_iso=NOW)
+    assert (first, second) == (1, 0), "an unchanged 40-share gap re-alerted"
+    assert len(_alerts(fund_db)) == 1
+
+
+def test_a_gap_that_widens_on_a_trading_day_still_alerts(fund_db):
+    """The over-correction guard for the test above. Keying on the gap must
+    not buy its silence by swallowing a real new discrepancy that happens to
+    surface on a day the symbol also traded: 40 missing becomes 48 missing,
+    and 8 more shares left without a record. That is a new fact."""
+    _promised(fund_db, qty=80)
+    assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "40")], []), now_iso=NOW)
+    _promised(fund_db, qty=28, tid="59d360b5-be75-4230-b2d7-24728dcf202c",
+              submitted_at="2026-08-27T13:38:52+00:00")
+    n = assert_positions_accounted(
+        fund_db, broker=Broker([_long("NVDA", "60")], []), now_iso=NOW)
+    assert n == 1
+    assert len(_alerts(fund_db)) == 2
+
+
 def test_unreadable_positions_fail_closed(fund_db):
     """Same rule as the rest of the module: a check that can pass while lying
     is worse than no check at all."""

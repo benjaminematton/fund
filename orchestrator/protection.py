@@ -397,7 +397,22 @@ def assert_positions_accounted(conn: sqlite3.Connection, *, broker,
     audit is what masks the next new failure. That is a narrower argument than
     crying wolf: the sanctioned stopless position above is a correct state,
     while this is a fault that is still a fault on day two. Worth saying once,
-    not worth saying daily."""
+    not worth saying daily.
+
+    A distinct discrepancy is a distinct GAP (recorded - held), not a distinct
+    (recorded, held) pair. Keying on the pair re-reported an unchanged fault
+    every time the symbol traded again, because a later fill moves both
+    numbers together — 80/40 became 108/68 on 2026-08-27 with the same 40
+    shares missing, and the day audit reddened (#141).
+
+    The gap is the exact residue, and that is why it is the right key rather
+    than merely the quieter one: held moves by whatever the fund recorded plus
+    whatever it did not, so the gap is unchanged if and only if the unrecorded
+    movement is zero. A new unrecorded exit always changes the gap and always
+    alerts; nothing that leaves the gap alone is a new fault. What this does
+    NOT do is refresh the standing alert's text, so the absolutes a human
+    reconciles from stay as first reported while the position moves under
+    them."""
     nap = sleep or (lambda _s: None)
 
     def alert(text: str, accounting: dict) -> None:
@@ -465,8 +480,15 @@ def assert_positions_accounted(conn: sqlite3.Connection, *, broker,
                       {"symbol": symbol, "cleared": True})
                 appended += 1
             continue
-        if (last.get("recorded"), last.get("held")) == (want, have):
-            continue                      # same finding, already standing
+        # The finding is the GAP, not the pair. A later buy in the same symbol
+        # moves recorded and held by the same amount and leaves the shortfall
+        # untouched — 80/40 became 108/68 on 2026-08-27 with the same 40 shares
+        # missing, and the audit reddened on a day nothing new had gone wrong
+        # (#141). A cleared record carries no `recorded`, so it never matches,
+        # which is what keeps a recurrence after a clear reportable.
+        standing = last.get("recorded")
+        if standing is not None and standing - last["held"] == want - have:
+            continue                      # same gap, already standing
         alert(_shortfall_text(symbol, want, have),
               {"symbol": symbol, "recorded": want, "held": have,
                "cleared": False})
