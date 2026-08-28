@@ -437,18 +437,22 @@ hosts means genuine duplicate orders that `client_order_id` cannot dedupe.
 | unit | fires | does |
 |---|---|---|
 | `fund-daily.timer` | 09:35 ET Mon–Fri | full trading day, self-audits |
-| `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY |
-| `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY, **then writes the nightly `resolutions`, then reflects** — three `ExecStart=` lines, in that order (`ops/fund-pnl.service:19,26,32`) |
+| `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot — DB, journals and traces |
 | `fund-alert@.service` | on any of the preceding three timers failing | posts the failure to `#risk`, mentioning the operator |
-| healthchecks.io `fund-daily` | **when a 09:35 ping does not arrive** | alerts `#risk` + email at 10:20 ET |
+| healthchecks.io `fund-daily` | **when a 09:35 ping does not arrive, or arrives non-zero** | alerts `#risk` + email at 10:20 ET |
 
 The watchdog is off-box on purpose: a dead droplet cannot run its own. It is fed
-by `ExecStartPost` on `fund-daily.service`, so a ping means the day *completed*;
-the `-` prefix is fail-safe in the right direction — a failed ping cannot fail
-the trading day it reports on, and a ping that never lands makes the watchdog
-alert. Errors there can only cause a false alarm, never silence. The check must
-be in **cron** mode (`35 9 * * 1-5`); the default simple period mode would make
-Friday's ping set Saturday's deadline and page every weekend.
+by **`ExecStopPost=`** on `fund-daily.service` (`:57`) — **not `ExecStartPost=`**,
+which runs only on success and therefore made a failed run and a powered-off
+droplet look identical, both silent. `${EXIT_STATUS}` travels with the ping, so
+the watchdog can tell them apart (`d955a68`, 2026-08-24). A ping therefore means
+the day *ended*, not that it succeeded; the status says which. The `-` prefix is
+fail-safe in the right direction — a failed ping cannot fail the trading day it
+reports on, and a ping that never lands makes the watchdog alert. Errors there
+can only cause a false alarm, never silence. The check must be in **cron** mode
+(`35 9 * * 1-5`); the default simple period mode would make Friday's ping set
+Saturday's deadline and page every weekend.
 
 The timezone is pinned **in the `OnCalendar` expression** as well as on the
 host, so the schedule survives a host timezone change. `Persistent=false`
@@ -515,6 +519,16 @@ either.
 | 2026-08-19 | clean run; **found the NVDA stop had expired at the 08-17 bell** — two sessions unprotected, never breached; stop re-placed by hand at 11:46 PDT |
 | 2026-08-19 | the `news` seat's first live signals asserted "No news published" on a day with 30 articles — zero-width query, and a charter that licensed it (#6) |
 | 2026-08-20 | missing-stop class closed: the gate requires `gtc`, and the day asserts every position is protected (`51bc7eb`) — leg inheritance and leg visibility both measured live |
+| 2026-08-20 | **first decision the fund could not execute** — NVDA sell 40 approved, ticket `c0a9ae97` expired: a full-size stop reserves the position |
+| 2026-08-20 | improvement loops live in production — traces per seat turn, `charter_version` + `model_id` on every row, a daily scorecard (PR #7) |
+| 2026-08-20 | one `requirements.lock` for local, CI and the droplet; 20 packages had differed, `mcp` among them (`78e2174`) |
+| 2026-08-20 | the Critic seat merged — advisory on trades, blocking at G1, eval-gated; **not wired into the daily cycle** (PRs #21, #22) |
+| 2026-08-21 | the hand-placed NVDA stop, resized to 40, **filled at 214.85** — position 80 → 40. This is the origin of the shortfall #141 is still reconciling |
+| 2026-08-21 | the gate's account preconditions get a pinned baseline; an unreadable baseline stops the day (PR #31) |
+| 2026-08-24 | `assert_positions_accounted` fires for the first time: records say 80, broker holds 40 — still unreconciled (#141 Layer 1) |
+| 2026-08-24 | alerts carry stable codes and can be filed as issues; the watchdog can tell a dead box from a failed run (PRs #47, #48) |
+| 2026-08-25 | an external audit files **#38–#46**, two critical; open work moves onto the board (**#49**) |
+| 2026-08-28 | the accounting alert stops re-firing when a symbol with a standing gap trades again — dedup keys on the gap, and only when nothing was written off (PR #176, #141 Layer 2) |
 
 ### The stop-leg shape the broker never accepted
 
