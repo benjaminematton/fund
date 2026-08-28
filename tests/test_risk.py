@@ -182,14 +182,16 @@ def test_cash_cap_binds():
     r = size(golden_inputs(cash=1800.0, sector_value=0.0), "enforce")
     assert r.max_qty == 10                       # floor(1800/180)
 
-@pytest.mark.parametrize("sector_value,max_qty", [
-    (59640.00, 2),      # headroom 360 -> two shares
-    (59820.00, 1),      # headroom 180 -> exactly one share: the last approval
-    (59820.01, None),   # headroom 179.99 -> floors to zero, nothing to buy
-    (60000.00, None),   # headroom exactly 0.0 -> sitting ON the cap
-    (61000.00, None),   # already OVER the cap -> clamped, never a negative qty
+_NO_HEADROOM = Rejected("no_headroom")
+
+@pytest.mark.parametrize("sector_value,expected", [
+    (59640.00, Approved(max_qty=2, pre_sector_qty=105, side="buy")),
+    (59820.00, Approved(max_qty=1, pre_sector_qty=105, side="buy")),
+    (59820.01, _NO_HEADROOM),   # headroom 179.99 -> floors to zero
+    (60000.00, _NO_HEADROOM),   # headroom exactly 0.0 -> sitting ON the cap
+    (61000.00, _NO_HEADROOM),   # already OVER -> clamped, never a negative qty
 ])
-def test_sector_cap_boundaries(sector_value, max_qty):
+def test_sector_cap_boundaries(sector_value, expected):
     """The sixth boundary the Phase-2 criterion names, and the only one that
     had no test of its own (#100). It is the LAST reduction size() applies
     (gate/risk.py:90-91), so an error here is the one that survives every
@@ -199,12 +201,9 @@ def test_sector_cap_boundaries(sector_value, max_qty):
     SHARE terms therefore sits at sector_value 59820, where headroom is exactly
     one share. pre_sector is 105 at every row, so what binds below is always
     the sector cap and never cash -- the same separation the golden-day vector
-    makes at one interior point (:38), asserted here at the edge."""
-    r = size(golden_inputs(sector_value=sector_value), "enforce")
-    if max_qty is None:
-        assert r == Rejected("no_headroom")
-    else:
-        assert r == Approved(max_qty=max_qty, pre_sector_qty=105, side="buy")
+    makes at one interior point (tests/test_risk.py:38), asserted here at the
+    edge."""
+    assert size(golden_inputs(sector_value=sector_value), "enforce") == expected
 
 def test_position_count_hard_reject_new_position_only():
     assert size(golden_inputs(position_count=8), "enforce") == Rejected("position_count")

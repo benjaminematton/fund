@@ -380,7 +380,9 @@ class _Result:
 
 
 def _costs(conn):
-    return conn.execute("SELECT * FROM costs").fetchall()
+    # ORDER BY id like _alerts below: positional assertions on insertion order
+    # are only meaningful if the order is asked for.
+    return conn.execute("SELECT * FROM costs ORDER BY id").fetchall()
 
 
 def _alerts(conn):
@@ -429,14 +431,15 @@ def test_a_seat_that_turns_twice_owes_two_rows(fund_db):
     that turns twice (a retried research turn) owes one row per SESSION, and
     the day's spend is their sum."""
     for session in ("s-1", "s-2"):
-        record_turn_result(fund_db, "2026-07-06", "analyst",
-                           _Result(total_cost_usd=0.02, session_id=session),
-                           NOW)
+        assert record_turn_result(
+            fund_db, "2026-07-06", "analyst",
+            _Result(total_cost_usd=0.02, session_id=session), NOW) is True
 
     rows = _costs(fund_db)
     assert [(r["agent"], r["session_id"]) for r in rows] == [
         ("analyst", "s-1"), ("analyst", "s-2")]
     assert sum(r["usd_estimate"] for r in rows) == pytest.approx(0.04)
+    assert _alerts(fund_db) == []
 
 
 def test_record_turn_result_none_cost_records_nothing_and_alerts(fund_db):

@@ -204,23 +204,27 @@ def _event_payloads(sim: SimResult, kind: str) -> list[dict]:
         "SELECT payload FROM events WHERE kind = ? ORDER BY id", (kind,))]
 
 
-def _cost_pairs(sim: SimResult) -> list[tuple[str, str]]:
-    """(agent, session_id) per cost row. The criterion is "per seat per
-    session" (#158) — a COUNT cannot tell four seats turning once from one
-    seat turning four times."""
-    return [(r["agent"], r["session_id"]) for r in sim.conn.execute(
-        "SELECT agent, session_id FROM costs ORDER BY agent")]
-
-
 def _participating_seats(sim: SimResult) -> set[str]:
-    """The seats run_close owes a journal to, derived the way it derives them
-    (orchestrator/daily.py:460-467) rather than named literally — so a new
-    seat is covered here without editing the test."""
+    """The seats run_close owes a journal to (orchestrator/daily.py:460-467):
+    every seat that signalled today, plus the PM, plus the trader IFF the day
+    had a fill. Derived rather than named literally so a new seat is covered
+    without editing the test.
+
+    The exec arm must ask the question run_close asks, which is _fill_rows'
+    (daily.py:392-397) — scoped to THIS run_date and to the two statuses that
+    mean shares changed hands. `filled_qty > 0` alone is a different question:
+    a partially-filled order later canceled or expired carries a non-zero
+    filled_qty, and run_close writes no exec journal for a day whose fills
+    line reads `none`."""
     seats = {r["agent"] for r in sim.conn.execute(
         "SELECT DISTINCT agent FROM signals WHERE run_date = ?",
         (sim.run_date,))} | {"pm"}
-    if sim.conn.execute("SELECT COUNT(*) c FROM orders"
-                        " WHERE filled_qty > 0").fetchone()["c"]:
+    if sim.conn.execute(
+            "SELECT COUNT(*) c FROM orders o"
+            " JOIN tickets t ON t.id = o.client_order_id"
+            " JOIN decisions d ON d.id = t.decision_id"
+            " WHERE d.run_date = ? AND o.status IN ('filled', 'partially_filled')",
+            (sim.run_date,)).fetchone()["c"]:
         seats.add("exec")
     return seats
 
@@ -311,9 +315,12 @@ def test_golden_day(tmp_path):
 
     # every turn that ran recorded its cost, and the digest reports the sum
     assert sim.turns == {"research": 2, "decision": 1, "execution": 1}
-    # per SEAT per SESSION, not four-of-something (#158)
-    assert _cost_pairs(sim) == [("analyst", "sim-analyst"), ("exec", "sim-exec"),
-                                ("news", "sim-news"), ("pm", "sim-pm")]
+    # One row per turn. NOT the "per seat per session" criterion: the sim
+    # harness supplies both agent and session_id itself (`sim-{seat}`, :144),
+    # so any assertion on those values here would be checking the harness's
+    # own f-string. That criterion is pinned on the production seam instead,
+    # in tests/test_runtime_hooks.py.
+    assert _count(sim, "costs") == 4   # analyst + news + pm + exec
     digest = _event_payloads(sim, "digest")[0]["text"]
     assert "decisions: NVDA buy 80 (executed)" in digest
     assert "fills: NVDA buy 66@180.14" in digest
@@ -321,8 +328,13 @@ def test_golden_day(tmp_path):
 
     assert (sim.journals / "exec.md").read_text().count("NVDA buy 66@180.14") == 1
     # EVERY participating seat, not just the two named by hand: the news seat
-    # signalled today and owes a journal exactly as the analyst does (#158)
-    assert {p.stem for p in sim.journals.glob("*.md")} == _participating_seats(sim)
+    # signalled today and owes a journal exactly as the analyst does (#158).
+    # The criterion is "has an ENTRY", so each file must carry today's entry,
+    # not merely exist -- _append_entry_once stamps the run_date as its header.
+    seats = _participating_seats(sim)
+    assert {p.stem for p in sim.journals.glob("*.md")} == seats
+    for seat in seats:
+        assert sim.run_date in (sim.journals / f"{seat}.md").read_text(), seat
     _assert_day_completed(sim)
 
 
@@ -536,6 +548,42 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
     _assert_day_completed(sim)
 
 
+# --- 5. the stop that expired at the bell (2026-08-19) ----------------------
+
+def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path):
+    """2026-08-19, reproduced end to end. A stopped NVDA entry fills, its OTO
+    stop leg then EXPIRES at the close exactly as the real one did on 08-17,
+    and the day must not end quietly.
+
+    Before this assertion existed the run was clean — holds, AUDIT CLEAN, a
+    digest posted — while the position sat naked for two sessions. A green
+    suite proved nothing then. This is what proving looks like: the real gate,
+    the real hooks, the real fill-poll, and a broker whose protection dies on
+    schedule."""
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  pm_recs=("mvf_pm_stop.jsonl",),
+                  exec_recs=("mvf_exec_stop_gtc.jsonl",),
+                  broker_mode="stop_expires_at_the_bell")
+
+    # the entry really happened, carrying the ticket's stop
+    placed = sim.broker.place_attempts[0]
+    assert (placed["order_class"], placed["time_in_force"]) == ("oto", "gtc")
+    assert placed["stop_loss_stop_price"] == "168.0"
+    assert sim.conn.execute(
+        "SELECT stop_price FROM tickets").fetchone()["stop_price"] == 168.0
+
+    # ...and the broker is now holding the position with nothing guarding it
+    assert sim.broker.open_positions() == [
+        {"symbol": "NVDA", "qty": "66", "side": "long"}]
+    assert sim.broker.open_orders() == []
+
+    texts = [p["text"] for p in _event_payloads(sim, "alert")]
+    assert any("NVDA" in t and "stop at 168" in t for t in texts), (
+        f"the naked position was not reported; alerts were {texts}")
+    assert any("NO live protective order" in p["text"]
+               for p in sim.slack.posts["#risk"])
+
+
 # --- 7. the HOLD-only ticker never reaches a seat ---------------------------
 
 def test_a_hold_only_ticker_never_reaches_the_pipeline(tmp_path):
@@ -576,39 +624,3 @@ def test_a_hold_only_ticker_never_reaches_the_pipeline(tmp_path):
     assert _decision(sim, "NVDA")["action"] == "buy"
     assert _count(sim, "tickets") == 1
     _assert_day_completed(sim)
-
-
-# --- 5. the stop that expired at the bell (2026-08-19) ----------------------
-
-def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path):
-    """2026-08-19, reproduced end to end. A stopped NVDA entry fills, its OTO
-    stop leg then EXPIRES at the close exactly as the real one did on 08-17,
-    and the day must not end quietly.
-
-    Before this assertion existed the run was clean — holds, AUDIT CLEAN, a
-    digest posted — while the position sat naked for two sessions. A green
-    suite proved nothing then. This is what proving looks like: the real gate,
-    the real hooks, the real fill-poll, and a broker whose protection dies on
-    schedule."""
-    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
-                  pm_recs=("mvf_pm_stop.jsonl",),
-                  exec_recs=("mvf_exec_stop_gtc.jsonl",),
-                  broker_mode="stop_expires_at_the_bell")
-
-    # the entry really happened, carrying the ticket's stop
-    placed = sim.broker.place_attempts[0]
-    assert (placed["order_class"], placed["time_in_force"]) == ("oto", "gtc")
-    assert placed["stop_loss_stop_price"] == "168.0"
-    assert sim.conn.execute(
-        "SELECT stop_price FROM tickets").fetchone()["stop_price"] == 168.0
-
-    # ...and the broker is now holding the position with nothing guarding it
-    assert sim.broker.open_positions() == [
-        {"symbol": "NVDA", "qty": "66", "side": "long"}]
-    assert sim.broker.open_orders() == []
-
-    texts = [p["text"] for p in _event_payloads(sim, "alert")]
-    assert any("NVDA" in t and "stop at 168" in t for t in texts), (
-        f"the naked position was not reported; alerts were {texts}")
-    assert any("NO live protective order" in p["text"]
-               for p in sim.slack.posts["#risk"])
