@@ -334,7 +334,7 @@ def test_a_cap_that_exactly_drains_the_queue_raises_no_alert(db):
 
 def test_the_nightly_cap_is_derived_not_inherited_from_reflect(db):
     """reflect's MAX_TURNS_PER_NIGHT=25 is sized for one turn per resolved
-    decision. Inheriting it here would ask for 100 minutes and \$18.75 of worst
+    decision. Inheriting it here would ask for 100 minutes and $18.75 of worst
     case from the LAST leg of a unit whose whole budget is 30 minutes — i.e.
     would guarantee this leg is cut by the guillotine.
 
