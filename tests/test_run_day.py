@@ -504,7 +504,8 @@ def test_seat_session_threads_the_bound_id_to_build_seat_options(monkeypatch):
 
     def _fake_build_seat_options(cfg, db_path, clock, *, snapshot=None,
                                  journals_root=None,
-                                 expected_decision_id=None, tools=None):
+                                 expected_decision_id=None,
+                                 expected_spec_id=None, tools=None):
         seen["expected_decision_id"] = expected_decision_id
         return object()          # opaque; only ClaudeSDKClient below sees it
 
@@ -545,7 +546,7 @@ def test_make_turn_threads_the_bound_id_to_seat_session(wired, monkeypatch):
 
     async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
                                  journals_root, expected_decision_id=None,
-                                 tools=None):
+                                 expected_spec_id=None, tools=None):
         seen["expected_decision_id"] = expected_decision_id
         return ([], _Result(turns=1))
 
@@ -554,6 +555,68 @@ def test_make_turn_threads_the_bound_id_to_seat_session(wired, monkeypatch):
     _turn(conn, clock, seat="reflect", expected_decision_id=99)()
 
     assert seen["expected_decision_id"] == 99
+
+
+def test_make_turn_threads_the_bound_spec_to_seat_session(wired, monkeypatch):
+    """The same leg for the Critic's G1 binding (strategy-contracts.md §3.4).
+    Pinned separately from expected_decision_id because a kwarg dropped at
+    this call site is silent: handle_submit_spec_critique then sees None and
+    refuses every verdict, which reads as a seat that wrote nothing."""
+    conn, _, clock = wired
+    seen = {}
+
+    async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
+                                 journals_root, expected_decision_id=None,
+                                 expected_spec_id=None, tools=None):
+        seen["expected_spec_id"] = expected_spec_id
+        return ([], _Result(turns=1))
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _fake_seat_session)
+
+    _turn(conn, clock, seat="critic", expected_spec_id="spec_deadbeef0000")()
+
+    assert seen["expected_spec_id"] == "spec_deadbeef0000"
+
+
+def test_seat_session_threads_the_bound_spec_to_build_seat_options(monkeypatch):
+    """The leg below it. Accepting expected_spec_id and dropping it is the
+    defect this pins, one call site down from the test above."""
+    import asyncio
+
+    import claude_agent_sdk
+
+    seen = {}
+
+    def _fake_build_seat_options(cfg, db_path, clock, *, snapshot=None,
+                                 journals_root=None,
+                                 expected_decision_id=None,
+                                 expected_spec_id=None, tools=None):
+        seen["expected_spec_id"] = expected_spec_id
+        return object()
+
+    class _FakeClient:
+        def __init__(self, options):
+            self.options = options
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_run_seat_turn(client, prompt, required):
+        return ([], None)
+
+    monkeypatch.setattr(run_day_script, "build_seat_options",
+                        _fake_build_seat_options)
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setattr(run_day_script, "run_seat_turn", _fake_run_seat_turn)
+
+    asyncio.run(run_day_script._seat_session(
+        {"seat": "critic"}, ":memory:", SimClock(START), "p", None, None,
+        expected_spec_id="spec_deadbeef0000"))
+
+    assert seen["expected_spec_id"] == "spec_deadbeef0000"
 
 
 def test_make_turn_threads_a_per_turn_tool_surface_to_seat_session(
@@ -567,7 +630,7 @@ def test_make_turn_threads_a_per_turn_tool_surface_to_seat_session(
 
     async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
                                  journals_root, expected_decision_id=None,
-                                 tools=None):
+                                 expected_spec_id=None, tools=None):
         seen["tools"] = tools
         return ([], _Result(turns=1))
 
@@ -588,7 +651,7 @@ def test_a_turn_without_an_override_keeps_the_standing_surface(
 
     async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
                                  journals_root, expected_decision_id=None,
-                                 tools=None):
+                                 expected_spec_id=None, tools=None):
         seen["tools"] = tools
         return ([], _Result(turns=1))
 
@@ -612,7 +675,8 @@ def test_seat_session_forwards_the_tool_surface_to_build_seat_options(
 
     def _fake_build_seat_options(cfg, db_path, clock, *, snapshot=None,
                                  journals_root=None,
-                                 expected_decision_id=None, tools=None):
+                                 expected_decision_id=None,
+                                 expected_spec_id=None, tools=None):
         seen["tools"] = tools
         return object()
 

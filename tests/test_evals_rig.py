@@ -256,7 +256,8 @@ def test_a_critic_trial_records_the_critique_row_it_wrote(tmp_path):
             args={"spec_id": case.subjects[0], "verdict": "objections",
                   "objections": ["the rule filters the top turnover decile"]},
             now_iso=iso(case.clock), charter_version="v2",
-            model_id="claude-sonnet-5")
+            model_id="claude-sonnet-5",
+            expected_spec_id=case.subjects[0])
         return (["mcp__fund__get_spec_brief",
                  "mcp__fund__submit_spec_critique"], None)
 

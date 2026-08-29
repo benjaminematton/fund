@@ -41,10 +41,17 @@ SPEC = dict(
 
 def _submit(db, **over):
     """Every call binds attribution: the columns are NOT NULL and forbid
-    'unknown', so there is no such thing as an unattributed G1 verdict."""
+    'unknown', so there is no such thing as an unattributed G1 verdict.
+
+    It also binds the spec, defaulting to whatever the caller's own args name
+    (strategy-contracts.md §3.4). These tests are about the handler's OTHER
+    refusals — wrong seat, unregistered spec, second verdict — and an unbound
+    call is refused before any of them are reached. The binding's own refusals
+    are pinned in tests/test_spec_critique_binding.py."""
     kwargs = dict(seat="critic", args={}, now_iso=NOW,
                   charter_version=CHARTER, model_id=MODEL)
     kwargs.update(over)
+    kwargs.setdefault("expected_spec_id", kwargs["args"].get("spec_id"))
     return handle_submit_spec_critique(db, **kwargs)
 
 

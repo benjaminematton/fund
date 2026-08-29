@@ -69,9 +69,16 @@ def make_executor(conn_factory, clock, broker, seat=None, snapshot=None,
             return handle_get_spec_brief(
                 conn_factory(), seat=seat, journals_root=journals_root)
         if tool == "mcp__fund__submit_spec_critique":
+            # expected_spec_id comes from the RECORDED args: a recording is a
+            # turn that already happened, and the spec it names is the spec
+            # that turn was shown. Replay re-executes a decision, it does not
+            # re-decide one, so there is no second id here to disagree with.
+            # This exercises the binding's plumbing, not its refusals — those
+            # are pinned directly in tests/test_spec_critique_binding.py.
             return handle_submit_spec_critique(
                 conn_factory(), seat=seat, args=args, now_iso=iso(clock.now()),
-                charter_version=charter_version, model_id=model_id)
+                charter_version=charter_version, model_id=model_id,
+                expected_spec_id=args.get("spec_id"))
         raise ValueError(f"no executor for tool {tool!r}")
 
     return execute

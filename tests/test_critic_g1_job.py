@@ -71,13 +71,15 @@ def _verdict(conn, spec_id: str, verdict: str = "clear",
     """Write a verdict exactly the way a real turn does — through the handler,
     with attribution bound by the caller (strategy_critiques forbids
     'unknown'). Never a raw INSERT: a fixture that can write a row the handler
-    would refuse is a fixture that tests nothing."""
+    would refuse is a fixture that tests nothing. The spec is bound the way
+    _make_run_turn binds it for a real turn — to the spec the turn was shown,
+    which here is the one this fixture is writing for (§3.4)."""
     result = handle_submit_spec_critique(
         conn, seat="critic",
         args={"spec_id": spec_id, "verdict": verdict,
               "objections": list(objections)},
         now_iso=iso(NIGHTLY), charter_version="v3",
-        model_id="claude-sonnet-5")
+        model_id="claude-sonnet-5", expected_spec_id=spec_id)
     assert result["ok"], result
 
 
@@ -286,7 +288,8 @@ def test_a_verdict_is_written_once_so_a_re_fire_cannot_double_it(db):
     second = handle_submit_spec_critique(
         db, seat="critic",
         args={"spec_id": sid, "verdict": "clear", "objections": []},
-        now_iso=iso(NIGHTLY), charter_version="v3", model_id="claude-sonnet-5")
+        now_iso=iso(NIGHTLY), charter_version="v3", model_id="claude-sonnet-5",
+        expected_spec_id=sid)
 
     assert second["ok"] is False and "written once" in second["error"]
     assert db.execute("SELECT verdict FROM strategy_critiques WHERE spec_id = ?",
@@ -463,6 +466,29 @@ def test_the_turn_is_built_with_the_narrowed_surface(db, monkeypatch):
 
     assert seen["seat"] == "critic"
     assert seen["tools"] == critic_g1.G1_TOOLS
+
+
+def test_the_turn_is_bound_to_the_spec_it_was_shown(db, monkeypatch):
+    """The binding is inert unless _make_run_turn actually passes it
+    (strategy-contracts.md §3.4), and it is inert SILENTLY: with nothing
+    bound, handle_submit_spec_critique refuses every verdict and the night
+    reports specs that "wrote nothing" rather than a missing kwarg. Nothing
+    else in the suite reaches this call site — the run_day legs are pinned
+    with fakes, and the replay executor binds from its own recording."""
+    seen = {}
+
+    def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
+                        **kwargs):
+        seen.update(kwargs)
+        return lambda: None
+
+    monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
+
+    run_turn = critic_g1._make_run_turn(
+        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25")
+    run_turn({"spec_id": "0123456789abcdef"})
+
+    assert seen["expected_spec_id"] == "0123456789abcdef"
 
 
 # --- #169 bullet 4: the turn is replayable ---------------------------------

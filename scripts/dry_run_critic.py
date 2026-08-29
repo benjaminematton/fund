@@ -45,10 +45,14 @@ def oracle(case, charter_version: str, model_id: str):
                 f"the coded rule contradicts the hypothesis on {mentions[0]}"]
         # Attribution is bound here the way build_fund_server binds it for a
         # real turn: required, never defaulted, because strategy_critiques
-        # forbids 'unknown'.
+        # forbids 'unknown'. The spec is bound the same way (§3.4): the case's
+        # own subject is the spec this turn was shown, so the oracle submits
+        # under the same binding a nightly turn runs under rather than one the
+        # handler would refuse.
         result = handle_submit_spec_critique(
             state.conn, seat="critic", args=args, now_iso=iso(case.clock),
-            charter_version=charter_version, model_id=model_id)
+            charter_version=charter_version, model_id=model_id,
+            expected_spec_id=case.subjects[0])
         if not result["ok"]:
             raise RuntimeError(
                 f"{case.id}: the oracle's own submission was refused —"
