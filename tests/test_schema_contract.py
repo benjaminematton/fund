@@ -106,9 +106,15 @@ SPEC_SECTIONS = (
 # Spec §2 tables that deliberately have no `state/schema.sql` home. Reason per
 # table is recorded in issue #50; it is not restated here. A table listed here
 # is not compared, so removing it from the list is what binds it.
+#
+# `trial_registry` and `holdout_evaluations` came OFF this list on 2026-08-29
+# under issue #172, which is #50's Group 2: their DDL moved out of
+# fundbt/registry.py's standalone string into state/schema.sql, so both are now
+# compared character-for-character against strategy-contracts.md §2. #50's
+# Group 1 (`strategies`, `sleeves`, `shadow_fills`) is untouched — no DDL for
+# those exists anywhere in the repo.
 NO_SCHEMA_HOME = frozenset({
-    "strategies", "trial_registry", "holdout_evaluations", "sleeves",
-    "shadow_fills",
+    "strategies", "sleeves", "shadow_fills",
 })
 
 # Everything that can follow the type in a column definition.
@@ -974,6 +980,31 @@ def test_spec_ddl_executes():
                 " actually runs; fix the DDL in the spec.") from None
         finally:
             conn.close()
+
+
+def test_schema_sql_survives_a_second_executescript():
+    """Every statement in state/schema.sql must be idempotent — not just the
+    CREATE TABLEs.
+
+    state/db.py's connect() re-runs the WHOLE file whenever ANY ONE expected
+    table is missing (the `_TABLES <= have` guard), which is the mechanism by
+    which a table added here reaches an existing database with no migration
+    (pinned from the other side by tests/test_state.py:199). That mechanism
+    runs every OTHER statement in the file a second time as well.
+
+    The route this closes was opened by issue #172, which added this file's
+    first CREATE INDEX statements: `CREATE INDEX idx_trials_family` without
+    IF NOT EXISTS raises "index idx_trials_family already exists" on the second
+    pass. The symptom would be connect() failing for every live database the
+    moment some LATER lane adds an unrelated table — a failure with no visible
+    connection to the index that caused it.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(SCHEMA.read_text())
+        conn.executescript(SCHEMA.read_text())
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("table", _bound_or_sentinel())

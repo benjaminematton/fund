@@ -141,11 +141,16 @@ def test_a_current_db_is_green(tmp_path):
 
 
 def test_the_expected_table_count_is_pinned(tmp_path):
-    """12 tables today. expected_schema() reads state/schema.sql, so a table
+    """14 tables today. expected_schema() reads state/schema.sql, so a table
     added there is checked with no edit to the script — this assertion is the
     tripwire that makes such an addition deliberate. It IS a second edit, on
-    purpose: bump it in the same commit that adds the table."""
-    assert len(preflight.expected_schema()) == 12
+    purpose: bump it in the same commit that adds the table.
+
+    12 -> 14 on 2026-08-29 by CEO ruling, issue #172 — Group 2 unification
+    landed. trial_registry and holdout_evaluations moved out of
+    fundbt/registry.py's standalone DDL into state/schema.sql.
+    """
+    assert len(preflight.expected_schema()) == 14
 
 
 def test_only_column_names_are_compared(tmp_path):
@@ -285,7 +290,7 @@ def test_a_file_that_is_not_a_database_cannot_determine(tmp_path):
 
 
 def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
-    """Zero of the 12 tables is a wrong FUND_DB or a database nothing has
+    """Zero of the 14 tables is a wrong FUND_DB or a database nothing has
     initialized — not drift. Reporting UNEXPLAINED DIVERGENCE would send an
     operator hunting a schema change that never happened."""
     db = tmp_path / "fund.sqlite"
@@ -293,20 +298,30 @@ def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
     proc = _run(db)
 
     assert proc.returncode == preflight.CANNOT_DETERMINE
-    assert "none of the 12 tables" in proc.stderr
+    assert "none of the 14 tables" in proc.stderr
 
 
 def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
-    """e.g. FUND_DB pointing at fundbt's separate trial-registry DB."""
-    db = tmp_path / "registry.sqlite"
+    """A SQLite file holding NONE of state/schema.sql's tables — someone
+    else's database sitting on the FUND_DB path.
+
+    Premise inverted by CEO ruling 2026-08-29, issue #172 — Group 2
+    unification landed. This test built its stand-in out of `trial_registry`,
+    on the (then correct) reading that fundbt's trial registry lived in a
+    separate database. `trial_registry` is now one of $FUND_DB's own 14
+    tables, so it can no longer stand for "not the fund DB" — it would be read
+    as drift and reported as UNEXPLAINED DIVERGENCE. What this test asserts is
+    unchanged; only the file it points at moved.
+    """
+    db = tmp_path / "someone_elses.sqlite"
     conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE trial_registry (id INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE alembic_version (version_num TEXT PRIMARY KEY)")
     conn.commit()
     conn.close()
 
     proc = _run(db)
     assert proc.returncode == preflight.CANNOT_DETERMINE
-    assert "trial_registry" in proc.stderr        # names what it did find
+    assert "alembic_version" in proc.stderr        # names what it did find
 
 
 needs_mode_bits = pytest.mark.skipif(
@@ -388,7 +403,7 @@ def test_a_corrupt_file_is_never_blamed_on_the_directory(tmp_path):
 
 def test_a_wal_holding_the_only_copy_of_the_schema_is_read(tmp_path):
     """Why mode=ro and not immutable=1, pinned. With the DDL still in an
-    uncheckpointed `-wal`, mode=ro reads all 12 tables; immutable=1 skips the
+    uncheckpointed `-wal`, mode=ro reads all 14 tables; immutable=1 skips the
     WAL and sees the stale snapshot behind it, which would report a fully
     migrated database as empty. It also documents that a `-wal` needing replay
     does NOT fail the open — the old comment claimed it did."""
@@ -479,12 +494,27 @@ def test_only_green_is_zero(tmp_path):
 
 # --- scope: $FUND_DB only ----------------------------------------------------
 
-def test_the_registry_tables_are_out_of_scope(tmp_path):
-    """fundbt/registry.py owns trial_registry/holdout_evaluations in a
-    SEPARATE database. Expecting them in $FUND_DB would fail every run."""
+def test_the_registry_tables_are_in_scope(tmp_path):
+    """trial_registry and holdout_evaluations ARE $FUND_DB tables, so preflight
+    must expect them.
+
+    Premise inverted by CEO ruling 2026-08-29, issue #172 — Group 2
+    unification landed. Until that ruling this test read:
+
+        fundbt/registry.py owns trial_registry/holdout_evaluations in a
+        SEPARATE database. Expecting them in $FUND_DB would fail every run.
+
+    That was true and this test was right to pin it. What #172 changed is the
+    PREMISE, not the assertion's job: preflight's scope is still exactly
+    state/schema.sql, and this still pins where that scope's edge falls — now
+    from the other side. Recorded this way, and not by deleting the test, so a
+    future reader sees a human decision rather than a session that edited a
+    guard until it passed (CLAUDE.md: "Do not weaken or delete a red
+    acceptance test to make it pass").
+    """
     expected = preflight.expected_schema()
-    assert "trial_registry" not in expected
-    assert "holdout_evaluations" not in expected
+    assert "trial_registry" in expected
+    assert "holdout_evaluations" in expected
 
 
 # --- the makefile wiring -----------------------------------------------------

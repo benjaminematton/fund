@@ -185,6 +185,54 @@ CREATE TABLE IF NOT EXISTS strategy_critiques (
   created_at      TEXT NOT NULL
 );
 
+-- Append-only. EVERY backtest by ANY seat. The DSR's N comes from here.
+-- Verbatim from specs/strategy-contracts.md §2 — canonical, do not add fields
+-- here. This DDL used to live in fundbt/registry.py as a standalone string
+-- with every REFERENCES clause stripped; issue #172 (#50's Group 2) moved it
+-- here so there is one schema home. The foreign keys are now real, because
+-- state/db.py:22 sets PRAGMA foreign_keys = ON: a trial cannot be logged for a
+-- spec_id with no strategy_specs row, which is why tests/synthetic.py seeds one.
+--
+-- IF NOT EXISTS on the TABLES is load-bearing, not style: state/db.py:12
+-- matches that exact string to build _TABLES. IF NOT EXISTS on the INDEXES is
+-- load-bearing for a DIFFERENT reason and must not be dropped as redundant:
+-- connect() re-runs this WHOLE file whenever any single table is missing (the
+-- `_TABLES <= have` guard), and a bare CREATE INDEX raises "index
+-- idx_trials_family already exists" on that second pass — breaking connect()
+-- for every existing database, at a call site nowhere near this line.
+CREATE TABLE IF NOT EXISTS trial_registry (
+  run_key            TEXT PRIMARY KEY,
+  spec_id            TEXT NOT NULL REFERENCES strategy_specs(spec_id),
+  family             TEXT NOT NULL,            -- denormalized for fast family-N counts
+  config_hash        TEXT NOT NULL,
+  data_snapshot_hash TEXT NOT NULL,
+  engine_version     TEXT NOT NULL,
+  seed               INTEGER NOT NULL,
+  seat               TEXT NOT NULL,
+  stats              TEXT NOT NULL,            -- JSON: full run_backtest output (§3.2)
+  is_holdout         INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trials_family ON trial_registry(family);
+CREATE INDEX IF NOT EXISTS idx_trials_spec   ON trial_registry(spec_id);
+
+-- One row per strategy, ever. Enforces invariant 6 (holdout touched once).
+-- Verbatim from specs/strategy-contracts.md §2 — canonical, do not add fields
+-- here. run_key REFERENCES trial_registry(run_key) is the schema stating that
+-- a holdout evaluation must have a trial row. evaluate_holdout writes that
+-- row itself, before consuming the holdout (#189, landed in this same lane) —
+-- so the FK resolves on every real call. The reference still guards a wiring
+-- regression (that insert removed, reordered, or a caller that skips it), not
+-- a live defect. See fundbt/registry.py:consume_holdout for why a foreign-key
+-- violation must never be reported as an already-consumed holdout.
+CREATE TABLE IF NOT EXISTS holdout_evaluations (
+  spec_id     TEXT PRIMARY KEY REFERENCES strategy_specs(spec_id),
+  run_key     TEXT NOT NULL REFERENCES trial_registry(run_key),
+  passed      INTEGER NOT NULL,
+  detail      TEXT NOT NULL,                   -- JSON: per-check results
+  created_at  TEXT NOT NULL
+);
+
 -- protection: an append-only OBSERVATION LOG, verbatim from specs/contracts.md
 -- §2 — canonical, do not add fields here. One row each time the fund sees a
 -- protective order at the broker. Deliberately NO status column — ADR-0004

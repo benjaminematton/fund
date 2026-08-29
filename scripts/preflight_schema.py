@@ -54,9 +54,11 @@ Ambiguity is red, never green (invariant 4) — including a crash in this script
 
 EXPECTED SCHEMA IS state/schema.sql ALONE. migrations.py is the catch-up path
 TO that file, not a second source of truth; a union of a target and the
-mechanism for reaching it is just the target. Scope is `$FUND_DB` only —
-fundbt/registry.py's trial_registry/holdout_evaluations live in a separate
-database with its own DDL home, and expecting them here would fail every run.
+mechanism for reaching it is just the target. Scope is `$FUND_DB` only, and
+that file is now the whole strategy pipeline's home too: issue #172 moved
+fundbt/registry.py's trial_registry/holdout_evaluations out of a separate
+database into state/schema.sql, so preflight checks them like any other table
+and needs no special case to do it.
 """
 
 from __future__ import annotations
@@ -158,9 +160,12 @@ def check(db_path: str | None) -> tuple[int, str]:
 
     expected = expected_schema()
     # NONE of the expected tables present is not drift, it is the wrong file
-    # or an uninitialized one — a zero-byte $FUND_DB, a path typo, or the
-    # separate fundbt registry DB. Reporting that as divergence would send an
-    # operator hunting a schema change that never happened.
+    # or an uninitialized one — a zero-byte $FUND_DB, a path typo, or some
+    # other project's SQLite file. Reporting that as divergence would send an
+    # operator hunting a schema change that never happened. (The example here
+    # used to be "the separate fundbt registry DB"; issue #172 merged that
+    # database into this one, so a DB holding trial_registry is now the fund
+    # DB, not evidence against it.)
     if not (set(expected) & live_tables):
         found = ", ".join(sorted(live_tables)) if live_tables else "none"
         return (CANNOT_DETERMINE,
