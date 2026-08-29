@@ -691,3 +691,91 @@ def test_the_job_takes_its_own_lock_not_reflects():
     out of its own night, and a hung reflect hold G1 out of the next one."""
     assert critic_g1.LOCK_NAME == "critic_g1.lock"
     assert critic_g1.LOCK_NAME != "reflect_day.lock"
+
+
+# --- #169 bullet 1b: "objections -> the spec does not advance" -------------
+
+def test_an_objections_verdict_advances_nothing_because_nothing_can_advance(db):
+    """#169's bullet reads "verdict `objections` -> spec does not advance".
+    The CEO ruling of 2026-08-28 accepts this as a demonstrated VACUITY, not
+    something to simulate: there is no legal transition to withhold.
+
+      * state/transition.py's EDGES covers decisions, tickets, orders and
+        checkpoints — nothing strategy-side, and try_transition RAISES
+        IllegalTransition for a table with no machine
+      * strategy_specs has no state/status column (it is immutable
+        pre-registration; supersede via lineage, never UPDATE)
+      * no `strategies` lifecycle table exists — state/schema.sql:136 says so
+        deliberately
+      * specs/strategy-contracts.md §4's transition table has no G1 edge at all
+
+    So this asserts the ABSENCE. Inventing the edge would be this lane
+    exceeding its region into canonical schema.
+
+    WHAT THIS DOES AND DOES NOT CATCH — stated, because "the day someone adds
+    an advance path this test reddens" is more than it can promise. It reddens
+    on exactly three shapes: a new key in state/transition.py's EDGES, a
+    `strategies` table, and a `state`/`status` column on strategy_specs. It
+    would NOT catch an advance path expressed some other way — a verdict-gated
+    call into stratgate, a lifecycle column under a different name (`phase`,
+    `stage`, `g1`), a row in another table keyed by spec_id, or a scheduler
+    that reads strategy_critiques directly. Those are the shapes to look for by
+    hand when Phase 5's registration lane lands; this test is a tripwire on the
+    three most likely ones, not a proof of vacuity."""
+    from state.transition import EDGES
+
+    sid = _spec(db)
+    before = dict(db.execute("SELECT * FROM strategy_specs WHERE spec_id = ?",
+                             (sid,)).fetchone())
+
+    counts = critic_g1.critique_and_log(
+        db, FakeSlack(), SimClock(NIGHTLY),
+        lambda job: _verdict(db, job["spec_id"], "objections",
+                             ["the entry clause ignores the funding-cost"
+                              " condition the hypothesis calls essential"]))
+
+    # 1. the verdict IS written — the turn's whole deliverable
+    assert counts == {"critiqued": 1, "failed": 0}
+    row = db.execute("SELECT verdict, objections FROM strategy_critiques"
+                     " WHERE spec_id = ?", (sid,)).fetchone()
+    assert row["verdict"] == "objections"
+    assert "funding-cost" in row["objections"]
+
+    # 2. and NOTHING else moved: the spec row is byte-identical
+    after = dict(db.execute("SELECT * FROM strategy_specs WHERE spec_id = ?",
+                            (sid,)).fetchone())
+    assert after == before
+
+    # 3. because there is no advance path to withhold
+    assert "strategy_specs" not in EDGES
+    assert "strategies" not in EDGES
+    tables = {r["name"] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert "strategies" not in tables
+    columns = {r["name"] for r in db.execute("PRAGMA table_info(strategy_specs)")}
+    assert not ({"state", "status"} & columns), columns
+
+
+def test_a_clear_verdict_and_an_objecting_one_have_identical_side_effects(db):
+    """The other half of the vacuity: if a future edit ever made `clear` DO
+    something that `objections` does not, "objections does not advance" would
+    start carrying content this lane never implemented. This reddens first."""
+    cleared = _spec(db, family="F1", created_at="2026-08-20T18:00:00+00:00")
+    objected = _spec(db, family="F2", created_at="2026-08-21T18:00:00+00:00")
+
+    def _turn(job):
+        if job["spec_id"] == cleared:
+            _verdict(db, job["spec_id"], "clear")
+        else:
+            _verdict(db, job["spec_id"], "objections", ["mechanism mismatch"])
+
+    critic_g1.critique_and_log(db, FakeSlack(), SimClock(NIGHTLY), _turn)
+
+    a = dict(db.execute("SELECT * FROM strategy_specs WHERE spec_id = ?",
+                        (cleared,)).fetchone())
+    b = dict(db.execute("SELECT * FROM strategy_specs WHERE spec_id = ?",
+                        (objected,)).fetchone())
+    ignore = {"spec_id", "family", "created_at"}
+    assert {k: v for k, v in a.items() if k not in ignore} == \
+           {k: v for k, v in b.items() if k not in ignore}
+    assert specs_awaiting_critique(db) == []      # both are reviewed, neither moved
