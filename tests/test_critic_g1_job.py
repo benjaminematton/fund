@@ -405,3 +405,289 @@ def test_the_verdict_reaches_research_through_the_outbox(db):
     # reached #research, not merely somewhere.
     research = slack.posts.get("#research", [])
     assert any(sid in str(post) for post in research), slack.posts
+
+
+# --- #169 bullet 3: the turn's tool surface ---------------------------------
+
+def test_the_g1_surface_is_exactly_the_seats_two_g1_capabilities(db):
+    """Two locks, one surface. SEAT_CAPS decides which tools the fund MCP
+    server REGISTERS for this seat; G1_TOOLS decides which names the SDK makes
+    AVAILABLE for this turn. If they ever disagree, one of them is decorative
+    — and the decorative one is always the one somebody trusts."""
+    from agents.tools.fund_server import SEAT_CAPS
+
+    assert set(critic_g1.G1_TOOLS) == {
+        f"mcp__fund__{cap}" for cap in SEAT_CAPS["critic"]}
+
+
+def test_the_g1_turn_can_reach_no_broker_tool_and_no_other_submit(db, tmp_path):
+    """#169: "Critic turn cannot call any other submit_* or broker tool."
+    `tools` governs AVAILABILITY — it is the real lock; allowed_tools and
+    disallowed_tools only govern approval and fail open."""
+    from agents.seats import build_seat_options, load_seat_config
+
+    opts = build_seat_options(
+        load_seat_config(ROOT / "agents/config/critic.yaml"),
+        tmp_path / "fund.sqlite", SimClock(NIGHTLY), tools=critic_g1.G1_TOOLS)
+
+    assert opts.tools == ["mcp__fund__get_spec_brief",
+                          "mcp__fund__submit_spec_critique"]
+    assert not any(t.startswith("mcp__alpaca__") for t in opts.tools)
+    for forbidden in ("mcp__fund__submit_decision", "mcp__fund__submit_signal",
+                      "mcp__fund__submit_reflection", "mcp__fund__submit_critique",
+                      "mcp__fund__get_stage_brief", "mcp__fund__list_open_tickets",
+                      "mcp__fund__*", "Bash", "Write", "Task", "Read"):
+        assert forbidden not in opts.tools
+    # the belt stays on even though the brace already holds
+    assert "mcp__alpaca__place_*" in (opts.disallowed_tools or [])
+    assert opts.hooks in (None, {})     # no order gate on a read-only seat
+    assert opts.setting_sources == []   # no CLAUDE.md, no dev settings
+
+
+def test_the_turn_is_built_with_the_narrowed_surface(db, monkeypatch):
+    """The narrowing is inert unless _make_run_turn actually passes it."""
+    seen = {}
+
+    def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
+                        **kwargs):
+        seen.update(kwargs)
+        seen["seat"] = seat
+        return lambda: None
+
+    monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
+
+    run_turn = critic_g1._make_run_turn(
+        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25")
+    run_turn({"spec_id": "0123456789abcdef"})
+
+    assert seen["seat"] == "critic"
+    assert seen["tools"] == critic_g1.G1_TOOLS
+
+
+# --- #169 bullet 4: the turn is replayable ---------------------------------
+
+def test_the_g1_prompt_is_byte_identical_to_the_one_the_eval_rig_sends(db):
+    """evals/prompts.py's drift guard derives its seat list from run_day.SEATS,
+    where the Critic deliberately is not — so nothing else catches a prompt
+    this job sends that the rig does not evaluate, and a rig evaluating a
+    prompt production no longer sends measures nothing."""
+    from evals.prompts import PROMPT_TEMPLATES
+
+    assert critic_g1.G1_PROMPT == PROMPT_TEMPLATES["critic"]
+
+
+def test_the_prompt_carries_no_per_run_value(db, monkeypatch):
+    """CLAUDE.md: per-run values reach a seat through TOOLS, never through
+    prompt text — a baked-in value breaks replay. The brief is where every
+    per-run fact lives, and get_spec_brief's own oldest-first selector is what
+    binds this turn to a spec. Two different heads, one identical prompt."""
+    seen = []
+
+    def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
+                        **kwargs):
+        seen.append(prompt)
+        return lambda: None
+
+    monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
+
+    run_turn = critic_g1._make_run_turn(
+        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25")
+    run_turn({"spec_id": "0123456789abcdef"})
+    run_turn({"spec_id": "fedcba9876543210"})
+
+    assert set(seen) == {critic_g1.G1_PROMPT}
+    assert "0123456789abcdef" not in critic_g1.G1_PROMPT
+    assert "2026-08-25" not in critic_g1.G1_PROMPT
+
+
+def test_the_turn_emits_no_live_trace(db, monkeypatch):
+    """evals/live.py:64-80 deliberately skips strategy_critiques in its
+    rows_written scan, and says whoever adds the Critic stage must add a
+    `WHERE seat = ?` scan or live traces grade differently from eval traces of
+    the same turn. evals/ is out of this lane's region, so this job emits NO
+    live trace at all rather than a divergent one. Escalated in the plan."""
+    seen = {}
+
+    def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
+                        **kwargs):
+        seen.update(kwargs)
+        return lambda: None
+
+    monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
+
+    critic_g1._make_run_turn("critic", {}, ":memory:", SimClock(NIGHTLY), db,
+                             "2026-08-25")({"spec_id": "abc"})
+
+    assert seen.get("trace_sink") is None
+
+
+# --- the leg is last, so a failure goes RED ---------------------------------
+
+def test_a_failure_in_this_leg_exits_nonzero_so_systemd_reports_it(db):
+    """This leg is LAST on ops/fund-pnl.service, so a nonzero exit cannot cost
+    any other leg its night — close_pnl, resolve_day and reflect_day have all
+    already committed. That removes the entire reason to swallow a failure into
+    exit 0, and swallowing has a real cost: an appended alert is only visible
+    once it DRAINS, and if Slack is what broke, the drain fails too and the
+    night is invisible.
+
+    OnFailure=fund-alert@%n.service is the report path that does NOT share a
+    failure mode with this job: ops/notify_failure.sh posts by curl using
+    /etc/fund/alert-env, a different env file, no DB, no python, no fund
+    imports. It only fires if the unit fails, which requires this exit code.
+
+    Same posture as run_day.guarded, which also returns 1 — the earlier draft
+    had this backwards and called the inversion deliberate."""
+    slack = FakeSlack()
+
+    def _boom():
+        raise sqlite3.OperationalError("database is locked")
+
+    rc = critic_g1._guarded(db, slack, SimClock(NIGHTLY), _boom)
+
+    assert rc == 1
+    texts = _alert_texts(db)
+    assert len(texts) == 1 and "critic_g1_failed" in texts[0]
+    assert _undrained(db) == 0
+
+
+def test_a_hard_stop_inside_the_body_is_still_alerted_and_still_red(db):
+    """SystemExit alongside Exception, for run_day.guarded's reason: a config
+    hard stop must still say so in Slack rather than exiting silently — and
+    must still fail the unit."""
+    slack = FakeSlack()
+
+    def _stop():
+        raise SystemExit("critic_g1: something refused to start")
+
+    assert critic_g1._guarded(db, slack, SimClock(NIGHTLY), _stop) == 1
+    assert "critic_g1_failed" in _alert_texts(db)[0]
+
+
+def test_a_failure_is_still_red_when_the_recovery_drain_also_fails(db,
+                                                                  monkeypatch):
+    """The case that decides the whole exit-code question. If Slack is what
+    broke, the alert cannot be delivered — the events row sits undrained and
+    nobody sees it until the next audit. The exit code is then the ONLY signal
+    that leaves the box, so it must not be 0."""
+    def _boom():
+        raise RuntimeError("slack_sdk.errors.SlackApiError: invalid_auth")
+
+    def _drain_explodes(*a, **k):
+        raise RuntimeError("invalid_auth")
+
+    monkeypatch.setattr(critic_g1, "drain", _drain_explodes)
+
+    assert critic_g1._guarded(db, FakeSlack(), SimClock(NIGHTLY), _boom) == 1
+    assert _undrained(db) == 1        # the alert is recorded but undelivered
+
+
+def test_a_clean_run_returns_the_bodys_own_code(db):
+    """A NONZERO sentinel, deliberately. `lambda: 0` asserted against 0 cannot
+    tell pass-through from a swallow — it is the assertion that would have gone
+    green under either implementation."""
+    assert critic_g1._guarded(db, FakeSlack(), SimClock(NIGHTLY),
+                              lambda: 7) == 7
+    assert _alert_texts(db) == []
+
+
+# --- main()'s own exit codes ------------------------------------------------
+#
+# The earlier draft claimed critic_g1 "returns 0 from every failure path from
+# connect() onward", pinned by a test. It was not pinned: the test called
+# _guarded directly and never saw main() at all, and connect(),
+# load_seat_config, RealSlack, parse_channel_overrides and acquire_lock all sat
+# OUTSIDE _guarded. These tests exercise main().
+
+def test_main_exits_one_when_the_guarded_body_fails(db, tmp_path, monkeypatch):
+    """The end-to-end code, not just _guarded's. Everything main() builds is
+    faked except the decision under test: what integer reaches sys.exit."""
+    monkeypatch.setattr(critic_g1.run_day, "paper_guard", lambda env: None)
+    monkeypatch.setattr(critic_g1.run_day, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
+    monkeypatch.setattr(critic_g1, "connect", lambda p: db)
+    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+                        FakeSlack())
+    monkeypatch.setattr(critic_g1, "critique_and_log",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            sqlite3.OperationalError("database is locked")))
+
+    assert critic_g1.main([]) == 1
+    assert "critic_g1_failed" in _alert_texts(db)[0]
+
+
+def test_main_exits_zero_on_a_clean_night(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(critic_g1.run_day, "paper_guard", lambda env: None)
+    monkeypatch.setattr(critic_g1.run_day, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
+    monkeypatch.setattr(critic_g1, "connect", lambda p: db)
+    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+                        FakeSlack())
+    monkeypatch.setattr(critic_g1, "critique_and_log",
+                        lambda *a, **k: {"critiqued": 0, "failed": 0})
+
+    assert critic_g1.main([]) == 0
+    assert _alert_texts(db) == []
+
+
+def test_main_exits_zero_when_another_run_holds_the_lock(db, tmp_path,
+                                                         monkeypatch):
+    """NOT a failure: the other process is doing the work, and a red unit here
+    would page a human about a race that resolved itself correctly. This is the
+    one path that returns 0 without doing anything."""
+    monkeypatch.setattr(critic_g1.run_day, "paper_guard", lambda env: None)
+    monkeypatch.setattr(critic_g1.run_day, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: None)
+    ran = []
+    monkeypatch.setattr(critic_g1, "connect", lambda p: ran.append(p) or db)
+
+    assert critic_g1.main([]) == 0
+    assert ran == []             # it never even opened the DB
+
+
+def test_a_bad_seat_config_fails_the_unit_rather_than_passing_silently(
+        db, tmp_path, monkeypatch):
+    """load_seat_config reads agents/config/critic.yaml — a failure reflect does
+    NOT share, which is exactly why the earlier draft's "reflect would have
+    failed on the same var anyway" argument did not cover it. It is inside
+    _guarded, so it alerts with a code and exits 1."""
+    monkeypatch.setattr(critic_g1.run_day, "paper_guard", lambda env: None)
+    monkeypatch.setattr(critic_g1.run_day, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
+    monkeypatch.setattr(critic_g1, "connect", lambda p: db)
+    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+                        FakeSlack())
+    monkeypatch.setattr(critic_g1, "load_seat_config",
+                        lambda p: (_ for _ in ()).throw(
+                            FileNotFoundError("agents/config/critic.yaml")))
+
+    assert critic_g1.main([]) == 1
+    assert "critic_g1_failed" in _alert_texts(db)[0]
+    assert "FileNotFoundError" in _alert_texts(db)[0]
+
+
+# --- environment and single-instance ---------------------------------------
+
+def test_the_job_needs_the_same_env_as_its_reflect_sibling():
+    """It runs a seat (ANTHROPIC_API_KEY) and drains (SLACK_BOT_TOKEN), for the
+    same reasons reflect_day does — and build_seat_options wires the alpaca MCP
+    server unconditionally, which run_seat_turn then requires to be CONNECTED
+    even though the narrowed surface can reach none of its tools (issue #108)."""
+    assert set(critic_g1.REQUIRED_ENV) == {
+        "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "FUND_DB",
+        "SLACK_BOT_TOKEN", "ANTHROPIC_API_KEY"}
+
+
+def test_the_job_takes_its_own_lock_not_reflects():
+    """A shared lock would let a G1 turn hanging in SDK teardown hold reflect
+    out of its own night, and a hung reflect hold G1 out of the next one."""
+    assert critic_g1.LOCK_NAME == "critic_g1.lock"
+    assert critic_g1.LOCK_NAME != "reflect_day.lock"

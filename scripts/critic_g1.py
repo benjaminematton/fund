@@ -154,6 +154,7 @@ sys.path.insert(0, str(ROOT))            # `python scripts/critic_g1.py` anywher
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling run_day
 
 import run_day                                        # noqa: E402
+from agents.seats import load_seat_config             # noqa: E402
 from orchestrator.clock import et_run_date, iso       # noqa: E402
 from slackkit.outbox import drain                     # noqa: E402
 from state.db import connect                          # noqa: E402
@@ -357,3 +358,185 @@ def critique_and_log(conn, slack, clock, run_turn) -> dict:
                            f" the rest stay pending for the next night")
         drain(conn, slack, iso(clock.now()))
     return counts
+
+
+def _make_run_turn(seat: str, cfg: dict, db_path: str, clock, conn,
+                   run_date: str):
+    """Build the per-spec `run_turn` callable `critique_and_log` drives.
+
+    A named factory rather than a closure inline in main() so this seam — a
+    narrowed tool surface reaching run_day.make_turn — is unit-testable without
+    calling main(), which builds real clients.
+
+    The prompt names NO spec, and job['spec_id'] never reaches it — a per-run
+    value in prompt text breaks replay (CLAUDE.md). The id is carried on the
+    job dict purely so critique_and_log can re-read the right row afterwards.
+
+    NOTHING IS BOUND HERE, and that is a known gap rather than a design.
+    reflect passes expected_decision_id, which handle_submit_reflection checks.
+    There is no equivalent for G1: handle_submit_spec_critique takes spec_id
+    from the seat's own arguments, so get_spec_brief's oldest-first selector
+    binds only what the seat is SHOWN. critique_and_log's post-turn
+    has_verdict() re-read is what catches a verdict written for the wrong spec.
+    Adding a real binding is a fund_server.py change, out of region, escalated.
+
+    NO trace_sink, deliberately. evals/live.py's rows_written scan skips
+    strategy_critiques and documents that adding the Critic stage requires a
+    `WHERE seat = ?` scan there, or live traces grade differently from eval
+    traces of the same turn. evals/ is out of this lane's region, so this turn
+    emits no live trace at all rather than a divergent one."""
+    def run_turn(job: dict) -> None:
+        turn = run_day.make_turn(seat, cfg, db_path, clock, conn, run_date,
+                                 G1_PROMPT, tools=G1_TOOLS)
+        turn()
+    return run_turn
+
+
+def _guarded(conn, slack, clock, body) -> int:
+    """Run `body`; make sure a failure is never silent — in Slack OR to systemd.
+
+    RETURNS 1 ON FAILURE, the same posture as run_day.guarded. An earlier
+    design returned 0 here, on the theory that this leg ran BEFORE reflect on a
+    Type=oneshot unit and must never stop it. This leg is now LAST
+    (ops/fund-pnl.service; see the module docstring), so there is nothing after
+    it to protect and the entire motivation is gone.
+
+    AND RETURNING 0 WAS ACTIVELY WORSE, independent of ordering. The alert this
+    function appends is an `events` row: it is visible only once it DRAINS. If
+    the thing that broke IS Slack, the drain in the recovery path fails too,
+    the alert sits with posted_at IS NULL until the next audit, and a leg that
+    exited 0 looks to systemd exactly like a leg that succeeded. Exit 1 makes
+    OnFailure=fund-alert@%n.service fire, and ops/notify_failure.sh reaches
+    Slack by curl from /etc/fund/alert-env — a different env file, no DB, no
+    python, no fund imports — so it is the one report path that does not share
+    a failure mode with this job.
+
+    So a failure is reported twice, by two independent mechanisms: the drained
+    alert when Slack works, and the unit's own OnFailure when it does not.
+
+    A G1 leg that could not run leaves every pending spec pending, which is the
+    correct default (invariant 4) and costs nothing: specs_awaiting_critique
+    has no date bound, so tomorrow night re-selects all of it.
+
+    SystemExit alongside Exception for run_day.guarded's reason: a config hard
+    stop must still say so in Slack. The recovery is itself guarded — if the DB
+    is what broke, the original failure is the one that matters."""
+    try:
+        return body()
+    except (Exception, SystemExit) as exc:
+        text = (f"critic_g1_failed — {type(exc).__name__}: {exc}. The G1 leg"
+                " stopped here; no verdict was written, no default row exists,"
+                " and every pending spec stays pending for the next night.")
+        log(f"ALERT {text}")
+        try:
+            run_day._alert(conn, clock, "critic_g1_failed", text)
+            drain(conn, slack, iso(clock.now()))
+        except Exception as inner:
+            log(f"could not record/post that alert ({type(inner).__name__}:"
+                f" {inner}) — the failure above is the one that matters."
+                " systemd's OnFailure is what carries it out of the box now")
+        return 1
+
+
+def _build_slack(env: dict, environ):
+    """The Slack client _guarded needs in order to report anything, plus this
+    run's channel remapping.
+
+    A named seam so tests can drive main() without a network client, and so the
+    ONE thing that must exist before the guard can report is built in one
+    place."""
+    from slackkit.real import RealSlack
+
+    slack = RealSlack(env["SLACK_BOT_TOKEN"])
+    overrides = run_day.parse_channel_overrides(
+        environ.get("SLACK_CHANNEL_OVERRIDES"))
+    if overrides:
+        log(f"channel overrides active: {overrides}")
+        slack = run_day.RemappedSlack(slack, overrides)
+    return slack
+
+
+def main(argv: list[str] | None = None) -> int:
+    """WHAT SITS OUTSIDE _guarded, and why each one earns it.
+
+    The earlier draft left connect(), load_seat_config(), RealSlack(),
+    parse_channel_overrides() and acquire_lock() outside the guard while
+    claiming every failure "from connect() onward" returned 0. That claim was
+    false — load_seat_config reads agents/config/critic.yaml, a failure reflect
+    does not share — and nothing tested main() at all. The rule now is: each
+    thing outside the guard is listed with the reason it is outside.
+
+      paper_guard    invariant 1. Must exit 1 before any client exists; there
+                     is nothing to report through yet and nothing should be.
+      require_env    same. Also: reflect checks the identical REQUIRED_ENV
+                     tuple, so a missing var has already failed the leg ahead.
+      acquire_lock   it runs BEFORE connect, so there is no conn for _guarded's
+                     first argument yet. (NOT because contention would be
+                     mislabelled: contention is a None RETURN, not an
+                     exception, so the guard would never see it. An earlier
+                     draft gave that reason and it was wrong.)
+      connect        _guarded's first argument. A guard cannot alert through a
+                     connection that does not exist.
+      _build_slack   _guarded's second argument: the recovery path ends in
+                     drain(conn, slack, ...), so a guard built without `slack`
+                     could RECORD an alert but never DELIVER it.
+
+                     THIS ONE IS A CHOICE, NOT A STRUCTURAL IMPOSSIBILITY, and
+                     saying otherwise would be the same overclaim this docstring
+                     was rewritten to remove. conn already exists here, so the
+                     append half — run_day._alert — IS coverable; only the drain
+                     is not. It stays outside because a guard that records
+                     without delivering is half a guard, and the half it drops
+                     is the one an operator sees.
+
+                     CONSEQUENCE, stated so nobody discovers it in an incident:
+                     _build_slack calls run_day.parse_channel_overrides, which
+                     raises SystemExit on a malformed SLACK_CHANNEL_OVERRIDES
+                     (scripts/run_day.py:189-207) — a config hard stop exactly
+                     parallel to load_seat_config's, which DID move inside. So
+                     that one failure exits 1, the unit goes red and OnFailure
+                     fires with the journal tail, but NO critic_g1_failed row is
+                     ever written, so audit_day sees nothing and the events
+                     outbox is empty. systemd is the only witness. Accepted
+                     rather than worked around because the variable is a
+                     staging affordance: .env.example:35 ships it EMPTY and
+                     ops/staging-env.example is the only file that populates it
+                     (ops/README.md:540). A production night cannot reach this
+                     path; a staging night that does gets a red unit and a
+                     journal line naming the malformed entry.
+
+    Everything else — load_seat_config, run_date, the turn factory and the
+    queue loop — is INSIDE, and pinned by
+    test_a_bad_seat_config_fails_the_unit_rather_than_passing_silently."""
+    import os
+
+    from agents.wallclock import WallClock
+
+    environ = os.environ
+    run_day.paper_guard(environ)             # invariant 1, before anything else
+    env = run_day.require_env(REQUIRED_ENV, environ)
+
+    db_path = env["FUND_DB"]
+    lock_path = Path(db_path).parent / LOCK_NAME
+    lock = run_day.acquire_lock(lock_path)   # must outlive the run; kept in scope
+    if lock is None:
+        log(f"another critic_g1 holds {lock_path} — exiting 0 rather than"
+            " racing it (two overlapping runs = two paid turns per spec)")
+        return 0
+
+    clock = WallClock()
+    conn = connect(db_path)
+    slack = _build_slack(env, environ)
+
+    def _body() -> int:
+        cfg = load_seat_config(SEAT_CONFIG)
+        run_date = et_run_date(clock.now())  # cost lands on the day it ran
+        run_turn = _make_run_turn(SEAT, cfg, db_path, clock, conn, run_date)
+        critique_and_log(conn, slack, clock, run_turn)
+        return 0
+
+    return _guarded(conn, slack, clock, _body)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
