@@ -3,17 +3,18 @@ the pipeline is deterministic, so any drift here is a behavior change that
 needs a deliberate re-record (same policy as recordings/ in the main repo)."""
 
 import fundbt.rules  # noqa: F401
-from fundbt.registry import TrialRegistry
 from fundbt.run_backtest import evaluate_holdout, run_backtest
 from stratgate.gate import evaluate_g2, evaluate_g3
-from tests.synthetic import GOLDEN_PARAMS, make_market, make_spec
+from tests.synthetic import (GOLDEN_PARAMS, make_market, make_registry,
+                             make_spec)
 
 NOW = "2026-07-09T00:00:00Z"
 FAIL_PARAMS = {"dip_days": 3, "dip_pct": 0.03, "trend_days": 150}
 
 
 def test_golden_pass_path():
-    close, spec, reg = make_market(), make_spec(), TrialRegistry(":memory:")
+    spec = make_spec()
+    close, reg = make_market(), make_registry(spec)
     r = run_backtest(spec=spec, params=GOLDEN_PARAMS, close=close,
                      registry=reg, seat="quant", now_iso=NOW)
 
@@ -45,7 +46,8 @@ def test_golden_pass_path():
 
 
 def test_golden_fail_path():
-    close, spec, reg = make_market(), make_spec(), TrialRegistry(":memory:")
+    spec = make_spec()
+    close, reg = make_market(), make_registry(spec)
     r = run_backtest(spec=spec, params=FAIL_PARAMS, close=close,
                      registry=reg, seat="quant", now_iso=NOW)
     assert r["n_trades"] == 1473

@@ -125,3 +125,37 @@ def seed_spec_row(conn: sqlite3.Connection, spec: dict | None = None) -> str:
         values)
     conn.commit()
     return spec["spec_id"]
+
+
+def make_registry(spec: dict | None = None) -> "TrialRegistry":
+    """A TrialRegistry over a FRESH fund-schema database, spec row seeded.
+
+    In-memory and per call: that rules out CROSS-test pollution by
+    construction — no test's family N can carry into another test's registry.
+    It does NOT by itself pin fixtures/golden-strategy.md:46's frozen
+    `deflated_sharpe (N=1) = 1.000000`: run_backtest computes
+    family_n(family) + 1 with no scoping, so a holdout-then-family-trial
+    sequence would move N even in a registry this fresh. That number stays
+    N=1 because no golden test runs a further family trial after a G3 holdout
+    on its own registry — per-test isolation, not construction, is what keeps
+    it true (see Task 5 Step 5 and fixtures/golden-strategy.md's own note). A
+    registry SHARED across tests would additionally leak N across tests,
+    which this function does rule out — but that is a narrower guarantee than
+    the docstring here used to claim.
+
+    state.db.connect() applies state/schema.sql and sets
+    PRAGMA foreign_keys = ON, so these tests exercise the real fund schema with
+    the real foreign keys — which is the whole point of #172. `:memory:` rather
+    than a tmp_path file because the guarantee wanted here is a fresh database,
+    not a filesystem.
+
+    Deliberately NOT a pytest fixture: tests/run_tests.py is a second,
+    zero-dependency runner that calls every test_* with NO arguments, and it is
+    not in `make test`. A fixture parameter would break it silently.
+    """
+    from fundbt.registry import TrialRegistry
+    from state.db import connect
+
+    conn = connect(":memory:")
+    seed_spec_row(conn, spec)
+    return TrialRegistry(conn)
