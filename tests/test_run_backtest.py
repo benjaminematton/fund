@@ -7,7 +7,9 @@ import fundbt.rules  # noqa: F401  (registers dip_buyer)
 from fundbt.registry import TrialRegistry
 from fundbt.run_backtest import (BacktestError, evaluate_holdout, run_backtest,
                                  snapshot_hash)
-from tests.synthetic import GOLDEN_PARAMS, make_market, make_spec
+from state.db import connect
+from tests.synthetic import (GOLDEN_PARAMS, make_market, make_spec,
+                             seed_spec_row)
 
 NOW = "2026-07-09T00:00:00Z"
 
@@ -102,3 +104,21 @@ def test_holdout_single_touch():
         raise AssertionError("should have raised")
     except BacktestError as e:
         assert "holdout_already_consumed" in str(e)
+
+
+def test_the_golden_spec_has_a_strategy_specs_row():
+    """trial_registry.spec_id REFERENCES strategy_specs(spec_id), and
+    state/db.py turns foreign keys ON, so registry.log() for the golden spec is
+    only possible if this row exists. make_spec()'s id is baked into
+    tests/test_golden.py's frozen hashes and cannot be changed, so the row is
+    seeded to match the id rather than the other way round (issue #172).
+    """
+    spec = make_spec()
+    conn = connect(":memory:")
+    seed_spec_row(conn, spec)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategy_specs WHERE spec_id = ?",
+        (spec["spec_id"],)).fetchone()[0] == 1
+    seed_spec_row(conn, spec)                    # idempotent: no PK explosion
+    assert conn.execute(
+        "SELECT COUNT(*) FROM strategy_specs").fetchone()[0] == 1
