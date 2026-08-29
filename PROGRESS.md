@@ -437,7 +437,7 @@ hosts means genuine duplicate orders that `client_order_id` cannot dedupe.
 | unit | fires | does |
 |---|---|---|
 | `fund-daily.timer` | 09:35 ET Mon–Fri | full trading day, self-audits |
-| `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY, **then writes the nightly `resolutions`, then reflects** — three `ExecStart=` lines, in that order (`ops/fund-pnl.service:19,26,32`) |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | posts P&L $ / % vs SPY, **then writes the nightly `resolutions`, then reflects, then runs the G1 critique turn** — four `ExecStart=` lines, in that order (`ops/fund-pnl.service`) |
 | `fund-backup.timer` | 17:30 ET daily | atomic, integrity-checked snapshot — DB, journals and traces |
 | `fund-alert@.service` | on any of the preceding three timers failing | posts the failure to `#risk`, mentioning the operator |
 | healthchecks.io `fund-daily` | **when a 09:35 ping does not arrive, or arrives non-zero** | alerts `#risk` + email at 10:20 ET |

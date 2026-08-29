@@ -504,7 +504,7 @@ def test_seat_session_threads_the_bound_id_to_build_seat_options(monkeypatch):
 
     def _fake_build_seat_options(cfg, db_path, clock, *, snapshot=None,
                                  journals_root=None,
-                                 expected_decision_id=None):
+                                 expected_decision_id=None, tools=None):
         seen["expected_decision_id"] = expected_decision_id
         return object()          # opaque; only ClaudeSDKClient below sees it
 
@@ -544,7 +544,8 @@ def test_make_turn_threads_the_bound_id_to_seat_session(wired, monkeypatch):
     seen = {}
 
     async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
-                                 journals_root, expected_decision_id=None):
+                                 journals_root, expected_decision_id=None,
+                                 tools=None):
         seen["expected_decision_id"] = expected_decision_id
         return ([], _Result(turns=1))
 
@@ -553,6 +554,91 @@ def test_make_turn_threads_the_bound_id_to_seat_session(wired, monkeypatch):
     _turn(conn, clock, seat="reflect", expected_decision_id=99)()
 
     assert seen["expected_decision_id"] == 99
+
+
+def test_make_turn_threads_a_per_turn_tool_surface_to_seat_session(
+        wired, monkeypatch):
+    """The nightly G1 leg (#169) narrows the Critic to two tools for one turn.
+    That narrowing is inert unless make_turn actually carries it down — the
+    same class of hole test_read_only_seats_cannot_trade closes for the yaml
+    value, which is why the id-binding chain above is pinned leg by leg."""
+    conn, _, clock = wired
+    seen = {}
+
+    async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
+                                 journals_root, expected_decision_id=None,
+                                 tools=None):
+        seen["tools"] = tools
+        return ([], _Result(turns=1))
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _fake_seat_session)
+
+    _turn(conn, clock, seat="critic",
+          tools=["mcp__fund__get_spec_brief"])()
+
+    assert seen["tools"] == ["mcp__fund__get_spec_brief"]
+
+
+def test_a_turn_without_an_override_keeps_the_standing_surface(
+        wired, monkeypatch):
+    """Additive by construction: `tools` defaults to None and every trading-day
+    call site omits it, so SEATS' four turns are byte-identical to before."""
+    conn, _, clock = wired
+    seen = {}
+
+    async def _fake_seat_session(cfg, db_path, clk, prompt, snapshot,
+                                 journals_root, expected_decision_id=None,
+                                 tools=None):
+        seen["tools"] = tools
+        return ([], _Result(turns=1))
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _fake_seat_session)
+
+    _turn(conn, clock, seat="analyst")()
+
+    assert seen["tools"] is None
+
+
+def test_seat_session_forwards_the_tool_surface_to_build_seat_options(
+        monkeypatch):
+    """The leg below make_turn: accepting the parameter and dropping it is the
+    exact defect test_seat_session_threads_the_bound_id_to_build_seat_options
+    exists to catch for expected_decision_id."""
+    import asyncio
+
+    import claude_agent_sdk
+
+    seen = {}
+
+    def _fake_build_seat_options(cfg, db_path, clock, *, snapshot=None,
+                                 journals_root=None,
+                                 expected_decision_id=None, tools=None):
+        seen["tools"] = tools
+        return object()
+
+    class _FakeClient:
+        def __init__(self, options):
+            self.options = options
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_run_seat_turn(client, prompt, required):
+        return ([], None)
+
+    monkeypatch.setattr(run_day_script, "build_seat_options",
+                        _fake_build_seat_options)
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setattr(run_day_script, "run_seat_turn", _fake_run_seat_turn)
+
+    asyncio.run(run_day_script._seat_session(
+        {"seat": "critic"}, ":memory:", SimClock(START), "p", None, None,
+        tools=["mcp__fund__get_spec_brief"]))
+
+    assert seen["tools"] == ["mcp__fund__get_spec_brief"]
 
 
 # --- make_turn: a seat failure degrades to HOLD, it does not abort the day --

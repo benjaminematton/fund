@@ -1,0 +1,2 @@
+{"seat": "critic", "tool": "mcp__fund__get_spec_brief", "args": {}}
+{"seat": "critic", "tool": "mcp__fund__submit_spec_critique", "args": {"spec_id": "spec_985a0a8db6b84ce8", "verdict": "clear", "objections": []}}

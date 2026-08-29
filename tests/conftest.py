@@ -21,7 +21,7 @@ def sim_clock():
 
 
 def make_executor(conn_factory, clock, broker, seat=None, snapshot=None,
-                  journals_root=None):
+                  journals_root=None, charter_version=None, model_id=None):
     """Real tool execution for replay mode (acceptance §0): Alpaca tools hit
     the in-memory broker; fund tools hit the real temp DB. `seat` binds the
     submit_signal/submit_decision/get_stage_brief handlers' seat guard — the
@@ -29,12 +29,19 @@ def make_executor(conn_factory, clock, broker, seat=None, snapshot=None,
     replaying a single seat's recording pass it once here rather than per
     line. `snapshot`/`journals_root` are the stage-brief providers the live
     composition root injects; a replay that leaves them unbound exercises
-    get_stage_brief's degraded path, which is a real production posture."""
+    get_stage_brief's degraded path, which is a real production posture.
+    `charter_version`/`model_id` bind submit_spec_critique's attribution the
+    same way — REQUIRED there, not defaulted, because strategy_critiques
+    CHECK-rejects 'unknown'/'none' (unlike submit_signal/submit_decision,
+    which default to 'unknown' below); a critic replay that omits them fails
+    loud at the DB, not silently."""
     from gate.tickets import open_tickets
 
-    from agents.tools.fund_server import (handle_get_stage_brief,
+    from agents.tools.fund_server import (handle_get_spec_brief,
+                                          handle_get_stage_brief,
                                           handle_submit_decision,
                                           handle_submit_signal,
+                                          handle_submit_spec_critique,
                                           run_date_from_clock)
     from tests.fake_alpaca import mcp_envelope
 
@@ -58,6 +65,13 @@ def make_executor(conn_factory, clock, broker, seat=None, snapshot=None,
             return handle_submit_decision(
                 conn_factory(), seat=seat, args=args,
                 run_date=run_date_from_clock(clock), now_iso=iso(clock.now()))
+        if tool == "mcp__fund__get_spec_brief":
+            return handle_get_spec_brief(
+                conn_factory(), seat=seat, journals_root=journals_root)
+        if tool == "mcp__fund__submit_spec_critique":
+            return handle_submit_spec_critique(
+                conn_factory(), seat=seat, args=args, now_iso=iso(clock.now()),
+                charter_version=charter_version, model_id=model_id)
         raise ValueError(f"no executor for tool {tool!r}")
 
     return execute

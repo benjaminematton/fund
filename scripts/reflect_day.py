@@ -20,8 +20,15 @@ because it posts nothing and runs no seat: an unrelated missing var must not
 stop the calibration record being written. This job runs seats, which cost
 money and can fail, and a failed turn appends an alert. audit_day's
 undrained-events check has NO date bound, so an alert this job cannot drain
-reddens tomorrow's audit. It runs last, so a missing token here cannot stop
-close_pnl or resolve_day, both of which have already committed.
+reddens tomorrow's audit. It runs behind both arithmetic legs, so a missing
+token here cannot stop close_pnl or resolve_day, both of which have already
+committed.
+
+scripts/critic_g1.py (issue #169) runs after it, placed there because a G1
+miss is re-selected every future night (state/specs.py has no date bound)
+while a reflection miss is destroyed after REFLECT_LOOKBACK_DAYS. Nothing
+about this leg's own posture changes — it still runs after everything that
+must not be blocked by a missing token.
 
 Posture (invariant 4: no row beats a wrong row):
   * ALPACA_PAPER_TRADE != 'true'  -> exit 1 before a client is built

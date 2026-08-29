@@ -1,5 +1,5 @@
 [Unit]
-Description=fund — post-close jobs (P&L $ and %% vs SPY; nightly resolutions; reflections)
+Description=fund — post-close jobs (P&L $ and %% vs SPY; nightly resolutions; G1 critiques; reflections)
 Documentation=file:///opt/fund/ops/README.md
 OnFailure=fund-alert@%n.service
 
@@ -24,13 +24,40 @@ ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/close_pnl.py
 # resolutions write — acceptable, since both are retried on the next fire and
 # resolve_day selects only what is still outstanding.
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/resolve_day.py
-# Third and last: the reflection turns. Runs only if both legs above
-# succeeded, which is correct — if nothing resolved, nothing is reflectable.
-# It is last deliberately: it is the only leg that spends LLM budget and the
-# only one that can fail on a missing ANTHROPIC_API_KEY or SLACK_BOT_TOKEN, so
-# a failure here cannot cost the fund its P&L line or its calibration record.
+# Third: the reflection turns. Runs only if both legs above succeeded, which is
+# correct — if nothing resolved, nothing is reflectable. It is ahead of the G1
+# leg deliberately, and the reason is PERISHABILITY: reflect_day selects on
+# resolved_at inside a REFLECT_LOOKBACK_DAYS=7 window and its _AGED_OUT_WHERE
+# exists to alert on rows that fell below that window and will NEVER be
+# written. A reflection this unit fails to buy for seven nights is destroyed.
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/reflect_day.py
+# Fourth and last: nightly G1 enforcement (issue #169). One Critic turn per
+# pending strategy spec, hard-capped at scripts/critic_g1.py's
+# MAX_G1_TURNS_PER_NIGHT.
+#
+# LAST, not before reflect, and the ordering is behaviour. Three reasons:
+#   1. The rule this file already committed to. reflect went last because "it
+#      is the only leg that spends LLM budget and the only one that can fail on
+#      a missing ANTHROPIC_API_KEY or SLACK_BOT_TOKEN". That is now true of two
+#      legs, and this is the newer, more optional one.
+#   2. This leg's misses are recoverable and reflect's are not.
+#      state/specs.py:specs_awaiting_critique selects on `c.spec_id IS NULL`
+#      with NO date bound: a spec skipped tonight is re-selected every future
+#      night, forever. Losing this leg's window costs a night, never a spec.
+#   3. Losing it is not silent. OnFailure= above fires on an overrun, a nonzero
+#      exit, or the guillotine — via ops/notify_failure.sh, which shares no
+#      dependency with the job it watches.
+#
+# critic_g1.py exits NONZERO on failure, on purpose: nothing runs after it, and
+# an alert that only reaches the `events` outbox is invisible when Slack is the
+# thing that broke. Do not "tidy" that into a return 0 — the exit code is what
+# makes the OnFailure= line above cover this leg.
+ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/critic_g1.py
 # 30min, matching fund-daily.service: this budget now has to cover N seat
-# turns, not two arithmetic jobs, and 30min is already the number this repo
-# uses to bound a hung LLM call.
+# turns across TWO seat-running legs, not two arithmetic jobs. Deliberately NOT
+# raised for the G1 leg. Realistic load is ~3 reflect turns (config/watchlist
+# .yaml caps the universe at 3 tickers) plus <=3 G1 turns, ~24 min of ceiling
+# against a 30 min budget; MAX_TURNS_PER_NIGHT=25 is a backstop, not a forecast.
+# This is a guillotine, not a schedule; which leg it lands on is decided by the
+# ORDER above, not by this number. Raise it only with a measurement.
 TimeoutStartSec=30min
