@@ -249,18 +249,24 @@ def load_watchlist(path: Path) -> list[str]:
 # --- seat turns -------------------------------------------------------------
 
 async def _seat_session(cfg: dict, db_path: str, clock, prompt: str,
-                        snapshot, journals_root, expected_decision_id=None):
+                        snapshot, journals_root, expected_decision_id=None,
+                        tools=None):
     """One seat's live SDK session. Options ALWAYS via build_seat_options —
     the tool surface, settings isolation and order hooks are decided there,
     never here (tests/test_exec_seat_tool_surface.py pins them).
 
     `expected_decision_id` is None for every seat but reflect; see
-    build_seat_options."""
+    build_seat_options.
+
+    `tools` is None for every trading-day turn. scripts/critic_g1.py passes the
+    G1 pair to narrow the Critic for that one nightly turn; build_seat_options
+    refuses anything the seat's yaml does not already grant."""
     from claude_agent_sdk import ClaudeSDKClient
 
     options = build_seat_options(cfg, db_path, clock, snapshot=snapshot,
                                  journals_root=journals_root,
-                                 expected_decision_id=expected_decision_id)
+                                 expected_decision_id=expected_decision_id,
+                                 tools=tools)
     async with ClaudeSDKClient(options=options) as client:
         return await run_seat_turn(client, prompt, REQUIRED_SERVERS)
 
@@ -358,7 +364,8 @@ def emit_trace_guarded(seat: str, cfg: dict, run_date: str, turn_seq,
 
 def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
               prompt: str, snapshot=None, journals_root=None,
-              trace_sink=None, turn_seq=None, expected_decision_id=None):
+              trace_sink=None, turn_seq=None, expected_decision_id=None,
+              tools=None):
     """The injected run_turn callable orchestrator/daily.py drives.
 
     `snapshot`/`journals_root` are this day's get_stage_brief providers, passed
@@ -367,6 +374,9 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
 
     `expected_decision_id` is scripts/reflect_day.py's binding for its
     submit_reflection call; every other caller leaves it None.
+
+    `tools` is scripts/critic_g1.py's per-turn narrowing of the Critic's
+    surface to the two G1 tools; every other caller leaves it None.
 
     Records the turn's cost after EVERY turn (the only production caller of
     record_turn_result) and never propagates: a seat that blows up leaves one
@@ -378,7 +388,8 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
             names, result = asyncio.run(_bounded(
                 _seat_session(cfg, db_path, clock, prompt, snapshot,
                               journals_root,
-                              expected_decision_id=expected_decision_id),
+                              expected_decision_id=expected_decision_id,
+                              tools=tools),
                 SEAT_MAX_WALL_S))
         except SeatTurnTimeout as exc:
             # Its own code, because the alert filer opens one issue per code
