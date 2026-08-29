@@ -248,7 +248,8 @@ def evaluate_holdout(
     through THIS function today, since the trial-row insert above always logs
     before consume_holdout runs. It is a guard against a future wiring
     regression, exercised directly by a test that calls consume_holdout
-    without that insert (CEO ruling 2026-08-29, issue #172)."""
+    without that insert (CEO ruling 2026-08-29, issue #189:
+    https://github.com/benjaminematton/fund/issues/189#issuecomment-5462868228)."""
     floor = costs.floor_for(spec["liquidity_bucket"])
     cutoff = close.index.max() - pd.DateOffset(months=holdout_months)
     window = close.loc[close.index > cutoff]
@@ -271,7 +272,10 @@ def evaluate_holdout(
     # this row, holdout_evaluations.run_key REFERENCES trial_registry(run_key)
     # structurally requires it, and strategy-contracts.md:260 counts N
     # unfiltered. Erring toward a higher N is the conservative direction for a
-    # gate. (#189, folded into #172 by CEO ruling 2026-08-29.)
+    # gate. (#189, folded into #172 by CEO ruling 2026-08-29.) A second holdout
+    # with different params mints a different run_key, so its trial row lands
+    # (N +1) before consume_holdout raises holdout_already_consumed — a
+    # refused attempt is still a spent trial.
     #
     # seat="orchestrator": trial_registry.seat is TEXT NOT NULL and this
     # function takes no seat parameter, so a value has to be chosen. This one is

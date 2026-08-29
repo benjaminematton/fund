@@ -146,9 +146,10 @@ def test_the_expected_table_count_is_pinned(tmp_path):
     tripwire that makes such an addition deliberate. It IS a second edit, on
     purpose: bump it in the same commit that adds the table.
 
-    12 -> 14 on 2026-08-29 by CEO ruling, issue #172 — Group 2 unification
-    landed. trial_registry and holdout_evaluations moved out of
-    fundbt/registry.py's standalone DDL into state/schema.sql.
+    12 -> 14 on 2026-08-29 — issue #172
+    (https://github.com/benjaminematton/fund/issues/172#issuecomment-5460532548)
+    — Group 2 unification landed. trial_registry and holdout_evaluations moved
+    out of fundbt/registry.py's standalone DDL into state/schema.sql.
     """
     assert len(preflight.expected_schema()) == 14
 
@@ -305,13 +306,14 @@ def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
     """A SQLite file holding NONE of state/schema.sql's tables — someone
     else's database sitting on the FUND_DB path.
 
-    Premise inverted by CEO ruling 2026-08-29, issue #172 — Group 2
-    unification landed. This test built its stand-in out of `trial_registry`,
-    on the (then correct) reading that fundbt's trial registry lived in a
-    separate database. `trial_registry` is now one of $FUND_DB's own 14
-    tables, so it can no longer stand for "not the fund DB" — it would be read
-    as drift and reported as UNEXPLAINED DIVERGENCE. What this test asserts is
-    unchanged; only the file it points at moved.
+    Premise inverted by issue #172
+    (https://github.com/benjaminematton/fund/issues/172#issuecomment-5460532548)
+    — Group 2 unification landed. This test built its stand-in out of
+    `trial_registry`, on the (then correct) reading that fundbt's trial
+    registry lived in a separate database. `trial_registry` is now one of
+    $FUND_DB's own 14 tables, so it can no longer stand for "not the fund DB"
+    — it would be read as drift and reported as UNEXPLAINED DIVERGENCE. What
+    this test asserts is unchanged; only the file it points at moved.
     """
     db = tmp_path / "someone_elses.sqlite"
     conn = sqlite3.connect(db)
@@ -498,8 +500,9 @@ def test_the_registry_tables_are_in_scope(tmp_path):
     """trial_registry and holdout_evaluations ARE $FUND_DB tables, so preflight
     must expect them.
 
-    Premise inverted by CEO ruling 2026-08-29, issue #172 — Group 2
-    unification landed. Until that ruling this test read:
+    Premise inverted by issue #172
+    (https://github.com/benjaminematton/fund/issues/172#issuecomment-5460532548)
+    — Group 2 unification landed. Until then this test read:
 
         fundbt/registry.py owns trial_registry/holdout_evaluations in a
         SEPARATE database. Expecting them in $FUND_DB would fail every run.
