@@ -1,7 +1,7 @@
 # fund — see CLAUDE.md for what each mode means.
 
 .PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight dev-status
-.PHONY: staging-day staging-reset eval eval-report
+.PHONY: staging-day staging-reset eval eval-report critic-g1 critic-gate
 .PHONY: eval-critic-dev eval-critic-holdout
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
@@ -169,6 +169,36 @@ resolve: deps
 # resolve — nothing is reflectable until resolve has written the outcome.
 reflect: deps
 	$(PYTHON) scripts/reflect_day.py
+
+# Nightly G1 enforcement: registered strategy specs with no verdict -> one
+# Critic turn each (issue #169). Rides the same 16:35 fire, FOURTH and last,
+# after reflect — ops/fund-pnl.service explains why the leg whose misses are
+# recoverable goes behind the leg whose misses are not.
+# Safe to re-run and cheap to re-run: a spec that already carries a verdict is
+# not selected again, so a re-fire pays only for what is still pending. Costs
+# $0 on a night with an empty queue, which is every night until a
+# submit_strategy_spec producer exists.
+critic-g1: deps
+	$(PYTHON) scripts/critic_g1.py
+
+# The G1 SHIP GATE. Scores a recorded Critic eval run per class: nonzero
+# unless detection >= 8/9 and false alarm <= 1/9, with clean containment and
+# clean trial counts.
+#
+# NEVER in `make test` and never on a timer. It grades REAL recorded LLM
+# trials, and `--split holdout` reads a holdout that can only be spent once
+# (specs/strategy.md invariant 6). `make test` stays free and offline.
+#
+# This is the recorded precondition for the Critic's FIRST live G1 night —
+# ops/README.md § "Before the Critic's first live G1 night" is the checklist.
+# Until issue #169 nothing invoked this script at all; an orphaned gate that
+# decides whether G1 ships is how the stop-leg class of incident happens.
+#
+# LABEL is required, and required LOUDLY: traces are keyed by git sha, so an
+# unlabelled run silently overwrites the control baseline (scripts/eval_suite.py).
+critic-gate: deps
+	@test -n "$(LABEL)" || { echo "critic-gate: LABEL=<run-label> is required (see ops/README.md)" >&2; exit 2; }
+	$(PYTHON) scripts/critic_gate.py $(LABEL) --split holdout
 
 # Read-only production health check for developers: is every stated invariant
 # and Phase 2 acceptance criterion still true on the box that trades?

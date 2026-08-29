@@ -30,11 +30,11 @@ journal: `journalctl -u fund-daily`.
 | unit | fires | runs |
 |---|---|---|
 | `fund-daily.timer` | 09:35 ET Mon–Fri | `scripts/run_day.py` |
-| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py`, then `scripts/reflect_day.py` |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py`, then `scripts/reflect_day.py`, then `scripts/critic_g1.py` |
 | `fund-backup.timer` | 17:30 ET daily | `ops/backup.sh` |
 | `fund-alert@.service` | on any of the above failing | `ops/notify_failure.sh` |
 
-Three things about these are deliberate and should not be "tidied":
+Four things about these are deliberate and should not be "tidied":
 
 - **The timezone is pinned in the `OnCalendar` expression**, not only on the
   host, so the schedule stays correct if the box's timezone is ever changed.
@@ -43,6 +43,17 @@ Three things about these are deliberate and should not be "tidied":
   fire is skipped, not caught up.
 - **No `Restart=` anywhere.** Invariant 4's default is HOLD. A failed day waits
   for a human; it does not retry itself.
+- **The nightly unit's leg order is behaviour, not formatting.** `Type=oneshot`
+  shares one `TimeoutStartSec` across all four legs, so the last leg is the one
+  the guillotine lands on. `critic_g1.py` is last **because its misses are
+  recoverable**: `specs_awaiting_critique` has no date bound, so a spec skipped
+  tonight is re-selected every future night. `reflect_day.py` is ahead of it
+  because its `_DUE_WHERE` window is seven nights wide and a reflection that
+  falls out of it is destroyed. It is also the older of the two LLM-spending
+  legs, and this unit's stated rule is that LLM-spending legs go behind the
+  arithmetic ones. Losing a leg is never silent — `OnFailure=` fires on an
+  overrun, a nonzero exit or the guillotine. Pinned by
+  `tests/test_ops_units.py`.
 
 `16:35` is measured, not chosen: `close_frame` shifts its end back `SIP_DELAY`
 (16 min), so a 16:15 fire asks for a 15:59 bar the closing auction has not
@@ -139,9 +150,12 @@ projection event on purpose, because `drain` posts every unposted row and one
 event per reflection would mean one Slack message per resolved decision, every
 night. `SLACK_BOT_TOKEN` is needed only to drain this job's own alerts (a
 failed turn, a wrote-nothing rollup, a capped backlog, an aged-out decision).
-It is the third and last leg of `fund-pnl.timer`, so a missing key does not
-block P&L or resolution posts — only this job's own alerting. It runs last
-deliberately for this reason.
+It is the third leg of `fund-pnl.timer`, so a missing key does not block P&L or
+resolution posts — only this job's own alerting. It runs behind the arithmetic
+legs deliberately for this reason. It is no longer the *last* leg:
+`scripts/critic_g1.py` (issue #169) runs fourth, and needs the same two keys
+for the same reasons. Both LLM-spending legs sit behind both arithmetic ones;
+`ops/fund-pnl.service` explains the order between the two of them.
 
 `/etc/fund/env` also carries the heartbeat target, which is why the units can
 stay free of any hardcoded monitoring URL:
@@ -566,6 +580,37 @@ cp ~/fund-rollback/com.fund.daily.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.fund.daily.plist
 ```
 
+## Before the Critic's first live G1 night
+
+`scripts/critic_g1.py` is on the 16:35 unit from the moment it is deployed, and
+it spends real LLM budget the first night a strategy spec is pending. Do these
+once, in order, before that night.
+
+`scripts/critic_gate.py` says of itself that it "decides whether the G1 gate
+ships, and the holdout it reads can only be spent once" — and until issue #169
+nothing invoked it: not CI, not the Makefile, not systemd. An orphaned gate is
+how the stop-leg class of incident happens, in eval form. This checklist is the
+closure of that gap.
+
+```bash
+make eval-critic-holdout LABEL=<label>   # ~$0.81, ~7 min, hits the network
+make critic-gate LABEL=<label>           # must print GATE PASS
+```
+
+1. `make eval-critic-holdout` records the holdout trials. Run it **once**: the
+   holdout must never inform the charter afterwards (`specs/strategy.md`
+   invariant 6).
+2. `make critic-gate` is nonzero unless detection ≥ 8/9, false alarm ≤ 1/9,
+   containment clean and trial counts clean. A red gate means the verdicts this
+   job writes are not trustworthy.
+3. **If the gate is red**, comment out the `critic_g1.py` `ExecStart` line in
+   `ops/fund-pnl.service`, `systemctl daemon-reload`, and file the failure.
+   Leaving a red gate wired means a spec gets cleared by nobody.
+
+The gate is deliberately not in `make test` and not on a timer: `make test` is
+free and offline, and this grades real recorded trials against a one-shot
+holdout.
+
 ## Daily operations
 
 ```bash
@@ -573,7 +618,8 @@ journalctl -u fund-daily -n 100 --no-pager     # the day's log
 journalctl -u fund-daily --since "09:30"       # this morning
 systemctl list-timers 'fund-*' --no-pager      # when does it next fire
 systemctl --failed                             # anything broken
-systemctl start fund-pnl.service               # P&L digest + resolutions by hand
+systemctl start fund-pnl.service               # P&L + resolutions + reflections + G1 by hand
+journalctl -u fund-pnl -n 200 --no-pager       # what the four nightly legs did
 ls -la /var/lib/fund/backups/                  # snapshots
 ```
 

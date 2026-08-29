@@ -23,6 +23,12 @@ undrained-events check has NO date bound, so an alert this job cannot drain
 reddens tomorrow's audit. It runs last, so a missing token here cannot stop
 close_pnl or resolve_day, both of which have already committed.
 
+It is no longer the LAST leg: scripts/critic_g1.py (issue #169) runs after it,
+placed there because a G1 miss is re-selected every future night
+(state/specs.py has no date bound) while a reflection miss is destroyed after
+REFLECT_LOOKBACK_DAYS. Nothing about this leg's own posture changes — it still
+runs after everything that must not be blocked by a missing token.
+
 Posture (invariant 4: no row beats a wrong row):
   * ALPACA_PAPER_TRADE != 'true'  -> exit 1 before a client is built
   * a missing env var             -> exit 1 naming every missing var
