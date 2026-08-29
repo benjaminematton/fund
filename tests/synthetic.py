@@ -7,6 +7,9 @@ return gets a positive kick. Deterministic: same seed, same market, forever.
 
 from __future__ import annotations
 
+import json
+import sqlite3
+
 import numpy as np
 import pandas as pd
 
@@ -57,3 +60,102 @@ def make_spec(spec_id: str = "spec_golden000000f1") -> dict:
 
 
 GOLDEN_PARAMS = {"dip_days": 5, "dip_pct": 0.05, "trend_days": 200}
+
+
+# --- fund-DB fixtures ------------------------------------------------------
+# state/schema.sql declares trial_registry.spec_id REFERENCES
+# strategy_specs(spec_id) and state/db.py:22 sets PRAGMA foreign_keys = ON, so
+# a trial cannot be logged for a spec that has no row (issue #172). Measured:
+# INSERT OR IGNORE does NOT swallow a foreign-key violation — SQLite's ON
+# CONFLICT algorithms do not apply to foreign keys — so registry.log() raises
+# rather than silently dropping the trial.
+#
+# make_spec()'s spec_id is hardcoded and is baked into tests/test_golden.py's
+# frozen config_hash/run_key, so it cannot move. The row is built to match it.
+# Written as a direct INSERT rather than through
+# state.specs.insert_strategy_spec because that function content-addresses the
+# id (fundbt.hashing.spec_id) and cannot produce this hand-written one.
+#
+# Every column below except spec_id is filler that satisfies NOT NULL and the
+# CHECK constraints. Nothing in fundbt reads this row — run_backtest reads the
+# spec DICT from make_spec(); the row exists so the foreign key resolves.
+_SPEC_ROW_COLUMNS = (
+    "spec_id", "family", "seat", "hypothesis", "mechanism_class", "universe",
+    "liquidity_bucket", "signal_rule", "param_ranges", "search_budget",
+    "holding_period_d", "rebalance", "expected_turnover", "exit_rule",
+    "invalidation", "capacity_usd", "predicted", "llm_in_loop", "created_at")
+
+SPEC_ROW_CREATED_AT = "2026-07-09T00:00:00Z"
+
+
+def seed_spec_row(conn: sqlite3.Connection, spec: dict | None = None) -> str:
+    """INSERT the strategy_specs row that `spec`'s trials will reference.
+
+    Idempotent (INSERT OR IGNORE on the primary key). Returns the spec_id.
+    """
+    spec = spec if spec is not None else make_spec()
+    values = (
+        spec["spec_id"],
+        spec["family"],
+        "quant",
+        "buyers of 5d dips above trend are compensated for absorbing"
+        " short-term selling pressure",
+        "behavioral",
+        json.dumps({"index": "SYN20", "pit_constituents": True, "filters": []},
+                   sort_keys=True),
+        spec["liquidity_bucket"],
+        json.dumps(spec["signal_rule"], sort_keys=True),
+        json.dumps(spec["param_ranges"], sort_keys=True),
+        max(int(spec["search_budget"]), 1),      # CHECK(search_budget > 0)
+        5,
+        "daily",
+        2.0,
+        "exit on trend break or after holding_period_d",
+        "no positive next-day drift after a 5% 5-day dip",
+        1e8,
+        json.dumps({"net_sharpe": 1.0, "max_dd": 0.25, "hit_rate": 0.55},
+                   sort_keys=True),
+        0,
+        SPEC_ROW_CREATED_AT,
+    )
+    conn.execute(
+        f"INSERT OR IGNORE INTO strategy_specs"
+        f" ({', '.join(_SPEC_ROW_COLUMNS)})"
+        f" VALUES ({', '.join(['?'] * len(_SPEC_ROW_COLUMNS))})",
+        values)
+    conn.commit()
+    return spec["spec_id"]
+
+
+def make_registry(spec: dict | None = None) -> "TrialRegistry":
+    """A TrialRegistry over a FRESH fund-schema database, spec row seeded.
+
+    In-memory and per call: that rules out CROSS-test pollution by
+    construction — no test's family N can carry into another test's registry.
+    It does NOT by itself pin fixtures/golden-strategy.md:46's frozen
+    `deflated_sharpe (N=1) = 1.000000`: run_backtest computes
+    family_n(family) + 1 with no scoping, so a holdout-then-family-trial
+    sequence would move N even in a registry this fresh. That number stays
+    N=1 because no golden test runs a further family trial after a G3 holdout
+    on its own registry — per-test isolation, not construction, is what keeps
+    it true (see Task 5 Step 5 and fixtures/golden-strategy.md's own note). A
+    registry SHARED across tests would additionally leak N across tests,
+    which this function does rule out — but that is a narrower guarantee than
+    the docstring here used to claim.
+
+    state.db.connect() applies state/schema.sql and sets
+    PRAGMA foreign_keys = ON, so these tests exercise the real fund schema with
+    the real foreign keys — which is the whole point of #172. `:memory:` rather
+    than a tmp_path file because the guarantee wanted here is a fresh database,
+    not a filesystem.
+
+    Deliberately NOT a pytest fixture: tests/run_tests.py is a second,
+    zero-dependency runner that calls every test_* with NO arguments, and it is
+    not in `make test`. A fixture parameter would break it silently.
+    """
+    from fundbt.registry import TrialRegistry
+    from state.db import connect
+
+    conn = connect(":memory:")
+    seed_spec_row(conn, spec)
+    return TrialRegistry(conn)

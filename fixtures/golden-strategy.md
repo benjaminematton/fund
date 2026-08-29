@@ -49,6 +49,21 @@ search_budget:    20 configs
 | cost_share | 0.113073 | ≤ 0.50 | ✓ |
 | param cliff (worst neighbor loss) | 32.1% (dip_days↑: 1.2413) | ≤ 40% | ✓ |
 
+> **These numbers assume per-test family isolation** — every test builds a
+> fresh registry, so N starts at zero and `deflated_sharpe (N=1)` above is a
+> genuine N=1. That is a property of the harness, not of the pipeline.
+> **Any new vector that backtests AFTER a holdout must derive its N
+> accordingly**, because the G3 holdout now writes its own `is_holdout=1`
+> trial row (#189, landed with #172) and so increments family N by one before
+> the next family trial. N is an unfiltered `COUNT(*)`
+> (`strategy-contracts.md:260`), and the bar it must clear is
+> `stratgate/gate.py`'s `min_deflated_sharpe = 0.95`. DSR also depends on that
+> later trial's own `per_period_sharpe`, not on N alone — no fixed number here
+> can stand in for the check, so derive your own vector's N and re-run the
+> gate rather than assuming this fixture's numbers still apply. A
+> holdout-inclusive vector is one step closer to flipping a G2 verdict on N
+> alone.
+
 **G2: PASS.** → bull/bear debate → G3.
 
 G3 one-shot holdout (391 days, 160 trades — consumed forever, pass or fail):

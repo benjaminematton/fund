@@ -18,6 +18,7 @@ the rule; no LLM decides on historical days it may have memorized.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from typing import Callable
 
 import numpy as np
@@ -241,7 +242,14 @@ def evaluate_holdout(
 ) -> dict:
     """G3's one-shot holdout run. Signals get warmup context from before the
     cutoff, but ONLY post-cutoff returns are scored. Single-touch is enforced by
-    registry.consume_holdout — a second call returns holdout_already_consumed."""
+    registry.consume_holdout — a second call returns holdout_already_consumed.
+    A foreign-key failure is a different thing entirely and raises
+    holdout_wiring_error, never the p-hacking alarm — but not reachable
+    through THIS function today, since the trial-row insert above always logs
+    before consume_holdout runs. It is a guard against a future wiring
+    regression, exercised directly by a test that calls consume_holdout
+    without that insert (CEO ruling 2026-08-29, issue #189:
+    https://github.com/benjaminematton/fund/issues/189#issuecomment-5462868228)."""
     floor = costs.floor_for(spec["liquidity_bucket"])
     cutoff = close.index.max() - pd.DateOffset(months=holdout_months)
     window = close.loc[close.index > cutoff]
@@ -260,11 +268,54 @@ def evaluate_holdout(
         "holdout_trades": res.n_trades,
         "regime_sharpe": _regime_sharpes(holdout_rets, window),
     }
-    fresh = registry.consume_holdout(
-        spec_id=spec["spec_id"], run_key=rkey,
-        passed=bool(np.isfinite(detail["holdout_sharpe"]) and detail["holdout_sharpe"] > 0),
-        detail=detail, created_at=now_iso,
-    )
+    # The holdout run IS a trial: trial_registry.is_holdout exists for exactly
+    # this row, holdout_evaluations.run_key REFERENCES trial_registry(run_key)
+    # structurally requires it, and strategy-contracts.md:260 counts N
+    # unfiltered. Erring toward a higher N is the conservative direction for a
+    # gate. (#189, folded into #172 by CEO ruling 2026-08-29.) A second holdout
+    # with different params mints a different run_key, so its trial row lands
+    # (N +1) before consume_holdout raises holdout_already_consumed — a
+    # refused attempt is still a spent trial.
+    #
+    # seat="orchestrator": trial_registry.seat is TEXT NOT NULL and this
+    # function takes no seat parameter, so a value has to be chosen. This one is
+    # INFERRED from specs/acceptance.md:69 ("evaluate_holdout and G2/G3/G4
+    # evaluators are orchestrator-invoked only") — the honest caller. It is NOT
+    # a schema statement: neither specs/strategy-contracts.md §2 nor
+    # specs/strategy.md names a value for an evaluator-written row. That
+    # canonical gap is real and is on the CEO's own edit list; this lane does
+    # not touch specs/.
+    #
+    # NOTE for anyone enriching `detail` below: this row's `stats` is `detail`,
+    # which carries no "per_period_sharpe" key, so a holdout trial never enters
+    # family_sharpe_variance's V[{SR_n}] (measured: 0.0 on both sides of this
+    # change). Add per_period_sharpe to `detail` and holdout runs silently start
+    # contributing to family variance, moving EVERY deflated-Sharpe number
+    # fund-wide. Recorded on #189.
+    registry.log(run_key=rkey, spec_id=spec["spec_id"], family=spec["family"],
+                 config_hash=cfg, data_snapshot_hash=snapshot_hash(close),
+                 engine_version=ENGINE_VERSION + "+holdout", seed=0,
+                 seat="orchestrator", stats=detail, is_holdout=True,
+                 created_at=now_iso)
+    try:
+        fresh = registry.consume_holdout(
+            spec_id=spec["spec_id"], run_key=rkey,
+            passed=bool(np.isfinite(detail["holdout_sharpe"]) and detail["holdout_sharpe"] > 0),
+            detail=detail, created_at=now_iso,
+        )
+    except sqlite3.IntegrityError as exc:
+        # NOT a consumed holdout. holdout_evaluations.run_key REFERENCES
+        # trial_registry(run_key); evaluate_holdout logs that trial row itself,
+        # immediately above this call (#189, landed in this same lane), so on
+        # the fund DB this FK always resolves through evaluate_holdout. This
+        # branch guards a future wiring regression (that insert removed,
+        # reordered, or a caller that bypasses it), not a live defect — see
+        # the docstring below for the test that exercises it directly. If it
+        # ever does fire, reporting it as holdout_already_consumed would page
+        # #risk with "someone/something is p-hacking"
+        # (specs/strategy-contracts.md:273) on what is actually a wiring
+        # error. A wiring error gets its own code so it reads as one.
+        raise BacktestError("holdout_wiring_error") from exc
     if not fresh:
         raise BacktestError("holdout_already_consumed")  # p-hacking alarm -> #risk
     return detail
