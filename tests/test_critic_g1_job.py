@@ -253,6 +253,7 @@ def test_a_turn_that_raises_leaves_no_row_and_the_spec_still_pending(db):
     assert [s["spec_id"] for s in specs_awaiting_critique(db)] == [sid]
     texts = _alert_texts(db)
     assert len(texts) == 1 and "critic_g1_turn_failed" in texts[0]
+    assert sid in texts[0]
     assert _undrained(db) == 0
 
 

@@ -579,7 +579,7 @@ def test_make_turn_threads_a_per_turn_tool_surface_to_seat_session(
     assert seen["tools"] == ["mcp__fund__get_spec_brief"]
 
 
-def test_the_four_daily_turns_keep_their_standing_tool_surface(
+def test_a_turn_without_an_override_keeps_the_standing_surface(
         wired, monkeypatch):
     """Additive by construction: `tools` defaults to None and every trading-day
     call site omits it, so SEATS' four turns are byte-identical to before."""
