@@ -26,9 +26,31 @@ Copied verbatim from `CLAUDE.md` and `specs/strategy-contracts.md`; every task's
 
 ---
 
-## ⛔ GATE — three questions that must be answered before Task 1
+## ✅ GATE — SAT BY THE CEO, 2026-08-29
 
-**Do not dispatch an implementer until these are ruled on.** Each was found while writing this plan, by reading the spec against `origin/master` @ `f7bc7ce`. Recommendations given; the decision is not the overseer's.
+All three ruled. Tasks 1 and 2 are dispatchable; Task 3 stays blocked.
+
+| | Ruling | Effect |
+|---|---|---|
+| **G-1** | **(A)** — sequence, don't proxy | Task 3 leaves this lane. `strategies` + #181's selector replacement become **one** child of #49. #171 stays open for half two |
+| **G-2** | **(iii)**, *not* (i) | **No cap is granted.** Handler written and directly tested; §4 row marked `not served`; **no `@tool` registration** |
+| **G-3** | Agreed | Ship it, file the driver as a child of #49, close out saying the seam is callable and undriven |
+
+**On G-1, the CEO corrected his own fence** and it is worth recording, because the fence survived the correction on different grounds. The original justification — *"a lifecycle table is new design"* — was wrong on the facts: §2 carries `strategies`' complete DDL and §4 its full state machine, so it is specified-but-unimplemented, exactly what `trial_registry` was before #172. The fence holds on **size**, not novelty: *"a lane that must grow a canonical table mid-flight has discovered its scope was wrong; the answer is to re-scope, not to expand."* This lane already carries registration, an irreversible-write binding, two docstring rewrites, a hash-identity fix, and a canonical §4 edit — and `strategies` drags in the selector replacement, which touches the same `critic_g1.py` queue semantics this lane is already editing.
+
+**On G-2, the reasoning matters more than the option letter.** Granting `analyst` the cap would widen a *trading* seat's served surface with a tool its charter never mentions, and an LLM holding an unexplained tool is its own hazard class. Since G-3 establishes nothing drives the tool anyway, the cap buys zero function at a cost in surface honesty. The lane that staffs a driving seat grants the cap alongside its charter and its schedule, where all three can be reviewed together.
+
+### How (iii) is expressed — verified, not assumed
+
+The CEO's stop condition was: *"if it can't be expressed, escalate — do not fall back to (i) silently."* It can. `tests/test_tool_surface_canon.py` was read in full and there is already a row doing this: **`submit_critique`** — canon, Phase 3, reaching nobody, and with **no `@tool` decorator anywhere in `fund_server.py`**.
+
+The mechanism, and the trap in it:
+
+- `_canon()` accepts a `status` cell of `served` or `not served — <reason>`; anything else raises (`:113-117`).
+- `test_each_tool_reaches_exactly_the_seats_the_table_names:191` — a not-served row's expected seat set is **empty**, whatever the `seats` column names: *"A row that is not served names the seats it WILL reach when it ships; until then the only correct answer is nobody."*
+- **The trap:** `test_every_registered_tool_has_a_canonical_entry:178` asserts `_declared() == _canon_served()`, and `_declared()` regexes `@tool("name"` out of the **source**. Registering the tool while marking it not-served therefore **fails that test by design** — its docstring exists to catch exactly this: *"dead surface today and one SEAT_CAPS line from live."*
+
+So (iii) is: **handler + direct tests + a `not served` §4 row + no `@tool` + no cap.** Task 2 Step 7 inverts accordingly.
 
 ### G-1. `strategies` does not exist, and §3.1 and §3.2 both require it
 
@@ -52,7 +74,7 @@ So the CEO fence — *"#181/`strategies` stays out; a lifecycle table is new des
 - **(B) Implement steps 1 and 7 against a proxy** — derive state from `trial_registry` presence (no rows = `SPEC`, ≥1 = `BACKTEST`) as `specs_awaiting_critique` derives its queue from the absence of a `strategy_critiques` row.
 - **(C) Lift the fence and land `strategies` in this lane.**
 
-**Recommendation: (A).**
+**RULED: (A).**
 
 (B) manufactures precisely what the spec warns against. `strategy-contracts.md` §2 already carries one such divergence and says of it: *"the Phase-5 change that creates `strategies` should **replace** the selector rather than add a second one."* Adding a second proxy in the same lane that will have to unpick it trades a visible gap for an invisible one — and a *derived* state has a failure the real column doesn't: a refused run that logs a `budget_exhausted` trial row (§3.2 step 3 logs that rejection) would flip the derived state to `BACKTEST` without any backtest having run.
 
@@ -68,7 +90,7 @@ So the CEO fence — *"#181/`strategies` stays out; a lifecycle table is new des
 
 **Options:** (i) grant the cap to `analyst`; (ii) add a `quant` seat; (iii) grant it to no seat this lane and let the tool ship callable only by a future one.
 
-**Recommendation: (i) for the cap, and say so in the plan's scope.** Adding a seat is a `run_day.SEATS` change with a wall-clock budget consequence — #169 established that a fifth daily seat turn is arithmetically impossible (5 × 240s = 1200s > the 1080s budget), so a new seat is a scheduling decision, not a tool-surface one. Granting `analyst` the cap costs nothing structurally and is reversible.
+**RULED: (iii) — grant no cap.** (The overseer had recommended (i); overruled, and rightly. See the gate table above for the reasoning and the paragraph above for how (iii) is expressed against the canon test.)
 
 ### G-3. Registration ships a tool with no caller — the same shape as #182
 
@@ -76,7 +98,7 @@ Nothing in `orchestrator/` or `scripts/` assigns a turn that calls `submit_strat
 
 This is not a defect in the plan — it is the honest boundary of the lane. **Name it at the gate so "G1 live end to end" is not claimed on a seam that nothing drives.** Whether a driving turn belongs in this lane, in a follow-up, or in a hand-run script for the first live night is a scheduling decision that belongs with the same person who ruled on the nightly job's shape.
 
-**Recommendation:** ship the tool, file the driver as a child of #49, and state in #171's close-out that the seam is callable but undriven.
+**RULED: agreed.** Ship it, file the driver as a child of #49, and state in #171's close-out that the seam is callable and undriven. The honest post-lane status, in the CEO's words: *"G1 enforced and binding-safe, specs registrable once a driver exists, budget refusal awaiting `strategies`."*
 
 ### F-1. `StrategySpec` does not forbid extra fields today — §3.1 requires it
 
@@ -99,15 +121,15 @@ Adding `model_config = ConfigDict(extra="forbid")` cannot change any existing id
 
 | File | Responsibility | Change |
 |---|---|---|
-| `agents/tools/fund_server.py` | MCP tool surface + handlers | Modify: add `handle_submit_strategy_spec`, add `expected_spec_id` to `handle_submit_spec_critique` and `build_fund_server`, add `submit_strategy_spec` cap + `@tool` |
+| `agents/tools/fund_server.py` | MCP tool surface + handlers | Modify: add `handle_submit_strategy_spec` (**handler only — no `@tool`, no cap**), add `expected_spec_id` to `handle_submit_spec_critique` and `build_fund_server` |
 | `agents/seats.py` | Per-seat options assembly | Modify: thread `expected_spec_id` (mirrors `expected_decision_id` at `:200`, `:246`) |
 | `scripts/run_day.py` | Turn construction | Modify: thread `expected_spec_id` through `make_turn` (`:367`) and `_seat_session` (`:252`) |
 | `scripts/critic_g1.py` | Nightly G1 composition root | Modify: bind `expected_spec_id=job["spec_id"]` at `:389`; rewrite the two docstrings that assert no binding exists |
 | `tests/conftest.py` | Replay executor | Modify: bind `expected_spec_id` in `make_executor` (`:68-73`) |
 | `state/models.py` | Pydantic models | Modify: `StrategySpec` gains `model_config = ConfigDict(extra="forbid")` — see F-1 |
 | `state/specs.py` | `strategy_specs` write path | **Unchanged** — `insert_strategy_spec` already exists and is already idempotent |
-| `specs/contracts.md` §4 | Served-tool enumeration | Modify: add `submit_strategy_spec` to the canonical table |
-| `tests/test_tool_surface_canon.py` | Pins the served set to §4 | Modify: follows §4 |
+| `specs/contracts.md` §4 | Served-tool enumeration | Modify: add a `submit_strategy_spec` row with status **`not served`** |
+| `tests/test_tool_surface_canon.py` | Pins the served set to §4 | **Unchanged** — a not-served row needs no test edit. If it does, something is wrong |
 
 **Not touched:** `fundbt/` (purity), `state/schema.sql`, `get_spec_brief`'s signature, `submit_spec_critique`'s JSON schema.
 
@@ -267,7 +289,7 @@ git commit -m "feat: bind a G1 verdict to the spec its turn was shown (#182)"
 
 ## Task 2: `submit_strategy_spec`
 
-**Blocked on G-1 and G-2.** Written against recommendation (A) + (i): the `analyst` cap, no `strategies` row.
+**Gate passed.** Written against ruling (A) + (iii): **no cap, no `@tool` registration**, no `strategies` row.
 
 **Files:**
 - Modify: `agents/tools/fund_server.py` (`SEAT_CAPS`, new handler, new `@tool`)
@@ -349,9 +371,11 @@ Import `ConfigDict` from `pydantic`. Then run the **full** suite before going fu
 Run: `make test`
 Expected: green. **If anything reddens, stop and report it** — a caller passing a field the model ignores is a second instance of the same defect, not something to route around.
 
-- [ ] **Step 4: Grant the cap**
+- [ ] **Step 4: Grant NO cap — this step is deliberately empty**
 
-In `SEAT_CAPS`, add `"submit_strategy_spec"` to `analyst`'s frozenset. Add a comment saying why `analyst` and not a new seat: a new seat is a `run_day.SEATS` change with a wall-clock consequence (#169 established the 4-turn ceiling), so it is a scheduling decision, not a tool-surface one.
+Per G-2 (iii), `SEAT_CAPS` is **not** edited. No seat may call this tool. Do not add a cap "for testing" — the tests call the handler directly.
+
+If you find yourself needing a cap to make a test pass, stop and report it: that is a sign the test is exercising the MCP surface rather than the handler, which is not what this task ships.
 
 - [ ] **Step 5: Write the handler**
 
@@ -389,13 +413,27 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
 Run: `python3 -m pytest tests/test_submit_strategy_spec.py -v`
 Expected: 5 passed.
 
-- [ ] **Step 7: Add the `@tool` and the `#research` projection**
+- [ ] **Step 7: Do NOT add an `@tool`. Add the `#research` projection.**
 
-Register the tool in `build_fund_server` next to `submit_spec_critique`, with a strict schema whose properties are exactly `state/specs.py:COLUMNS` minus `seat` (the handler supplies `seat` — the seat must not be able to claim another's authorship). Project a one-line summary to `#research` through the `events` outbox, the same way the neighbouring handlers do — **never** by writing to Slack directly (invariant 6).
+**No `@tool` decorator.** `test_every_registered_tool_has_a_canonical_entry` asserts `_declared() == _canon_served()` and `_declared()` regexes the source, so a decorator here reddens that test **by design**. `submit_critique` is the precedent: a §4 row with no decorator anywhere in `fund_server.py`.
 
-- [ ] **Step 8: Update `specs/contracts.md` §4 and its pin**
+Do add the `#research` projection inside the handler, through the `events` outbox, the same way the neighbouring handlers do — **never** by writing to Slack directly (invariant 6).
 
-§4's served-tool table is canonical and `tests/test_tool_surface_canon.py` pins the served set to it. Add `submit_strategy_spec` to **§4 first**, then let the test follow. Adding it to the test to make it pass is backwards.
+- [ ] **Step 8: Add the §4 row with status `not served`**
+
+Add one row to `specs/contracts.md` §4:
+
+| tool | seats | schema | status |
+|---|---|---|---|
+| `submit_strategy_spec` | `analyst` | `strategy-contracts.md` §3.1 | `not served — no driving seat (#171)` |
+
+The `seats` column names the seat it **will** reach when a driver ships; the not-served status makes its expected served set empty today. Three constraints, all already true of `submit_critique` — verify each rather than assuming:
+
+- `ARGS` in `test_tool_surface_canon.py` must **not** gain an entry (`test_the_wrong_seat_payloads_cover_every_canonical_tool` asserts `set(ARGS) == _canon_served()`).
+- The `schema` cell points at `strategy-contracts.md`, so `test_a_row_pointing_its_schema_elsewhere_points_somewhere_real` will check that the file exists **and** contains the string `submit_strategy_spec`. §3.1 does.
+- `test_a_wrong_seat_caller_gets_a_tool_error` will call this tool from **every** seat with `{}` and require an error and zero rows written. With no registration the MCP layer answers "Tool not found", which is a tool error.
+
+Edit §4 first, then run the canon tests. Editing a test to make canon fit is backwards.
 
 - [ ] **Step 9: Full suite, then commit**
 
@@ -412,7 +450,7 @@ git commit -m "feat: submit_strategy_spec — the spec-registration seam (#171)"
 
 ## Task 3: `run_backtest` exposure
 
-**BLOCKED on G-1.** Do not start.
+**BLOCKED — and it leaves this lane.** Do not start. Per G-1(A) it belongs to the `strategies` + selector-replacement child of #49, and #171 stays open for it.
 
 Under recommendation (A) this task does not belong to this lane: §3.2's steps 1 and 7 read and write `strategies.state`, and that table does not exist. Under (B) or (C) this task is written against a different substrate and its tests differ throughout, so writing it now would be writing a plan for a decision nobody has made.
 
