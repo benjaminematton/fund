@@ -223,9 +223,10 @@ G1_PROMPT = ("G1 review turn. Start by calling get_spec_brief, then follow"
 #               against the measured Critic trial max of $0.1867
 #               (evals/seats/critic.yaml) the expectation is <= $0.56/night
 #   throughput  state/specs.py fixes the design at ONE turn per spec, and
-#               there is no live submit_strategy_spec producer yet, so
-#               steady-state arrival is <= 1 spec/night. Three drains any
-#               realistic backlog in one night.
+#               the only producer is the hand-run scripts/register_spec.py
+#               (#198), one spec per invocation and never on a timer, so
+#               steady-state arrival is bounded by how often a human runs it.
+#               Three drains any realistic backlog in one night.
 # Exceeding it is never silent — see critique_and_log's critic_g1_backlog_capped.
 MAX_G1_TURNS_PER_NIGHT = 3
 

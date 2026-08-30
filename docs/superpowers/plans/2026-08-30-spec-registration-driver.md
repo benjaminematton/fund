@@ -92,11 +92,17 @@ A fourth, separate trap makes the *seat config* part of the same commit: `tests/
 
 **Consequence:** Task 3 is one commit. It is the only commit in this plan that touches `agents/tools/fund_server.py`. #182 and #171-half-two are queued behind that file, so keeping it to one touch is a deliberate cost the sequencing pays for.
 
-### Open Question OQ-1 — SURFACED, NOT ANSWERED
+### Open Question OQ-1 — 🔏 RULED: Option A, the constant prompt
 
 The `quant` seat has **no input tool.** `get_spec_brief` is critic-only (`agents/tools/fund_server.py:65`, `SEAT_CAPS["critic"]`) and serves the consumer side. There is no `ideas` table and no `strategies` table in `state/schema.sql` (verified: zero `CREATE TABLE ... strategies`; `IDEA` appears only in `specs/strategy.md:25,34,171` and `research/improvement-loops.md:269`, all prose; `sponsor` appears in zero Python and zero SQL).
 
-**So: what does the human running `make register-spec` supply, and how does it reach the seat?** Options and their evidence are in Task 6. **Tasks 1–5 are executable with this pending.** Task 6 must not start until the lane overseer rules.
+**The question was: what does the human running `make register-spec` supply, and how does it reach the seat? The answer is NOTHING, and no channel.** The seat composes the spec itself from its charter; `make register-spec` takes no argument, and `register_spec.REGISTER_PROMPT` is a module constant with no format slot.
+
+**The reason, which is narrower than the four options were framed around:** nothing may go in a prompt that a replay cannot reconstruct from state. That is what `CLAUDE.md`'s "no per-run values in prompts" is protecting, and it is why the two shipped precedents are not actually in tension. `scripts/reflect_day.py:366-367` embeds `job['frame']` in prompt prose and `tests/test_reflect_job.py:241` pins that it does — legitimate, because that frame comes from a DB row a replay re-reads. A hypothesis typed at a shell (Option B) exists nowhere but that shell, so it could never be reconstructed even in principle. The prompt is modelled on `scripts/critic_g1.py`'s `G1_PROMPT`, which names no spec for the same reason.
+
+**The cost, accepted rather than argued away:** the human chooses *when* a spec is proposed and never *what*, so ruling B1's "the human invocation stands in for the missing sponsorship gate" is reduced to timing. All the steering lives in `charters/quant.md`, which means changing what this seat proposes is a CEO-reviewed system-prompt diff rather than a shell argument — deliberately.
+
+Options B, C and D are closed. Task 6 is unblocked and its Step 1b takes Option A's shape.
 
 ---
 
@@ -1707,9 +1713,9 @@ git commit -m "feat: register_spec job shell — guard, turn check, alerts (#198
 
 ---
 
-## Task 6: BLOCKED ON OQ-1 — the turn factory, `main()`, the Makefile target, and every "there is no producer" claim in the tree
+## Task 6: the turn factory, `main()`, the Makefile target, and every "there is no producer" claim in the tree
 
-**DO NOT START THIS TASK UNTIL THE LANE OVERSEER RULES ON OQ-1.** OQ-1 blocks this task **alone**; Tasks 1–5 do not wait on it.
+**OQ-1 is 🔏 RULED — Option A, the constant prompt.** This task was blocked on it and is not any more; the ruling and its reasoning are in the OQ-1 section above. Step 1b takes Option A's shape and Step 3's `_make_run_turn` sends a module constant.
 
 **Work moved INTO this task:**
 - **The `specs/contracts.md` §4 prose at `:288` and `:290` (ruling 3).** Not forced into Task 3's atomic commit — `_canon()` parses only the table — and not writable there either, because the paragraph's job is to record *why* the tool became served and the answer is the driver this task ships.
@@ -2036,8 +2042,8 @@ clause is deferred to #197.
 - [ ] **Step 7: Commit** — `feat: make register-spec drives one quant registration turn (#198)`. The commit includes `scripts/register_spec.py`, `tests/test_register_spec_job.py`, `Makefile`, `scripts/critic_g1.py` (comment only) and `specs/contracts.md` (prose only).
 
 **STOP CONDITIONS:**
-- OQ-1 unanswered → do not start. Tasks 1–5 stand on their own as "the seat exists and can be driven" — **except** for the §4 prose (Task 3's last stop condition): if the lane is merging without this task, that correction has to be lifted out of here first.
-- If the answer is Option C, **stop and re-plan.** It re-opens `agents/tools/fund_server.py` and needs its own atomic-registration analysis; it is not a variation on this task.
+- ~~OQ-1 unanswered → do not start.~~ Discharged: OQ-1 was ruled Option A before this task ran. (If the lane had merged without this task, the §4 prose correction would have had to be lifted out of here first — see Task 3's last stop condition.)
+- ~~If the answer is Option C, **stop and re-plan.**~~ Discharged: the answer was Option A, so `agents/tools/fund_server.py` was not re-opened for a new `@tool`. It *is* touched a second time in this task, by explicit authorisation, for comment corrections only — no registration change, so no atomic-registration analysis is owed.
 - If `main()` as written can return 0 down any path where `counts["registered"] == 0`, **stop.** That is the one invariant this task's whole exit-code contract reduces to.
 
 ---
@@ -2052,7 +2058,7 @@ Not tasks, but the lane is not done without them:
 4. **If the lane merges without Task 6, `specs/contracts.md` §4 must not merge self-contradictory.** The row says `served`; the prose at `:288`/`:290` argues it should not be. Task 6 Step 5d closes that. See Task 3's stop conditions.
 5. **Four things go in the PR body as escalations, not as findings the lane resolved:**
    - **Task 4 / `lineage_parent`** — the measurement (ids move: 2 red tests, 12 invalidated critic eval subjects `make test` cannot see) and the standing recommendation *do not fold it in*. **Unruled.**
-   - **OQ-1** — four options with costs and precedents, unanswered, blocking Task 6 alone.
+   - ~~**OQ-1** — four options with costs and precedents, unanswered.~~ **Ruled** (Option A, the constant prompt) and implemented in Task 6. Not an escalation; it belongs in the PR body as a decision the reviewer should check, since it means the seat's whole steering lives in `charters/quant.md`.
    - **`CLAUDE.md:47`** names `quant.md` as a charter quality bar while this lane's Task 2 premise is that it is malformed (ruling 7d). A `CLAUDE.md` edit is a fleet-wide broadcast and is outside this region.
    - **`specs/strategy-contracts.md:148`** titles §3.1 *"any analyst/researcher seat"* while this lane pins `holders == ["quant"]`, and `CLAUDE.md:45` says that file overrides (ruling 8). The narrower reading ships; the documents disagree.
 6. **Issue #200** (`_build_slack`'s duplicated "one place" docstring) is referenced by Task 5 and deliberately not fixed here — the clean hoist reaches a file #197 holds mid-lane. Say so, so the copy does not read as an oversight.

@@ -91,8 +91,10 @@ sys.path.insert(0, str(ROOT))          # `python scripts/register_spec.py` anywh
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling run_day
 
 import run_day                                        # noqa: E402
-from orchestrator.clock import iso                     # noqa: E402
+from agents.seats import load_seat_config              # noqa: E402
+from orchestrator.clock import et_run_date, iso        # noqa: E402
 from slackkit.outbox import drain                      # noqa: E402
+from state.db import connect                           # noqa: E402
 from state.specs import specs_awaiting_critique        # noqa: E402
 
 # Identical to critic_g1's, and for the same reasons: this job runs a seat
@@ -132,6 +134,37 @@ SEAT_CONFIG = ROOT / "agents" / "config" / f"{SEAT}.yaml"
 # build_seat_options rather than comparing this constant to SEAT_CAPS
 # (tests/test_register_spec_job.py::test_the_turn_surface_is_exactly_the_one_cap_the_seat_holds).
 REGISTER_TOOLS = ["mcp__fund__submit_strategy_spec"]
+
+# A CONSTANT. Nothing per-run reaches it, and there is no channel by which
+# anything could — `make register-spec` takes no argument (🔏 OQ-1, ruled).
+#
+# WHY, precisely. CLAUDE.md's rule is usually quoted as "no per-run values in
+# prompts", but the property it protects is replay: nothing may go in a prompt
+# that a replay cannot reconstruct from state. scripts/reflect_day.py:366-367
+# does embed job['frame'] in prompt prose and tests/test_reflect_job.py:241
+# pins that it does — legitimately, because that frame comes from a DB row a
+# replay re-reads. A hypothesis typed at a shell exists nowhere but that shell,
+# so threading one through here would put a value in a prompt that no replay
+# could ever reconstruct even in principle. Modelled on critic_g1.G1_PROMPT
+# (scripts/critic_g1.py:211-213), which names no spec for the same reason.
+#
+# CONSEQUENCE, stated rather than discovered later: the human chooses WHEN a
+# spec is proposed and never WHAT. charters/quant.md carries the whole of the
+# steering, so changing what this seat proposes means editing a system prompt —
+# a CEO-reviewed diff, deliberately, not a shell argument.
+#
+# THE DECLINE IS SANCTIONED HERE and not only in the charter, because
+# register_and_log's register_spec_wrote_nothing alert tells the operator that
+# a correct decline is one of its four causes and is not a fault. That is true
+# only if the turn was permitted to decline.
+#
+# Unlike G1_PROMPT this has no evals/prompts.py twin to stay byte-identical to:
+# the rig has no `quant` cases, and evals/ is outside this lane's region.
+REGISTER_PROMPT = ("Spec registration turn. You have no brief and no read"
+                   " tools; your charter is your whole context. Follow it and"
+                   " end by calling submit_strategy_spec exactly once — or, if"
+                   " your charter's Mission applies, by declining to propose"
+                   " and saying which family is tapped out.")
 
 
 def log(msg: str) -> None:
@@ -356,3 +389,143 @@ def _build_slack(env: dict, environ):
         log(f"channel overrides active: {overrides}")
         slack = run_day.RemappedSlack(slack, overrides)
     return slack
+
+
+def _make_run_turn(seat: str, cfg: dict, db_path: str, clock, conn,
+                   run_date: str):
+    """Build the `run_turn` callable `register_and_log` drives.
+
+    A named factory rather than a closure inline in main() so this seam — a
+    narrowed tool surface reaching run_day.make_turn — is unit-testable
+    without calling main(), which builds real clients.
+
+    THE CALLABLE TAKES NO ARGUMENT, unlike both siblings'. critic_g1's and
+    reflect_day's take a job dict because each is draining a queue and has a
+    row to hand its turn; this job is a PRODUCER with no queue, so there is
+    nothing to pass. What the turn is asked to do is a property of how it is
+    BUILT, not of a row anyone selected.
+
+    NO BINDING, either. expected_spec_id is the Critic's, and it exists
+    because get_spec_brief SHOWS a spec the seat's own tool argument could
+    then contradict. This seat is shown nothing and names nothing: the spec id
+    is derived from the payload's content hash inside
+    handle_submit_strategy_spec, so there is no id to bind and no id the seat
+    could get wrong.
+
+    NO trace_sink, for critic_g1's reason: evals/live.py's rows_written scan
+    does not cover strategy_specs, so a live trace here would grade
+    differently from an eval trace of the same turn. evals/ is out of this
+    lane's region, so this turn emits no live trace at all rather than a
+    divergent one.
+    """
+    def run_turn() -> None:
+        turn = run_day.make_turn(seat, cfg, db_path, clock, conn, run_date,
+                                 REGISTER_PROMPT, tools=REGISTER_TOOLS)
+        turn()
+    return run_turn
+
+
+def main(argv: list[str] | None = None) -> int:
+    """WHAT SITS OUTSIDE _guarded, and why each one earns it — scripts/
+    critic_g1.py:481-560's convention, and its two divergences are named below.
+
+      paper_guard    invariant 1. Must exit before any client exists; there is
+                     nothing to report through yet and nothing should be.
+      require_env    same, and it names every missing var.
+      acquire_lock   both calls run BEFORE connect, so there is no conn for
+                     _guarded's first argument yet. (NOT because contention
+                     would be mislabelled: contention is a None RETURN, not an
+                     exception — scripts/run_day.py:142-163 — so the guard
+                     would never see it.)
+      connect        _guarded's first argument. A guard cannot alert through a
+                     connection that does not exist.
+      _build_slack   _guarded's second argument: the recovery path ends in
+                     drain(conn, slack, ...), so a guard built without `slack`
+                     could RECORD an alert but never DELIVER it. A CHOICE, not
+                     a structural impossibility — conn already exists here, so
+                     the append half is coverable and only the drain is not.
+
+                     CONSEQUENCE, stated so nobody finds it in an incident:
+                     _build_slack calls run_day.parse_channel_overrides, which
+                     raises SystemExit on a malformed SLACK_CHANNEL_OVERRIDES
+                     (scripts/run_day.py:189-207), so that one failure exits
+                     nonzero with NO register_spec_failed row anywhere. There
+                     is no systemd unit behind this job either, so for that one
+                     path the traceback in front of the human who typed the
+                     command is the entire report.
+
+    Everything else — load_seat_config, run_date, the turn factory and
+    register_and_log — is INSIDE, and pinned by
+    test_a_bad_seat_config_fails_loudly_rather_than_passing_silently.
+    """
+    import os
+
+    from agents.wallclock import WallClock
+
+    environ = os.environ
+    run_day.paper_guard(environ)             # invariant 1, before anything else
+    env = run_day.require_env(REQUIRED_ENV, environ)
+
+    db_path = env["FUND_DB"]
+    lock_dir = Path(db_path).parent
+
+    # RUN_DAY'S LOCK FIRST, and this job refuses under it. A trading day and a
+    # registration run both drain the events outbox, and slackkit/outbox.py's
+    # drain() SELECTs every unposted row and then marks and commits one row at
+    # a time — so two concurrent drainers each fetch the same set and post it
+    # twice. Invariant 6 routes outbound delivery through the outbox precisely
+    # so a crash or retry can neither lose nor duplicate a post; two drainers
+    # break that. run_day.acquire_lock's own docstring names the same hazard
+    # for overlapping run_day processes ("doubling the LLM spend and the Slack
+    # posts"); this is the cross-job case of it. Non-blocking flock, so the
+    # check costs nothing and cannot itself wait.
+    #
+    # The handle is RELEASED IMMEDIATELY: this job is asking whether the lock
+    # is free, not claiming it for the run. Holding it would let a hand-run at
+    # 16:30 keep the 16:35 legs out of their own window, which is the hazard
+    # LOCK_NAME above exists to avoid. That leaves a race — run_day could start
+    # between this check and the turn — so this is a REDUCTION of the
+    # double-drain hazard, not an elimination of it. Closing it properly means
+    # one lock shared across jobs, which reintroduces the window problem; that
+    # trade is not this lane's to make.
+    day_lock = run_day.acquire_lock(lock_dir / run_day.LOCK_NAME)
+    if day_lock is None:
+        log(f"scripts/run_day.py holds {lock_dir / run_day.LOCK_NAME} — a"
+            " trading day is running. Exiting 2 without registering: two"
+            " processes draining the events outbox post every queued event"
+            " twice. Re-run after the day closes")
+        return 2
+    day_lock.close()
+
+    lock_path = lock_dir / LOCK_NAME
+    lock = run_day.acquire_lock(lock_path)   # must outlive the run; kept in scope
+    if lock is None:
+        log(f"another register_spec holds {lock_path} — exiting 2 rather than"
+            " racing it (two overlapping runs = two paid turns and a"
+            " double-drained outbox). Nothing was registered")
+        return 2
+
+    clock = WallClock()
+    conn = connect(db_path)
+    slack = _build_slack(env, environ)
+
+    def _body() -> int:
+        cfg = load_seat_config(SEAT_CONFIG)
+        run_date = et_run_date(clock.now())  # cost lands on the day it ran
+        run_turn = _make_run_turn(SEAT, cfg, db_path, clock, conn, run_date)
+        counts = register_and_log(conn, slack, clock, run_turn)
+        # THE DIVERGENCE FROM critic_g1._body, deliberate and load-bearing:
+        # that one discards critique_and_log's counts and ends `return 0`
+        # whatever the night did (scripts/critic_g1.py:552-558). Defensible
+        # there — it is a systemd ExecStart where nonzero is a page, and its
+        # misses are recoverable the next night. Copying it here would make
+        # `make register-spec` exit 0 on a turn that never called the tool. 0
+        # means A SPEC WAS REGISTERED and nothing else, because this exit code
+        # is the only report a hand-run job has.
+        return 0 if counts["registered"] else 1
+
+    return _guarded(conn, slack, clock, _body)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,15 +1,16 @@
 """Offline tests for the hand-run spec-registration job's decision seams (#198).
 
-main() IS NOT CALLED HERE — it does not exist in this commit. This file tests
-the seams under it: register_and_log's counting and alerting, _guarded's
-exit-code pass-through, and the narrowed turn surface. main() and its own exit
-codes arrive with a later task and must be driven there, the way
-tests/test_critic_g1_job.py's ":621 main()'s own exit codes" section drives
-that job's main() through three test_main_exits_* cases — added precisely
-because an identical assumption in an earlier critic_g1 draft went unpinned and
-the claim it protected turned out to be false. The exit code is this job's ONLY
-report — there is no OnFailure= unit behind it — so it is the last thing that
-may go untested once main() lands.
+main() IS DRIVEN HERE. It was not, for the two commits in which it did not
+exist, and this docstring said so; it exists now. The seams under it are still
+tested directly — register_and_log's counting and alerting, _guarded's
+exit-code pass-through, the narrowed turn surface — and the final section
+drives main() itself through every exit code it can return, the way
+tests/test_critic_g1_job.py's "main()'s own exit codes" section (:621) drives
+that job's. That section exists in the sibling because an earlier draft claimed
+critic_g1 "returns 0 from every failure path from connect() onward" and, in the
+file's own words, "It was not pinned." The exit code is THIS job's only report
+— there is no OnFailure= unit behind it — so it is the last thing that may go
+untested.
 
 THE JOB IS A PRODUCER, which is why it looks different from its siblings. Every
 other nightly job drains a queue and can compute how much of its OWN work is
@@ -24,6 +25,7 @@ operator wants to know changed.
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -279,3 +281,267 @@ def test_the_turn_surface_is_exactly_the_one_cap_the_seat_holds(db, tmp_path):
     assert opts.setting_sources == []
     assert opts.permission_mode == "dontAsk"
     assert opts.max_budget_usd == cfg["max_budget_usd"]
+
+
+# --- the turn factory -------------------------------------------------------
+
+def test_the_turn_is_built_with_the_narrowed_surface(db, monkeypatch):
+    """tests/test_critic_g1_job.py:453-470's shape. REGISTER_TOOLS is inert
+    unless _make_run_turn actually passes it, and it is inert SILENTLY:
+    without `tools=`, agents/seats.py's _turn_tools returns cfg["tools"]
+    verbatim, so the turn would run on quant.yaml's ["mcp__fund__*"] glob and
+    nothing would fail — the seat holds one cap today, so the widening only
+    becomes visible the day it holds two."""
+    seen = {}
+
+    def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
+                        **kwargs):
+        seen.update(kwargs, seat=seat, run_date=run_date)
+        return lambda: None
+
+    monkeypatch.setattr(register_spec.run_day, "make_turn", _fake_make_turn)
+
+    run_turn = register_spec._make_run_turn(
+        "quant", {}, ":memory:", SimClock(RUN_AT), db, "2026-08-30")
+    run_turn()
+
+    assert seen["seat"] == "quant"
+    assert seen["tools"] == register_spec.REGISTER_TOOLS
+
+
+def test_the_turn_takes_no_argument(db, monkeypatch):
+    """register_and_log drives a ZERO-argument callable — every sibling's takes
+    a job dict because every sibling drains a queue and has a row to hand its
+    turn. This job has no queue, so a factory that produced a one-argument
+    run_turn would raise TypeError inside register_and_log's try, be counted
+    as "the turn raised", and alert register_spec_turn_failed on a run where
+    nothing was wrong with the seat."""
+    monkeypatch.setattr(register_spec.run_day, "make_turn",
+                        lambda *a, **k: (lambda: None))
+
+    run_turn = register_spec._make_run_turn(
+        "quant", {}, ":memory:", SimClock(RUN_AT), db, "2026-08-30")
+
+    run_turn()          # no argument — a TypeError here IS the failure
+
+
+def test_the_prompt_is_a_constant_that_carries_no_per_run_value(db,
+                                                                monkeypatch):
+    """🔏 OQ-1, ruled: the seat composes the spec itself and NOTHING per-run
+    enters the prompt. The operative rule is not "no identifiers" but "nothing
+    a replay cannot reconstruct from state" — scripts/reflect_day.py:366-367
+    does embed job['frame'] in prompt prose, and tests/test_reflect_job.py:241
+    pins that it does, which is fine there because the frame comes from a DB
+    row a replay re-reads. A hypothesis typed at a shell exists nowhere but
+    that shell, so this job opens no per-run channel into its prompt at all.
+    Modelled on critic_g1.G1_PROMPT, which names no spec for the same reason.
+
+    Two invocations under different clocks and different run dates, one
+    identical prompt — critic_g1's test_the_prompt_carries_no_per_run_value
+    (tests/test_critic_g1_job.py:506-524) uses two different queue heads for
+    exactly this."""
+    seen = []
+
+    def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
+                        **kwargs):
+        seen.append(prompt)
+        return lambda: None
+
+    monkeypatch.setattr(register_spec.run_day, "make_turn", _fake_make_turn)
+
+    register_spec._make_run_turn("quant", {}, ":memory:", SimClock(RUN_AT), db,
+                                 "2026-08-30")()
+    register_spec._make_run_turn("quant", {}, ":memory:",
+                                 SimClock(datetime(2026, 9, 2, 14, 0,
+                                                   tzinfo=timezone.utc)),
+                                 db, "2026-09-02")()
+
+    assert set(seen) == {register_spec.REGISTER_PROMPT}
+    assert "2026-08-30" not in register_spec.REGISTER_PROMPT
+    assert "2026-09-02" not in register_spec.REGISTER_PROMPT
+    assert "{" not in register_spec.REGISTER_PROMPT      # no format slot
+
+
+def test_the_prompt_sanctions_the_decline_its_own_alert_names(db):
+    """register_and_log's register_spec_wrote_nothing alert tells the operator
+    that "the seat correctly declined to propose" is one of FOUR causes and is
+    not a fault, citing charters/quant.md's Mission. That is only true if the
+    turn was allowed to decline. A prompt that said "end by calling
+    submit_strategy_spec exactly once" and stopped would make the decline a
+    disobeyed instruction rather than a sanctioned output, and the alert would
+    be teaching the operator a cause that cannot occur."""
+    assert "submit_strategy_spec" in register_spec.REGISTER_PROMPT
+    assert "declin" in register_spec.REGISTER_PROMPT
+
+
+# --- main()'s own exit codes ------------------------------------------------
+#
+# 0 means A SPEC WAS REGISTERED, and nothing else returns it. critic_g1's _body
+# discards critique_and_log's counts and ends `return 0` whatever the night did
+# (scripts/critic_g1.py:552-558); copying that shape here would make `make
+# register-spec` exit 0 on a seat that never called the tool, which is the
+# failure this job's module docstring promises it does not have.
+
+class _FakeLock:
+    """run_day.acquire_lock returns an OPEN FILE HANDLE, and main() closes the
+    run_day one immediately — it asks whether a trading day is running, it does
+    not claim the day's lock. A bare object() cannot stand in for that: it has
+    no .close(), so the test would fail on the release rather than on the exit
+    code under test."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _fake_main_env(monkeypatch, db, tmp_path, *, held=()):
+    """critic_g1's main()-test monkeypatch set (tests/test_critic_g1_job.py:
+    629-646), one helper because six tests need it identically.
+
+    `held` names the lock FILES some other process holds: acquire_lock returns
+    None for those (contention is a None RETURN, not an exception —
+    scripts/run_day.py:142-163) and a closeable handle for the rest. Per-path
+    rather than one object shared by both calls, because the two refusals have
+    to be exercised SEPARATELY: a single None trips run_day's check first every
+    time, so the register_spec-lock test would pass without ever reaching the
+    branch it is named for.
+
+    Returns the (name, handle) pairs acquire_lock handed out, in order."""
+    handed: list[tuple[str, _FakeLock | None]] = []
+
+    def _acquire(path):
+        handle = None if path.name in held else _FakeLock(path.name)
+        handed.append((path.name, handle))
+        return handle
+
+    monkeypatch.setattr(register_spec.run_day, "paper_guard", lambda env: None)
+    monkeypatch.setattr(register_spec.run_day, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(register_spec.run_day, "acquire_lock", _acquire)
+    monkeypatch.setattr(register_spec, "connect", lambda p: db)
+    monkeypatch.setattr(register_spec, "_build_slack",
+                        lambda env, environ: FakeSlack())
+    return handed
+
+
+def test_main_exits_zero_only_when_a_spec_was_registered(db, tmp_path,
+                                                         monkeypatch):
+    """The whole exit-code contract in one assertion: 0 MEANS a spec exists
+    that did not exist before."""
+    _fake_main_env(monkeypatch, db, tmp_path)
+    monkeypatch.setattr(register_spec, "_make_run_turn",
+                        lambda *a, **k: (lambda: _register(db)))
+
+    assert register_spec.main([]) == 0
+    assert _alert_texts(db) == []
+    assert db.execute("SELECT count(*) c FROM strategy_specs"
+                      ).fetchone()["c"] == 1
+
+
+def test_main_exits_one_when_the_turn_wrote_nothing(db, tmp_path, monkeypatch):
+    """The bug the contract exists to prevent, driven end to end. No exception
+    is raised anywhere — run_day.make_turn's run() swallows everything — so
+    ONLY the count either side of the turn can produce this 1."""
+    _fake_main_env(monkeypatch, db, tmp_path)
+    monkeypatch.setattr(register_spec, "_make_run_turn",
+                        lambda *a, **k: (lambda: None))
+
+    assert register_spec.main([]) == 1
+    assert any("register_spec_wrote_nothing" in t for t in _alert_texts(db))
+
+
+def test_main_exits_one_when_the_guarded_body_fails(db, tmp_path, monkeypatch):
+    """The end-to-end code, not just _guarded's. Everything main() builds is
+    faked except the decision under test: what integer reaches sys.exit."""
+    _fake_main_env(monkeypatch, db, tmp_path)
+    monkeypatch.setattr(register_spec, "register_and_log",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            sqlite3.OperationalError("database is locked")))
+
+    assert register_spec.main([]) == 1
+    assert "register_spec_failed" in _alert_texts(db)[0]
+
+
+def test_main_exits_two_when_another_register_spec_holds_the_lock(
+        db, tmp_path, monkeypatch):
+    """NOT 0 and NOT 1. critic_g1 returns 0 here because contention on a
+    systemd leg resolves itself and must not page. This one is typed by a
+    human waiting to know whether the fund has a new spec, and 0 would tell
+    them it has. Not 1 either, because nothing failed.
+
+    run_day's lock is FREE in this test, so this really is the second check
+    refusing — and its handle must have been released, or merely asking the
+    question would hold a trading day out of its own window."""
+    handed = _fake_main_env(monkeypatch, db, tmp_path,
+                            held=(register_spec.LOCK_NAME,))
+    ran = []
+    monkeypatch.setattr(register_spec, "connect", lambda p: ran.append(p) or db)
+
+    assert register_spec.main([]) == 2
+    assert [n for n, _ in handed] == [register_spec.run_day.LOCK_NAME,
+                                      register_spec.LOCK_NAME]
+    assert handed[0][1].closed is True       # run_day's lock, released
+    assert ran == []                         # it never even opened the DB
+
+
+def test_main_exits_two_when_run_day_holds_its_lock(db, tmp_path, monkeypatch):
+    """The cross-job refusal, and it is not tidiness: slackkit/outbox.py:118-144
+    drain() SELECTs every unposted row and then marks and commits one row at a
+    time, so two concurrent drainers each fetch the same set and post it twice.
+    Invariant 6 routes outbound delivery through the outbox precisely so a
+    crash or retry can neither lose nor duplicate a post.
+
+    Same exit code as the other lock, because the operator's next action is
+    identical — but this check runs FIRST and this job's own lock is never even
+    requested, so a refusal here cannot leave a register_spec.lock stamped by a
+    run that did nothing."""
+    handed = _fake_main_env(monkeypatch, db, tmp_path,
+                            held=(register_spec.run_day.LOCK_NAME,))
+    ran = []
+    monkeypatch.setattr(register_spec, "connect", lambda p: ran.append(p) or db)
+
+    assert register_spec.main([]) == 2
+    assert [n for n, _ in handed] == [register_spec.run_day.LOCK_NAME]
+    assert ran == []
+
+
+def test_main_releases_run_days_lock_before_running_the_turn(db, tmp_path,
+                                                            monkeypatch):
+    """main() ASKS whether a trading day is running; it does not claim the
+    day's lock for the length of its own run. Holding it would let a hand-run
+    at 16:30 keep the 16:35 legs out of their window — the exact hazard
+    scripts/register_spec.py's LOCK_NAME comment says a separate lock exists to
+    avoid.
+
+    This is a REDUCTION of the double-drain hazard, not an elimination: run_day
+    can still start between the check and the turn. Pinned so nobody "fixes"
+    the release and closes that race by re-introducing the worse one."""
+    handed = _fake_main_env(monkeypatch, db, tmp_path)
+    monkeypatch.setattr(register_spec, "_make_run_turn",
+                        lambda *a, **k: (lambda: _register(db)))
+
+    assert register_spec.main([]) == 0
+    day_lock = next(h for n, h in handed
+                    if n == register_spec.run_day.LOCK_NAME)
+    own_lock = next(h for n, h in handed if n == register_spec.LOCK_NAME)
+    assert day_lock.closed is True
+    assert own_lock.closed is False          # ours outlives the run
+
+
+def test_a_bad_seat_config_fails_loudly_rather_than_passing_silently(
+        db, tmp_path, monkeypatch):
+    """load_seat_config reads agents/config/quant.yaml. It is INSIDE _guarded,
+    so it alerts with a code and exits 1 — tests/test_critic_g1_job.py:681-707's
+    shape, and the same defect that test was written for."""
+    _fake_main_env(monkeypatch, db, tmp_path)
+    monkeypatch.setattr(register_spec, "load_seat_config",
+                        lambda p: (_ for _ in ()).throw(
+                            FileNotFoundError("agents/config/quant.yaml")))
+
+    assert register_spec.main([]) == 1
+    assert "register_spec_failed" in _alert_texts(db)[0]
+    assert "FileNotFoundError" in _alert_texts(db)[0]
