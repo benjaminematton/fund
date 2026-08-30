@@ -138,6 +138,17 @@ def log(msg: str) -> None:
     print(f"register_spec: {msg}", flush=True)
 
 
+def _count_text(n: int) -> str:
+    """'3' or '50+' — never a number that reads as exact once the selector
+    behind it has saturated at QUEUE_REPORT_LIMIT.
+
+    Same shape and reason as critic_g1.py's _count_text
+    (scripts/critic_g1.py:256-259), kept as a separate copy rather than a
+    shared import — issue #200 tracks the one helper these two jobs will
+    eventually share."""
+    return f"{n}+" if n >= QUEUE_REPORT_LIMIT else str(n)
+
+
 def spec_count(conn) -> int:
     """How many specs are registered, full stop.
 
@@ -253,7 +264,8 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
                 counts["failed"] += 1
         queue_after = queue_depth(conn)
         log(f"registered {counts['registered']} · failed {counts['failed']}"
-            f" · G1 queue {queue_before} -> {queue_after}")
+            f" · G1 queue {_count_text(queue_before)} ->"
+            f" {_count_text(queue_after)}")
     finally:
         # queue_after is re-read here as well as above: on the raising branch
         # the line above may never have run, and an alert carrying a stale
@@ -263,7 +275,8 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
             run_day._alert(conn, clock, "register_spec_turn_failed",
                            f"register_spec_turn_failed —"
                            f" {failure['detail']}; no spec was registered."
-                           f" G1 queue {queue_before} -> {queue_after}."
+                           f" G1 queue {_count_text(queue_before)} ->"
+                           f" {_count_text(queue_after)}."
                            f" Nothing is queued and nothing retries: run"
                            f" `make register-spec` again when you want one")
         elif failure:
@@ -279,7 +292,8 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
                            " ('this family is tapped out, I am not"
                            " proposing') and which is not a fault. Read the"
                            " turn's transcript before treating this as one."
-                           f" G1 queue {queue_before} -> {queue_after}."
+                           f" G1 queue {_count_text(queue_before)} ->"
+                           f" {_count_text(queue_after)}."
                            " Nothing is queued and nothing retries")
         drain(conn, slack, iso(clock.now()))
     return counts

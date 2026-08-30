@@ -1,14 +1,15 @@
 """Offline tests for the hand-run spec-registration job's decision seams (#198).
 
-main() IS CALLED HERE, with everything it builds faked but the decision under
-test. An earlier draft of this file said main() "is never called — it builds
-real clients", copied from tests/test_critic_g1_job.py. That sentence is stale
-in the source it was copied from: that file's ":621 main()'s own exit codes"
-section drives main() through three test_main_exits_* cases, added precisely
+main() IS NOT CALLED HERE — it does not exist in this commit. This file tests
+the seams under it: register_and_log's counting and alerting, _guarded's
+exit-code pass-through, and the narrowed turn surface. main() and its own exit
+codes arrive with a later task and must be driven there, the way
+tests/test_critic_g1_job.py's ":621 main()'s own exit codes" section drives
+that job's main() through three test_main_exits_* cases — added precisely
 because an identical assumption in an earlier critic_g1 draft went unpinned and
 the claim it protected turned out to be false. The exit code is this job's ONLY
 report — there is no OnFailure= unit behind it — so it is the last thing that
-may go untested.
+may go untested once main() lands.
 
 THE JOB IS A PRODUCER, which is why it looks different from its siblings. Every
 other nightly job drains a queue and can compute how much of its OWN work is
@@ -146,7 +147,29 @@ def test_the_wrote_nothing_alert_names_all_four_causes_and_the_queue(db):
     assert "never called" in text
     assert "refused" in text
     assert "duplicate" in text or "already on the books" in text
-    assert "G1 queue" in text and "1" in text
+    assert "G1 queue 1 -> 1." in text
+
+
+def test_a_queue_at_the_report_limit_renders_saturated_not_exact(db, monkeypatch):
+    """scripts/register_spec.py:112-118 and queue_depth's own docstring both
+    promise 'N+' once the canonical selector saturates at QUEUE_REPORT_LIMIT —
+    but every render site used to interpolate the raw int, so a queue at or
+    past the limit printed a number that reads as exact when it is a floor.
+
+    queue_depth is monkeypatched rather than registering 50 real specs: the
+    behaviour under test is what the render sites do with a saturated count,
+    not whether the selector itself caps correctly (that is
+    test_the_queue_depth_comes_from_the_canonical_selector's job)."""
+    monkeypatch.setattr(register_spec, "queue_depth",
+                        lambda conn: register_spec.QUEUE_REPORT_LIMIT)
+
+    register_spec.register_and_log(
+        db, FakeSlack(), SimClock(RUN_AT), lambda: None)
+
+    text = next(t for t in _alert_texts(db)
+                if "register_spec_wrote_nothing" in t)
+    assert f"G1 queue {register_spec.QUEUE_REPORT_LIMIT}+ ->" \
+        f" {register_spec.QUEUE_REPORT_LIMIT}+." in text
 
 
 def test_a_re_registration_counts_as_wrote_nothing(db):
@@ -237,7 +260,7 @@ def test_the_turn_surface_is_exactly_the_one_cap_the_seat_holds(db, tmp_path):
     from agents.seats import build_seat_options, load_seat_config
     from agents.tools.fund_server import SEAT_CAPS
 
-    cfg = load_seat_config("agents/config/quant.yaml")
+    cfg = load_seat_config(register_spec.SEAT_CONFIG)
     opts = build_seat_options(cfg, tmp_path / "fund.sqlite",
                               SimClock(RUN_AT),
                               tools=register_spec.REGISTER_TOOLS)
