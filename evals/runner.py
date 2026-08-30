@@ -177,11 +177,16 @@ def run_trial(seat: str, case: Case, trial: int, *,
     state = build_case_state(case, db_path, journals_root)
     # The rig is a composition root, so it binds the turn exactly as
     # scripts/critic_g1.py does (strategy-contracts.md §3.4). A spec-shaped
-    # case's subject IS the id build_case_state registered — subjects and
-    # _critic_preconditions both derive it from `case.spec` through
-    # fundbt.hashing.spec_id, so there is no second id to drift. Unbound
-    # (a ticker-shaped case) stays None: those seats have no
-    # submit_spec_critique cap and the binding is inert for them.
+    # case's subject IS the id build_case_state registered, but only because
+    # `Case.subjects` hashes the same dict state/specs.py does — the coerced
+    # `StrategySpec.model_dump()`, not the raw YAML mapping. That is a real
+    # second derivation, not an absence of one: it hashed the mapping until
+    # 2026-08-29, and a case spelling `capacity_usd: 4000000` rather than
+    # `4000000.0` bound an id nothing had registered. Pinned in
+    # tests/test_evals_rig.py; if either side changes what it hashes, both
+    # change or the pin reddens. Unbound (a ticker-shaped case) stays None:
+    # those seats have no submit_spec_critique cap and the binding is inert
+    # for them.
     #
     # Leaving this unbound is not a degraded posture, it is a silent zero:
     # the seat's submit_spec_critique hits the None refusal, no

@@ -231,6 +231,38 @@ def test_the_critic_precondition_seeds_the_case_spec(tmp_path):
     state.conn.close()
 
 
+def test_subjects_is_the_id_the_fixture_registers(tmp_path):
+    """`Case.subjects` and state/specs.py must hash the SAME dict.
+
+    They did not. `subjects` hashed the raw YAML mapping while
+    insert_strategy_spec hashes `StrategySpec.model_dump()`, so a case written
+    `capacity_usd: 4000000` rather than `4000000.0` yielded two ids. The runner
+    binds `subjects[0]`, so that case's turn would be bound to a spec nothing
+    registered, submit_spec_critique would refuse every verdict, and the case
+    would grade as a seat that produced nothing — the silent zero the binding
+    exists to prevent.
+
+    All twelve cases on disk round-trip identically, so no case file can catch
+    this. The payload here is deliberately un-coerced, and the first assertion
+    is what stops the test going vacuously green if it ever stops diverging.
+    """
+    from fundbt.hashing import spec_id
+    from state.models import StrategySpec
+
+    on_disk = load_case(CRITIC_CASES / "m01.yaml")
+    raw = dict(on_disk.spec)
+    raw["capacity_usd"] = int(raw["capacity_usd"])       # 4000000, not ...0.0
+    assert spec_id(raw) != spec_id(StrategySpec(**raw).model_dump()), \
+        "this payload no longer diverges under coercion — the test pins nothing"
+
+    case = Case(id="coerced", seat="critic", clock=on_disk.clock, spec=raw)
+    state = build_case_state(case, tmp_path / "fund.sqlite",
+                             tmp_path / "journals")
+    rows = state.conn.execute("SELECT spec_id FROM strategy_specs").fetchall()
+    assert [r["spec_id"] for r in rows] == case.subjects
+    state.conn.close()
+
+
 def test_the_critic_stage_prompt_names_no_spec():
     """Per-run values never enter a prompt (CLAUDE.md). The spec reaches the
     seat through get_spec_brief, so the prompt is constant across cases —
@@ -282,9 +314,11 @@ def test_a_critic_trial_binds_the_turn_to_the_spec_the_case_registered(
     critic cases grade as a seat that produced nothing.
 
     The bound value is `case.subjects[0]`, which is the id
-    evals/fixtures.py:_critic_preconditions actually registered: both go
-    through fundbt.hashing.spec_id over `case.spec`, so there is no second
-    id that could drift."""
+    evals/fixtures.py:_critic_preconditions actually registered — the two
+    agree only because both hash `StrategySpec(**case.spec).model_dump()`.
+    That equality is a second derivation and is pinned separately by
+    test_subjects_is_the_id_the_fixture_registers; this test uses a case that
+    round-trips and so cannot see it."""
     import asyncio
 
     from evals.runner import run_trial
