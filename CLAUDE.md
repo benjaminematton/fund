@@ -44,6 +44,7 @@ A dated filename is a snapshot of the moment it was written, never current state
 - `specs/strategy.md` — strategy lifecycle: pre-registration, backtest tool rules, gates G1–G4, allocation and kill rules. Evidence behind its numbers lives in `research/strategy-research-report.md` — consult on demand, do NOT load by default.
 - `specs/strategy-contracts.md` — canonical ids/DDL/state machine/tool contracts for the strategy pipeline; matches the tested code in `fundbt/` + `stratgate/`. Overrides anything conflicting elsewhere.
 - `specs/calibration.md` — analyst scoring (Brier/BSS, shrinkage) → deterministic PM weights; implemented in `calibration/`.
+- `specs/improvement.md` — the improvement loop: tier 1 (weights, desk narrowing, lessons — code applies human-written rules) and tier 2 (the Proposer — pre-registered proposals a human merges); `weights`/`lessons`/`proposals` DDL and tool schemas. The firm proposes; it never applies its own proposal.
 - `charters/` — seat system prompts. `_template.md` defines required sections; `pm.md` and `quant.md` are the quality bar.
 - `fixtures/golden-day.md` — worked example of one full day; use its numbers as test vectors.
 

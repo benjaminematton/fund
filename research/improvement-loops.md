@@ -1,5 +1,11 @@
 # Improvement Loops — continuous agent improvement (AMENDED)
 
+> **Status 2026-08-30:** the buildable half of this document was promoted to
+> `specs/improvement.md`, which is now canonical for the loop and wins where the two
+> differ. This file is a dated snapshot of the reasoning; its blocked half (S3, S5, S6)
+> and the trigger that unblocks it are carried forward there as §3.5. Left unedited
+> below, because its staleness is the evidence of what was decided when.
+
 Status: amended 2026-08-18 after a grilling pass against
 `research/field-brief-agent-improvement-loops.md`. Sections marked **buildable**
 are ready to spec; sections marked **blocked** name the trigger that unblocks

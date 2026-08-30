@@ -38,6 +38,26 @@ Testing splits LLM **decisions** (expensive, non-deterministic) from tool **exec
 - [x] Journals: after sim day each participating seat's journal has an entry via `state/journal.py`; reflection job at `SimClock`+5 trading days writes `resolutions` with correct realized return & alpha from fixture prices.
 - [x] Cost rows recorded per seat per session.
 
+## Phase 2b — Close the loop (per `specs/improvement.md`)
+
+Order is `improvement.md` §8; each item lands on its own branch with its own tests. Every job here runs under the injected `Clock` and no LLM enters a Class A path (purity lint extends to `orchestrator/improve.py`).
+
+- [ ] Scoring job (S1): under `SimClock`, a nightly run over fixture resolutions writes exactly one `weights` row per graded seat with calibration §1–§2 values (abstains at p=0.5, total = shrunk BSS × n, floor 0.5× mean); a second run on unchanged data is a no-op (same `inputs_hash`). Job crash → last good rows stand, one alert.
+- [ ] PM brief carries `weights`: the 11:00 brief's `weights` section equals the latest `weights` rows for every analyst seat; no `weights` table yet, or a crashed job → section named in `unavailable`, PM proceeds (assert on the rendered brief, not the prompt).
+- [ ] Reflections reach the brief (#57): after resolve + reflect, the next morning's `journal` section for the deciding seat contains that resolution's frame and prose, via `state/journal.py` only.
+- [ ] Distillation (S2): given a fixture journal + scoreboard slice, `submit_lessons` writes a ≤40-line file, every line citing ≥1 existing resolution id, through `state/journal.py` only (purity-style AST check on the distiller path); the brief injects the lessons file, not the raw journal; a malformed or missing call leaves the previous file byte-identical and appends a `#risk` event; a 41-line submission is refused, not truncated.
+- [ ] Narrowing (S8): a fixture seat with `n_eff ≥ 50` and `shrunk_bss ≤ 0` on `W` consecutive scoreboards gets `narrowed = 1` and a weight that may be 0; `W − 1` does not; recovery over `W` positive scoreboards restores the floor; `W` and the thresholds are read from `config/`, and a test changing them changes the outcome.
+- [ ] Proposer tool surface, pinned like `tests/test_exec_seat_tool_surface.py`: `tools` is exactly `get_improvement_brief` + `submit_proposal`; no `mcp__alpaca__*`, no `mcp__slack__*` write; `setting_sources=[]`. Same pin for the distill seat with `submit_lessons`.
+- [ ] Target bound server-side: `submit_proposal` carries no target or subject field; a proposal lands on the bound target only; a server constructed with a `charter` or `desk` target while `improvement.md` §3.5 has not fired refuses at construction.
+- [ ] `submit_proposal` handler: an `evidence` id that does not exist → refused, nothing written; the three default `at_risk` metrics are present on the row whether or not named; a second call in one turn → refused, first stands; a `change` shape that does not match the bound target → refused; success writes one `proposals` row in `proposed` and exactly one event.
+- [ ] Projector: one PR per proposal via `gh`, opened by code with the manifest as body; a proposal whose `change` touches two targets is refused before any PR; `gh` failure leaves the row `proposed` and the next job retries under the same id (no duplicate PR).
+- [ ] State machine: `proposed → merged | refused | expired`, `merged → kept | reverted`; every other edge raises through `state.transition()`; `kept`/`reverted` are written only by the evaluator.
+- [ ] Evaluator: on a fixture where the touched seat and the control seats move under the same regime, `resolved_delta` is the difference-in-differences, not the seat's raw change; an `at_risk` band left → `reverted` regardless of `resolved_delta`, and a revert PR is opened; no control seat available → row stays `merged` with a `#risk` line, `kept` is never assumed.
+- [ ] Proposer scoreboard row: over ≥10 resolved fixture proposals the row carries prediction precision and at-risk hit rate; a Proposer below chance has its target enum shrunk to one-number targets on the next job.
+- [ ] Gate instrumentation: three consecutive merges flag the fourth proposal `read-twice` in its projection; approval rate and change-request rate on proposals appear on the scoreboard and enter no weight.
+- [ ] Sim month: a simulated month with nothing to propose produces zero Proposer or distill cost rows beyond the scheduled turns and zero PR events; with one proposal, exactly one PR event.
+- [ ] Contract tests widened: `specs/improvement.md` §4 is parsed by `tests/test_schema_contract.py` from the lane that lands the first table, and its §5 tools by `tests/test_tool_surface_canon.py` from the lane that lands the first seat.
+
 ## Phase 3 — The firm (debates, risk persona, macro, ops, CEO gate)
 
 - [ ] Debate: orchestrator assigns turns bull→bear→bull→bear (+1 risk question each side); transcript in one FakeSlack thread; ≤5 replies per agent enforced; termination after 2 rounds even if agents would continue.
