@@ -83,9 +83,12 @@ would change a rule or a prompt — a charter that keeps making the same
 mistake, a limit the record says is mis-set, a desk that should exist or
 shouldn't, a strategy family worth trying. Those the firm cannot change
 itself, and doesn't try to. It writes the proposal — the diff, the evidence
-behind it, what it expects to improve and how that would show up on the
-scorecard — and puts it in front of the human. Nothing in the firm edits its
-own instructions; nothing waits for the human to notice a problem either.
+behind it, what it expects to improve, what it must not disturb, and how both
+would show up on the scorecard — and puts it in front of the human, one at a
+time and no faster than the record can grade them. Nothing in the firm edits
+its own instructions; nothing waits for the human to notice a problem either.
+And the proposals are graded too: a firm whose proposals keep failing to move
+what they predicted has learned something about its own judgment.
 Charters, thresholds, and capital change only by human commit. The proposal is
 the firm's.
 
@@ -120,9 +123,10 @@ reconciled, the day is written down, and that night the calls that came due get
 scored against what the market actually did — which is what the desks read
 tomorrow morning before they open their mouths. The same night the scorecard
 is recomputed and the rules run on it: weights move, an allocation ramps or is
-cut, a desk narrows. Where the record points at something the rules can't
-touch, the firm writes the proposal, and it is waiting in the morning — one
-thing, with the evidence — for the human to rule on.
+cut, a desk narrows. And when the record has accumulated enough to argue for
+something the rules can't touch — not every night; a graded record takes
+weeks to say anything — the firm writes the proposal: one thing, with the
+evidence and a prediction of what it will change, for the human to rule on.
 
 Most days it makes one or two small decisions. Some days the right answer is to
 do nothing at all, and it does nothing, without anyone having to intervene.
