@@ -13,7 +13,8 @@ from pydantic import ValidationError
 
 from state.db import connect
 from state.models import SpecCritique, StrategySpec
-from state.specs import insert_strategy_spec, specs_awaiting_critique
+from state.specs import (OrphanedSpecs, insert_strategy_spec,
+                         specs_awaiting_critique)
 
 NOW = "2026-07-06T15:00:00+00:00"
 
@@ -223,19 +224,88 @@ def test_a_spec_the_ddl_rejected_writes_no_lifecycle_row_and_does_not_raise(
     c.close()
 
 
-def test_a_spec_with_no_lifecycle_row_is_not_awaiting_critique(conn):
-    """The selector INNER JOINs `strategies`, so a spec written by a path that
-    skips the lifecycle row is invisible to G1 rather than assumed pending.
+def test_a_spec_with_no_lifecycle_row_stops_the_queue_read(conn):
+    """A `strategy_specs` row with no `strategies` row STOPS the G1 read. It is
+    not filtered out of it.
 
-    Deliberate, not an oversight: defaulting a missing row to SPEC would be a
-    guess, and invariant 4 resolves ambiguity to no action. The orphan is not
-    a state any write path produces — registration writes both rows in one
-    transaction — so this pins the reach of the join, not a live hazard."""
+    THIS REPLACES THE ASSERTION THAT USED TO STAND HERE — that the INNER JOIN
+    quietly excluded such a spec, "the reach of the join, not a live hazard".
+    Both halves of that were wrong. Excluding it is the failure
+    strategy-contracts.md §3.4 forbids: "an empty list is indistinguishable
+    from 'nothing pending' and would end the turn with an unreviewed spec
+    behind a clean-looking trace". And the hazard is live: a spec registered
+    by a build that predates §3.1's paired write carries no lifecycle row, and
+    #198's hand-run driver is what puts real specs on that path.
+
+    All three tolerant remedies fail the same way. A bare inner join DROPS the
+    spec; a LEFT JOIN GUESSES that a missing row means SPEC (invariant 4
+    resolves ambiguity to no action, not to a guess); a silent backfill
+    INVENTS lifecycle state for a row nobody looked at. Each ends the turn
+    cleanly with a spec nobody reviewed.
+
+    The message is asserted, not just the type, because the only place it is
+    ever read is a Slack alert from scripts/critic_g1.py — the operator acting
+    on it does not have the source open."""
     sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
     assert [p["spec_id"] for p in specs_awaiting_critique(conn)] == [sid]
     conn.execute("DELETE FROM strategies WHERE strategy_id = ?", (sid,))
     conn.commit()
-    assert specs_awaiting_critique(conn) == []
+
+    with pytest.raises(OrphanedSpecs) as exc:
+        specs_awaiting_critique(conn)
+    assert sid in str(exc.value), \
+        "the alert does not name the spec — nobody can repair it"
+    assert "INSERT INTO strategies" in str(exc.value), \
+        "the alert states no repair — the operator has to read the source"
+
+
+def test_a_critiqued_spec_with_no_lifecycle_row_raises_too(conn):
+    """The check is NOT scoped to the queue's own filter, and that is the whole
+    difference between this and a fix that only looks sufficient.
+
+    A critiqued spec is outside the queue under BOTH predicates, so a check
+    that ran only over pending rows — or only when the queue came back short —
+    would pass the test above and still leave this row stranded. With no
+    lifecycle row it has no lifecycle state at all: it cannot advance to
+    BACKTEST either, because §3.2 reads and UPSERTs `strategies.state` and
+    there is nothing to read. The stranding would then surface one gate later,
+    at run_backtest, in a different lane from the one that caused it."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    conn.execute(CRITIQUE_SQL, (sid, NOW))
+    conn.execute("DELETE FROM strategies WHERE strategy_id = ?", (sid,))
+    conn.commit()
+    assert conn.execute("SELECT 1 FROM strategy_critiques WHERE spec_id = ?",
+                        (sid,)).fetchone() is not None, "not a critiqued spec"
+
+    with pytest.raises(OrphanedSpecs) as exc:
+        specs_awaiting_critique(conn)
+    assert sid in str(exc.value)
+
+
+def test_the_orphan_check_never_fires_on_a_spec_the_write_path_registered(conn):
+    """The half that rots quietly if it is left out: a blocking check is only
+    correct if it cannot fire on a healthy tree. Every state a spec can reach
+    through the shipped write path is present here — pending, critiqued and
+    advanced — and none of them is an orphan, so the queue behaves exactly as
+    it did before the check existed.
+
+    THE ADVANCED SPEC IS THE LOAD-BEARING ONE. It is kept out of the queue by
+    the `state = 'SPEC'` predicate, NOT by the orphan check, and the two must
+    not be confused: a check rewritten as "has no row in state SPEC" would
+    pass both tests above and redden here, having turned every advanced
+    strategy in the fund into a permanent G1 outage."""
+    pending = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    critiqued = insert_strategy_spec(
+        conn, StrategySpec(**dict(SPEC, search_budget=25)), NOW)
+    conn.execute(CRITIQUE_SQL, (critiqued, NOW))
+    advanced = insert_strategy_spec(
+        conn, StrategySpec(**dict(SPEC, search_budget=26)), NOW)
+    conn.execute("UPDATE strategies SET state = 'BACKTEST'"
+                 " WHERE strategy_id = ?", (advanced,))
+    conn.commit()
+
+    assert [p["spec_id"] for p in specs_awaiting_critique(conn, limit=10)] == \
+        [pending]
 
 
 def test_a_critiqued_spec_still_in_state_spec_is_not_returned(conn):

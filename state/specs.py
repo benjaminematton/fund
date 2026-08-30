@@ -26,6 +26,20 @@ COLUMNS = ("family", "seat", "hypothesis", "mechanism_class", "universe",
            "invalidation", "capacity_usd", "predicted", "llm_in_loop")
 
 
+class OrphanedSpecs(Exception):
+    """Registered specs with no `strategies` lifecycle row — they can neither
+    be critiqued nor advanced, so the G1 queue refuses to be read at all.
+
+    A NAMED class, following state/transition.py's IllegalTransition and
+    StaleTransition, because the only places this ever surfaces render the
+    class name and nothing else structural: scripts/critic_g1.py's _guarded
+    posts `critic_g1_failed — {type(exc).__name__}: {exc}` to Slack, and
+    agents/tools/fund_server.py's handle_get_spec_brief folds it into the tool
+    error the same way. "OrphanedSpecs" names the condition an operator has to
+    repair; a bare RuntimeError would read as a bug in the selector.
+    """
+
+
 def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
                          now_iso: str) -> str:
     """INSERT one immutable spec plus its lifecycle row; return the spec id.
@@ -80,6 +94,70 @@ def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
     return sid
 
 
+def _refuse_orphaned_specs(conn: sqlite3.Connection) -> None:
+    """Raise OrphanedSpecs if any `strategy_specs` row has no `strategies` row.
+
+    BLOCKING, NOT ADVISORY, and that is what makes the design correct rather
+    than merely tidy. A spec with no lifecycle row has no lifecycle STATE: it
+    cannot be reviewed at G1 (the selector below INNER JOINs `strategies`) and
+    it cannot advance to BACKTEST either, because strategy-contracts.md §3.2
+    reads and UPSERTs `strategies.state` and there is nothing there to read.
+    Permanent stranding requires a silent skip; stopping the read is how this
+    design has none.
+
+    WHY A RAISE AND NOT A TOLERANT JOIN OR A BACKFILL. §3.4: "The spec queue
+    does not degrade. An unreadable queue returns an error rather than [],
+    because an empty list is indistinguishable from 'nothing pending' and
+    would end the turn with an unreviewed spec behind a clean-looking trace."
+    A LEFT JOIN GUESSES that a missing lifecycle row means SPEC — and
+    invariant 4 resolves ambiguity to no action, never to a guess. A bare
+    inner join DROPS the spec. A silent backfill INVENTS lifecycle state for a
+    row nobody looked at. All three end the turn cleanly with a spec nobody
+    reviewed, which is the one outcome §3.4 forbids. DO NOT "fix" this by
+    making it tolerant.
+
+    EVERY SPEC, NOT EVERY PENDING SPEC. A critiqued spec is outside the queue
+    under both of the selector's predicates, so a check scoped to the queue's
+    own filter would pass a queue-visibility test and still strand that row —
+    one gate later, at run_backtest, in a different lane from the one that
+    caused it.
+
+    ALWAYS ON, and NOT because the table is small — that argument would expire.
+    Running the check only when the main query comes back "short" has no
+    expected count to compare against (the selector's default limit is 1) and
+    would be scoped to the queue's own filter by construction: a critiqued
+    orphan changes neither count, so the case the paragraph above exists for is
+    exactly the case a count-triggered check would miss. The cost is one
+    anti-join over a primary-key index on `strategy_specs`, which holds one row
+    per pre-registered strategy — the fund's smallest table by design.
+
+    NOTHING IN THIS TREE PRODUCES AN ORPHAN. insert_strategy_spec above and
+    tests/synthetic.py:seed_spec_row both write the pair. A build that
+    PREDATES §3.1's paired write does: every spec it registered has no
+    lifecycle row, and issue #198's hand-run driver is what puts real specs on
+    that path.
+    """
+    orphans = [row[0] for row in conn.execute(
+        "SELECT s.spec_id FROM strategy_specs s"
+        " LEFT JOIN strategies st ON st.strategy_id = s.spec_id"
+        " WHERE st.strategy_id IS NULL"
+        " ORDER BY s.spec_id").fetchall()]
+    if not orphans:
+        return
+    raise OrphanedSpecs(
+        f"{len(orphans)} registered spec(s) have no `strategies` lifecycle row"
+        f" and can neither be critiqued nor advanced: {', '.join(orphans)}."
+        " Refusing to read the G1 queue rather than return the rest, which"
+        " would end the turn with an unreviewed spec behind a clean-looking"
+        " trace (strategy-contracts.md §3.4)."
+        " REPAIR — give each one the row registration would have written, then"
+        " re-run: INSERT INTO strategies (strategy_id, state, updated_at)"
+        " SELECT spec_id, 'SPEC', created_at FROM strategy_specs WHERE spec_id"
+        " NOT IN (SELECT strategy_id FROM strategies);"
+        " SPEC is right even for a spec that already carries a verdict — §4"
+        " has no G1 edge, so a verdict moves nothing out of SPEC.")
+
+
 def specs_awaiting_critique(conn: sqlite3.Connection, *,
                             limit: int = 1) -> list[dict]:
     """Specs whose lifecycle row is in SPEC and that carry no G1 verdict yet,
@@ -97,18 +175,21 @@ def specs_awaiting_critique(conn: sqlite3.Connection, *,
     tests across three files, including critic_g1's "never bought again".
 
     WHICH ONE IS LOAD-BEARING WILL SWAP. Today the critique predicate does the
-    work and the state predicate is a structural bound — it is what keeps a
-    spec with no lifecycle row out of the queue. When §4 grows a G1 edge
+    work and the state predicate is a structural bound — it excludes specs
+    that have ADVANCED past SPEC, and nothing else, since a spec with no
+    lifecycle row never reaches this query. When §4 grows a G1 edge
     (#181) so that a verdict advances or rejects the spec, the state predicate
     becomes the one that retires reviewed specs, and the critique predicate
     degrades to a guard against the window between the two writes. Neither is
     safe to drop before that lands.
 
-    The INNER JOIN is deliberate: a spec with no `strategies` row is not
-    "assumed pending". Defaulting a missing lifecycle row to SPEC would be a
-    guess, and invariant 4 resolves ambiguity to no action. Registration
-    writes both rows in one transaction (insert_strategy_spec above), so the
-    orphan is not a state any write path produces.
+    THE INNER JOIN IS NOT WHAT HANDLES A MISSING LIFECYCLE ROW.
+    _refuse_orphaned_specs runs first and raises, naming the spec and the
+    repair. The join stays inner rather than tolerant — defaulting a missing
+    row to SPEC would be a guess and invariant 4 resolves ambiguity to no
+    action — but on its own it would DROP the orphan silently, which §3.4
+    forbids just as squarely. By the time this query runs there are no
+    orphans, so the join's inner-ness is a second lock, not the first.
 
     DEFAULT LIMIT 1, deliberately. The design has the orchestrator assign the
     Critic a turn when a spec enters SPEC — one turn per spec — so a brief
@@ -129,6 +210,7 @@ def specs_awaiting_critique(conn: sqlite3.Connection, *,
     JSON columns are decoded here so the tool layer hands the seat structured
     data, never a string it might try to parse.
     """
+    _refuse_orphaned_specs(conn)
     rows = conn.execute(
         "SELECT s.* FROM strategy_specs s"
         " JOIN strategies st ON st.strategy_id = s.spec_id"
