@@ -145,6 +145,7 @@ Closes #182's binding half. Sanctioned by `specs/strategy-contracts.md` §3.4 as
 - Modify: `scripts/run_day.py:252`, `:268`, `:367`, `:391`
 - Modify: `scripts/critic_g1.py:283-291`, `:375-381`, `:388-390`
 - Modify: `tests/conftest.py:68-73`
+- Modify: `evals/runner.py` and `scripts/dry_run_critic.py` — **added in review.** These are the other two composition roots that call the critique path, and Step 3's `None` refusal breaks both. This block listed neither; `evals/runner.py` was consequently missed in the first commit (`6b9d5f4`) and fixed in the second (`8c7e36e`). A Files block that omits a composition root omits the work.
 - Test: `tests/test_spec_critique_binding.py` (create), `tests/test_run_day.py`, `tests/test_fund_tools.py`
 
 **Interfaces:**
@@ -272,7 +273,11 @@ Each hop mirrors `expected_decision_id` on the adjacent line. Add `expected_spec
 
 - [ ] **Step 9: Manufacture a red against the passing code**
 
-A test that goes green on first run pins nothing. Before committing, delete the `expected_spec_id=job["spec_id"]` kwarg from Step 6 and run the **full** suite. Read the entire failure list — if only `tests/test_critic_g1_job.py` reddens and no replay test does, Step 8 bound something that is not on the replay path. Restore, and record the failure list in the task report as the evidence.
+A test that goes green on first run pins nothing. Before committing, delete the `expected_spec_id=job["spec_id"]` kwarg from Step 6 and run the **full** suite. Restore, and record the failure list in the task report as the evidence.
+
+**Expect exactly one red: `tests/test_critic_g1_job.py::test_the_turn_is_bound_to_the_spec_it_was_shown`.** No replay test reddens, and that is CORRECT rather than a gap in Step 8. `tests/conftest.py:make_executor` takes `expected_spec_id` from its own caller, so a `scripts/critic_g1.py` change cannot reach the replay path by construction — and making it reach would mean defaulting the binding from the recording's own args, which compares a value against itself so the refusal could never fire. That self-binding tautology is precisely what `8c7e36e` removed; do not reintroduce it chasing a second red. Step 8's half is pinned separately by `tests/test_replay.py:test_replay_refuses_a_verdict_for_a_spec_the_recorded_turn_was_not_shown` — mutate `make_executor`'s `expected_spec_id` if you want to watch that one redden.
+
+> Corrected in review: this step previously read "if only `tests/test_critic_g1_job.py` reddens and no replay test does, Step 8 bound something that is not on the replay path." The mutation was run and that is exactly what happens, for the structural reason above — the instruction sent the next reader chasing a non-bug.
 
 - [ ] **Step 10: Full suite, then commit**
 

@@ -2,10 +2,9 @@
 
 Lives in state/ for the same reason state/critiques.py does: orchestrator/
 must not import from agents/ (CLAUDE.md), and the G1 stage that assigns the
-Critic its turn is orchestrator code. Phase 5's `submit_strategy_spec` MCP
-handler will call insert_strategy_spec rather than writing its own INSERT —
-one write path, so a spec the fixture can build is a spec production can
-build.
+Critic its turn is orchestrator code. The `submit_strategy_spec` MCP handler
+calls insert_strategy_spec rather than writing its own INSERT — one write
+path, so a spec the fixture can build is a spec production can build.
 
 Purity-linted package: pure Python + sqlite3 + pydantic + fundbt.hashing
 (the ONLY permitted hasher, strategy-contracts.md §1). No wall clock.

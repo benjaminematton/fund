@@ -146,6 +146,16 @@ def test_a_second_verdict_is_refused_never_overwritten(db, spec_id):
 
 
 def test_malformed_payload_writes_nothing(db, spec_id):
+    """One case here no longer reaches validation, deliberately noted rather
+    than restructured. `{"verdict": "clear"}` names no spec, so _submit's
+    setdefault binds expected_spec_id=None and the call takes the UNBOUND
+    refusal (§3.4) before SpecCritique is ever constructed. That is the
+    correct production answer — a served turn is always bound, so a payload
+    with no spec_id cannot reach validation there either — and the assertion
+    this test makes (ok is False, zero rows) holds on both paths. What is no
+    longer covered anywhere is SpecCritique's own KeyError on a missing
+    spec_id, and nothing should be added to cover it: that path is unreachable
+    through the served tool."""
     for args in ({"spec_id": spec_id},
                  {"spec_id": spec_id, "verdict": "maybe"},
                  {"verdict": "clear"},

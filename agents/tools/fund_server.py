@@ -1,10 +1,16 @@
-"""In-process fund MCP server (design Appendix A; contracts.md §4). Four
-tools, each restricted to the seats that own it: submit_signal (analyst),
-submit_decision (pm), list_open_tickets (exec) — the only path from agent
-output to workflow state (invariant 7) — and get_stage_brief (analyst + pm),
-the only path INTO a decision seat's context. run_date/now come from the
-server's bound clock and the brief's contents from injected providers, never
-from the agent, so per-run values never enter a prompt."""
+"""In-process fund MCP server (design Appendix A; contracts.md §4). Every tool
+is restricted to the seats that own it; the submit_* tools are the only path
+from agent output to workflow state (invariant 7), and the get_*_brief tools
+the only path INTO a seat's context. run_date/now come
+from the server's bound clock and the brief's contents from injected
+providers, never from the agent, so per-run values never enter a prompt.
+
+`specs/contracts.md` §4 is the canonical enumeration and this docstring
+deliberately does not restate it — it named four tools while seven were
+registered, which is what a second list always does. Note the count of
+HANDLERS here is larger than the count of registered tools:
+handle_submit_strategy_spec ships without an `@tool` (§4 row `not served`,
+#198)."""
 
 from __future__ import annotations
 
@@ -253,6 +259,18 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
     a property no test states and nothing keeps true (`rebalance`, for one, is
     an unconstrained `str` in the model), so it is a coincidence to guard
     against rather than to rely on.
+
+    THE WRITE IS TWO TRANSACTIONS, unlike its neighbour. insert_strategy_spec
+    commits internally, then append_event commits again, so a crash between
+    them leaves a registered spec that was never projected to `#research` and
+    never will be — drain() only posts rows the outbox holds.
+    handle_submit_spec_critique below is the contrasting shape: INSERT,
+    append_event, ONE commit, which scripts/critic_g1.py:116 states as a fact
+    the nightly job relies on. Closing the gap means changing
+    insert_strategy_spec's transaction handling, and that is a shared write
+    path (evals/fixtures.py calls it too), so it is out of scope here. Zero
+    impact while nothing drives this tool; it starts to matter when #198 ships
+    a driver.
     """
     if not _can(seat, "submit_strategy_spec"):
         return {"ok": False,
