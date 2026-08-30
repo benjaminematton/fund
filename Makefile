@@ -184,7 +184,9 @@ critic-g1: deps
 	$(PYTHON) scripts/critic_g1.py
 
 # Hand-run spec registration: ONE `quant` turn that registers ONE strategy spec
-# (issue #198). This is `strategy_specs`'s only producer.
+# (issue #198). This is `strategy_specs`'s only producer in the fund's own
+# production database (evals/fixtures.py calls insert_strategy_spec directly,
+# against a fresh eval database, to seed Critic test cases).
 #
 # NEVER on a timer, and deliberately not a fifth systemd leg (CEO ruling B1).
 # specs/strategy.md makes SPEC reachable only through *PM sponsors -> SPEC* and

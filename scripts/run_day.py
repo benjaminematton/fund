@@ -381,7 +381,9 @@ def make_turn(seat: str, cfg: dict, db_path: str, clock, conn, run_date: str,
     submit_spec_critique call; every other caller leaves it None.
 
     `tools` is scripts/critic_g1.py's per-turn narrowing of the Critic's
-    surface to the two G1 tools; every other caller leaves it None.
+    surface to the two G1 tools. scripts/register_spec.py also passes it,
+    narrowing the Quant Researcher's turn to `REGISTER_TOOLS`; every other
+    caller leaves it None.
 
     Records the turn's cost after EVERY turn (the only production caller of
     record_turn_result) and never propagates: a seat that blows up leaves one

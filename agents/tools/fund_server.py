@@ -235,8 +235,10 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
                                 args: dict, now_iso: str) -> dict:
     """Validate + INSERT one immutable strategy spec (§3.1).
 
-    The write path is state/specs.py:insert_strategy_spec — one INSERT in
-    the tree, so a spec the fixture builds is a spec production builds.
+    The write path is state/specs.py:insert_strategy_spec — the one write
+    path in the tree (#197: it INSERTs both the `strategy_specs` row and the
+    `strategies` lifecycle row, in one commit), so a spec the fixture builds
+    is a spec production builds.
     Idempotence is not implemented here: the id IS the content hash, so a
     re-register collides on the primary key and is ignored. This handler
     only has to report which of the two happened.
