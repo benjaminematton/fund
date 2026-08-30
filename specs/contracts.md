@@ -419,7 +419,7 @@ The canonical schemas, content-addressed ids (`spec_id`/`config_hash`/`run_key`)
 
 ## 7b. Improvement-loop contracts — see `specs/improvement.md`
 
-The `weights`, `lessons`, and `proposals` tables, the `proposed → merged | refused | expired · merged → kept | reverted` state machine, the `get_improvement_brief` / `submit_lessons` / `submit_proposal` schemas, and the loop's failure semantics live in `specs/improvement.md`, which is authoritative for them. The same conventions carry over: SQLite is the source of truth, Slack projection via the `events` outbox, transitions via compare-and-swap, default is no-change. Until the first Phase 2b lane lands, `state/schema.sql` carries none of those tables and `tests/test_schema_contract.py` does not parse that file — the §2 DDL above and `strategy-contracts.md` §2 remain the two parsed sources.
+The `offered`, `weights`, `lessons`, and `proposals` tables, the `proposed → merged | refused | expired · merged → kept | reverted` state machine, the `get_improvement_brief` / `submit_lessons` / `submit_proposal` schemas, and the loop's failure semantics live in `specs/improvement.md`, which is authoritative for them. The same conventions carry over: SQLite is the source of truth, Slack projection via the `events` outbox, transitions via compare-and-swap, default is no-change. Until the first Phase 2b lane lands, `state/schema.sql` carries none of those tables and `tests/test_schema_contract.py` does not parse that file — the §2 DDL above and `strategy-contracts.md` §2 remain the two parsed sources.
 
 ## 8. Slack message formats (projection only)
 

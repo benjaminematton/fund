@@ -85,6 +85,16 @@ yet: `n_eff = n_graded / h` where `h` is the signal horizon in trading days (def
 threshold in this file is in `n_graded`; `n_eff` is stored for significance claims and displayed
 beside it, as calibration §4 requires.
 
+**Windows, defined once.** Skill metrics (`brier` … `slugging`, `bss_shrunk`, `total_skill`) are
+calibration §1's recency-weighted computation over the seat's whole graded history. The
+behavioural rates and cost (`n_signalled`, `n_offered`, `abstention_rate`, `n_distinct_conf`,
+`coverage`, `cost_usd`) are over the trailing `window_days` trading days
+(`config/improvement.yaml`, default 20). `n_offered` is counted from the **`offered`** table
+(§4), which the 08:45 pre-gate stage writes — one row per `(run_date, ticker)` in the active
+set — because the active set otherwise lives only in `run_pre_gate`'s return value and no night
+job could see it. The evaluator's DiD windows (§3.3) are in graded calls and are computed from
+`signals`/`resolutions` directly, not from `weights` rows.
+
 **Briefs read it as data.** `get_stage_brief` gains a `weights` section (contracts §4 field
 matrix): the PM receives the latest row for every analyst seat; each analyst receives **its own
 latest row only** — calibration §6's "seeing your own calibration is the cheapest charter tune-up"
@@ -208,8 +218,7 @@ never assumed.
 
 Three metrics are in every proposal's `at_risk` set by default, named or not, band 0.10:
 **`abstention_rate`**, **`n_distinct_conf`** (confidence granularity), and **`coverage`**
-(tickers signalled ÷ tickers offered — `n_offered` is written by the scoring job from that day's
-watchlist minus the pre-gate skip set, because nothing else persists it). They are the cheapest
+(`n_signalled ÷ n_offered`, from the `offered` rows the pre-gate stage writes). They are the cheapest
 levers an instruction change can pull to flatter a Brier-based score.
 
 **The Proposer is graded, not the proposal.** No single proposal meets a significance bar at the
@@ -252,6 +261,16 @@ Written `CREATE TABLE IF NOT EXISTS` in `state/schema.sql` (`state/db.py` matche
 columns carry no CHECK, matching `decisions` and `tickets`; the legal states are §3.2's machine.
 
 ```sql
+CREATE TABLE offered (                         -- the pre-gate's active set, persisted (§2.1)
+  run_date      TEXT NOT NULL,
+  ticker        TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  PRIMARY KEY (run_date, ticker)
+);
+-- Written by the 08:45 pre-gate stage for every ticker that survives the
+-- {buy:0, sell:0} drop; the only durable record of what the desks were asked
+-- to look at, and the denominator of coverage. Not a workflow table: no status.
+
 CREATE TABLE weights (                         -- the scoreboard: one row per seat per night
   id            INTEGER PRIMARY KEY,
   as_of_date    TEXT NOT NULL,                -- scoreboard date (ET)
@@ -268,10 +287,11 @@ CREATE TABLE weights (                         -- the scoreboard: one row per se
   ece           REAL NOT NULL,                -- descriptive only, never in the weight
   batting       REAL NOT NULL,
   slugging      REAL NOT NULL,
-  abstention_rate REAL NOT NULL,              -- n_abstain / n_offered over the window
+  n_signalled   INTEGER NOT NULL,             -- signals rows (any direction) in the window
+  n_offered     INTEGER NOT NULL,             -- offered rows in the window (§2.1)
+  abstention_rate REAL NOT NULL,              -- n_abstain / n_signalled over the window
   n_distinct_conf INTEGER NOT NULL,           -- confidence granularity over the window
-  coverage      REAL NOT NULL,                -- signalled / offered over the window
-  n_offered     INTEGER NOT NULL,             -- watchlist minus pre-gate skip set, summed
+  coverage      REAL NOT NULL,                -- n_signalled / n_offered over the window
   cost_usd      REAL NOT NULL,                -- costs.usd_estimate summed over the window (est.)
   weight        REAL NOT NULL CHECK (weight >= 0 AND weight <= 1),
   narrowed      INTEGER NOT NULL DEFAULT 0,   -- §2.3: floor released
@@ -427,6 +447,14 @@ class DeskChange(BaseModel):        # desk
     action: Literal["create", "retire"]
 ```
 
+`desk: create` yields a seat with no `charters/<seat>.md`, which `build_seat_options` reads
+unconditionally — so `create` is admitted together with `charter` at §3.5, never before, and a
+create PR carries the charter in the same diff.
+
+Brief sections are capabilities like every other (`SEAT_CAPS` naming rule in
+`agents/tools/fund_server.py`): `read_weights` and `read_lessons` grant the `weights` and
+`lessons` sections; `read_improvement_brief` grants `get_improvement_brief`.
+
 Handler rules, enforced in the handler and not only the schema (contracts §4 ruling 2026-08-13):
 every `evidence` `(table, id)` must exist; the three default `at_risk` entries are added if
 absent; `change` is parsed with the bound target's model or refused; the row is INSERTed once,
@@ -460,14 +488,14 @@ never UPSERTed; one event is appended.
 ## 8. Build order — Phase 2b
 
 Done-criteria in `specs/acceptance.md`, Phase 2b. Sequence, by attribution cost:
-(a) S1 job + `weights` + brief sections → (b) reflections into `journal` (#57) → (c) S2
+(a) the pre-gate write to `offered` + S1 job + `weights` + brief sections → (b) reflections into `journal` (#57) → (c) S2
 distillation + `lessons` + `write_lessons` → (d) S8 narrowing → (e) `proposals` + Proposer with
 `ADMITTED_TARGETS` = the five one-number/file targets + PR projector + watcher → (f) evaluator +
 Proposer record → (g) `charter`/`desk`, **gated on §3.5, not scheduled.**
 
 Contract-test wiring: the lane landing (a) adds this file to `tests/test_schema_contract.py`'s
 parsed set and, until (c) and (e) land, lists `lessons` and `proposals` in `NO_SCHEMA_HOME` with
-the issue that will land them; the lane landing (c) adds this file to
+the per-table reason recorded in issue #50, as that list's comment requires; the lane landing (c) adds this file to
 `tests/test_tool_surface_canon.py`'s, flips `submit_lessons`'s §4 row to `served`, fills its
 `seats` cell, registers the tool, and adds the cap — in one commit, because the canon test goes
 red on the first of those without the rest.
