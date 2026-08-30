@@ -283,12 +283,12 @@ No tool may exist without a row here, and every row marked `served` must exist. 
 | `submit_spec_critique` | `critic` | `strategy-contracts.md` §3.4 | served |
 | `submit_reflection` | `reflect` | below | served |
 | `submit_critique` | `critic` | below | not served — Phase 3 |
-| `submit_strategy_spec` |  | `strategy-contracts.md` §3.1 | not served — no driving seat (#198) |
+| `submit_strategy_spec` | `quant` | `strategy-contracts.md` §3.1 | served |
 | `get_improvement_brief` |  | `improvement.md` §5 | not served — Phase 2b |
 | `submit_lessons` |  | `improvement.md` §5 | not served — Phase 2b |
 | `submit_proposal` |  | `improvement.md` §5 | not served — Phase 2b |
 
-The three `improvement.md` rows follow the G1 pair's pattern — enumerated here, schemas in the file that owns the loop — and the `submit_strategy_spec` pattern for their `seats` cells: the `distill` and `proposer` seats are named in `improvement.md` §2.4 and §3.1 but do not exist yet, and a seat name this table's parser cannot find in `SEAT_CAPS` is a typo, not a plan. The cells fill when the seats ship (`improvement.md` §8).
+The three `improvement.md` rows follow the G1 pair's pattern — enumerated here, schemas in the file that owns the loop. Their `seats` cells are empty because the seats do not exist yet: the `distill` and `proposer` seats are named in `improvement.md` §2.4 and §3.1 but are absent from `SEAT_CAPS`, and a seat name this table's parser cannot find there is a typo, not a plan. The cells fill when the seats ship (`improvement.md` §8).
 
 Three qualifications sit on four rows, none of them expressible in the columns. The G1 pair (`get_spec_brief`, `submit_spec_critique`) is enumerated here because the fund server serves it, but its schemas stay in `specs/strategy-contracts.md` §3.4 and that file remains their authority — restating them here would create the second source of truth this table exists to prevent. And `submit_critique` is specified below but **not served**: the Critic seat runs G1 only, and the trade-pipeline critique is Phase 3 (`specs/design.md`; the Decision stage runs as a single turn on the orchestrator's own `no_critic_seat` rows until then). `status` is exactly `served` or begins `not served`; anything else fails the test rather than being interpreted.
 

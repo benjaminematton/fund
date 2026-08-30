@@ -34,13 +34,22 @@ BANNED_BUILTINS = (
 
 SEATS = ("exec", "analyst", "news", "pm", "critic")
 
-# reflect is NOT in SEATS: its tool surface is legitimately narrower, and
-# folding it into that tuple would force an edit to
-# test_tools_are_exactly_the_two_mcp_globs — weakening the assertion that
-# protects the other five to accommodate a sixth. Every OTHER pin applies to
-# it unchanged, and a seat escaping those is the real risk, so they run over
-# this tuple instead.
-ALL_SEATS = SEATS + ("reflect",)
+# NEITHER reflect NOR quant is in SEATS, for the same reason: each one's tool
+# surface is legitimately narrower than the five, and folding either into that
+# tuple would force an edit to test_tools_are_exactly_the_two_mcp_globs —
+# weakening the assertion that protects the five to accommodate a sixth. Every
+# OTHER pin applies to both unchanged, and a seat escaping THOSE is the real
+# risk, so they run over this tuple instead.
+#
+# They are also absent from the read-only parametrizations below, which assert
+# a threaded ALPACA_TOOLSETS on seats that carry the alpaca glob. Neither of
+# these two carries it, so the stronger statement — that the broker is not
+# reachable at all — is made once per seat, directly, below.
+#
+# quant is NOT free: nothing forces a new seat into this file. These tuples are
+# hand-maintained, so a seat added to SEAT_CAPS escapes every pin here until
+# someone adds it. #198 added it.
+ALL_SEATS = SEATS + ("reflect", "quant")
 
 
 def _cfg(seat: str) -> dict:
@@ -169,6 +178,25 @@ def test_the_reflect_seat_cannot_reach_the_broker_at_all(tmp_path):
     """
     cfg = _cfg("reflect")
     options = _opts("reflect", tmp_path)
+    assert options.tools == ["mcp__fund__*"]
+    assert "mcp__alpaca__*" not in options.tools
+    assert "trading" not in cfg["alpaca_toolsets"]
+    assert options.hooks in (None, {})
+
+
+def test_the_quant_seat_cannot_reach_the_broker_at_all(tmp_path):
+    """Same posture as reflect, and for the same reason (#198): the seat has
+    ONE cap, it is a write, and it has no read tool of any kind — it is handed
+    its subject in the prompt and asks nothing. A seat with nothing to ask a
+    broker does not carry the broker glob.
+
+    Omitting `mcp__alpaca__*` from `tools` is what makes it UNAVAILABLE. The
+    alternative — carrying the glob with a narrow ALPACA_TOOLSETS — would rest
+    on what that env value means to alpaca-mcp-server@2.2.1, a third-party
+    behaviour no offline test can check, and would resolve that unknown toward
+    granting a toolset."""
+    cfg = _cfg("quant")
+    options = _opts("quant", tmp_path)
     assert options.tools == ["mcp__fund__*"]
     assert "mcp__alpaca__*" not in options.tools
     assert "trading" not in cfg["alpaca_toolsets"]
