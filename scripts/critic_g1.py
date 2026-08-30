@@ -3,7 +3,6 @@
 
     make critic-g1         # == python scripts/critic_g1.py
 
-strategy-contracts.md §2 records that nothing yet READS strategy_critiques.
 The two MCP tools have shipped since 2026-08-20 and nothing has ever opened a
 Critic session for them. This is the caller.
 
