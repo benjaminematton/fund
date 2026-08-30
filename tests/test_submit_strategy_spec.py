@@ -16,9 +16,13 @@ test_tool_surface_canon.py::test_the_handler_refuses_even_when_registration_is_w
 Without it every handler call refuses and the write path would go untested.
 """
 import json
+import re
+import sqlite3
+from pathlib import Path
 
 import pytest
 
+import state.db
 from agents.tools import fund_server
 from agents.tools.fund_server import SEAT_CAPS, handle_submit_strategy_spec
 from tests.synthetic import spec_payload
@@ -31,6 +35,31 @@ def granted(monkeypatch):
     """`analyst` holds the cap for the duration of one test, and only there."""
     monkeypatch.setitem(fund_server.SEAT_CAPS, "analyst",
                         SEAT_CAPS["analyst"] | {"submit_strategy_spec"})
+
+
+@pytest.fixture
+def db_with_an_unmirrored_check(tmp_path):
+    """The shipped schema, plus one CHECK that `StrategySpec` does not mirror.
+
+    `rebalance` is the column chosen because it is the real gap: the DDL types
+    it `TEXT NOT NULL` and the model types it a bare `str`, so a CHECK added
+    there tomorrow is a constraint nothing upstream enforces. The DDL is
+    DERIVED from state/schema.sql and patched by substitution, never restated —
+    a copied table would stop being the shipped one the day the real column
+    changes, and the substitution count asserts the patch actually landed.
+    """
+    ddl = Path(state.db.__file__).with_name("schema.sql").read_text()
+    patched, n = re.subn(
+        r"^  rebalance +TEXT NOT NULL,$",
+        "  rebalance        TEXT NOT NULL CHECK(rebalance IN ('weekly')),",
+        ddl, flags=re.M)
+    assert n == 1, "schema.sql's `rebalance` column moved — re-derive this"
+    conn = sqlite3.connect(tmp_path / "fund.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(patched)
+    yield conn
+    conn.close()
 
 
 def _submit(fund_db, payload, seat="analyst"):
@@ -78,6 +107,32 @@ def test_registering_the_same_content_twice_returns_the_same_id(granted,
     assert _count(fund_db) == 1
 
 
+def test_a_row_the_ddl_rejected_is_not_reported_as_a_duplicate(
+        granted, db_with_an_unmirrored_check):
+    """`INSERT OR IGNORE` swallows a CHECK violation as quietly as a duplicate
+    id, so a row count either side of the INSERT cannot tell the two apart. If
+    the handler answered from the count alone it would tell the seat its spec
+    was already registered when nothing was ever written — a fail-open, which
+    invariant 4 forbids: an ambiguity resolves to no action, never to a guess.
+
+    Unreachable against today's schema, and that is the point: it is held shut
+    only by every DDL constraint happening to be mirrored at least as strictly
+    in `StrategySpec`, a property stated nowhere and tested nowhere. This
+    fixture is that property failing, which is the only honest way to reach the
+    branch.
+    """
+    conn = db_with_an_unmirrored_check
+    payload = spec_payload()
+    assert payload["rebalance"] == "daily"      # the CHECK admits 'weekly' only
+    r = handle_submit_strategy_spec(conn, seat="analyst", args=payload,
+                                    now_iso=NOW)
+    assert r["ok"] is False
+    assert "was not written" in r["error"]
+    assert "duplicate" not in r
+    assert _count(conn) == 0
+    assert _count(conn, "events") == 0
+
+
 def test_an_unknown_field_is_refused_and_writes_nothing(granted, fund_db):
     """F-1. The fields ARE the hash input, so a field the model merely ignored
     would let two different specs collide on one id and the second vanish into
@@ -97,7 +152,10 @@ def test_a_missing_field_is_refused_and_writes_nothing(granted, fund_db):
     assert _count(fund_db) == 0
 
 
-def test_a_seat_without_the_cap_is_refused(granted, fund_db):
+def test_a_seat_without_the_cap_is_refused(fund_db):
+    """No `granted`, deliberately: `exec` is never granted the cap by that
+    fixture, and a test whose whole point is "no cap ⇒ refusal" must not read
+    as though it depends on a cap being granted."""
     r = _submit(fund_db, spec_payload(), seat="exec")
     assert r["ok"] is False and "not granted" in r["error"]
     assert _count(fund_db) == 0

@@ -241,6 +241,18 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
     coarse: it would misreport under a concurrent writer. The fund is
     single-writer per turn, so it is correct today; a `SELECT 1 WHERE
     spec_id = ?` is the alternative if that ever stops being true.
+
+    THE ROW IS THEN CONFIRMED PRESENT, because a count that did not move has
+    two causes, not one. `INSERT OR IGNORE` skips a primary-key collision —
+    the duplicate this handler is meant to report — but it skips NOT NULL and
+    CHECK violations exactly as quietly. Without the confirming SELECT a
+    payload that pydantic accepts and the DDL rejects is dropped and reported
+    to the seat as a successful re-registration: fail-open, which invariant 4
+    forbids. Nothing can reach that today only because every `strategy_specs`
+    constraint happens to be mirrored at least as strictly in `StrategySpec` —
+    a property no test states and nothing keeps true (`rebalance`, for one, is
+    an unconstrained `str` in the model), so it is a coincidence to guard
+    against rather than to rely on.
     """
     if not _can(seat, "submit_strategy_spec"):
         return {"ok": False,
@@ -251,6 +263,13 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
         return {"ok": False, "error": str(e)}
     before = conn.execute("SELECT count(*) FROM strategy_specs").fetchone()[0]
     sid = insert_strategy_spec(conn, spec, now_iso)
+    if conn.execute("SELECT 1 FROM strategy_specs WHERE spec_id = ?",
+                    (sid,)).fetchone() is None:
+        return {"ok": False,
+                "error": f"spec {sid} was not written: the INSERT was ignored"
+                         " for something other than a duplicate id — a schema"
+                         " constraint the payload model does not mirror."
+                         " Nothing was registered"}
     after = conn.execute("SELECT count(*) FROM strategy_specs").fetchone()[0]
     duplicate = after == before
     if not duplicate:

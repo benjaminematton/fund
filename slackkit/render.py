@@ -308,17 +308,29 @@ def _render_strategy_spec(payload: dict) -> Post:
 
     #research, and only on a first registration: a re-register writes nothing,
     so there is nothing to announce. The spec_id is shown because it is the
-    handle every later G1/G2/G3 post will name it by."""
+    handle every later G1/G2/G3 post will name it by.
+
+    `seat` is required, not defaulted. The handler makes it mandatory, so a
+    default would only ever be reached by a malformed event — and any value
+    picked for it is a guess about a seat that does not exist yet, which is
+    worse attributed to a name than raised as a KeyError.
+
+    The quote block is guarded like `spec_critique`'s: `hypothesis` carries a
+    max_length but no min_length, so `""` is a valid spec and an unguarded
+    block would post an empty quote."""
     spec_id, family = payload["spec_id"], payload["family"]
-    seat = _seat(payload.get("seat", "quant"))
-    username, icon = _persona(payload.get("seat", "quant"))
+    seat = _seat(payload["seat"])
+    username, icon = _persona(payload["seat"])
     headline = (f"registered *{family}* spec `{spec_id}`"
                 f" · {payload['mechanism_class']}")
-    body = f"> {payload['hypothesis']}"
-    return Post("#research", f"*{seat}* · {headline}\n{body}",
-                [_section(headline), _section(body),
-                 _context(seat, "awaiting G1")],
-                username, icon)
+    body = f"> {payload['hypothesis']}" if payload["hypothesis"] else ""
+    blocks = [_section(headline)]
+    if body:
+        blocks.append(_section(body))
+    blocks.append(_context(seat, "awaiting G1"))
+    return Post("#research", f"*{seat}* · {headline}" + (f"\n{body}" if body
+                                                         else ""),
+                blocks, username, icon)
 
 
 def _render_projection_error(payload: dict) -> Post:
