@@ -28,6 +28,7 @@ rewriting it, because its staleness is often itself the evidence.
 | `strategy.md` | Strategy lifecycle, backtest rules, gates G1–G4, allocation and kill rules |
 | `strategy-contracts.md` | Canonical ids/DDL/state machine for the strategy pipeline; overrides conflicts elsewhere |
 | `calibration.md` | Analyst scoring → deterministic PM weights |
+| `improvement.md` | The improvement loop: tier 1 (weights, narrowing, lessons — code) and tier 2 (the Proposer — proposals a human commits); `weights`/`lessons`/`proposals` DDL and tool schemas |
 | `../charters/` | Seat system prompts; `_template.md` defines required sections |
 | `../fixtures/golden-day.md` | Worked example of one full day; its numbers are test vectors |
 
@@ -51,6 +52,7 @@ fourteen filenames.
 | 2026-08-20 | Account precondition drift detection |
 | 2026-08-21 | Day bookends — morning standup and EOD digest |
 | 2026-08-24 | Alert identity and the alert → issue filer |
+| 2026-08-30 | Species Two — reframing `design.md` around the improvement loop (v2, reconciled); promoted to `improvement.md` |
 
 **Tooling — how the agents working this repo are organized**
 

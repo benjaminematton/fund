@@ -284,6 +284,11 @@ No tool may exist without a row here, and every row marked `served` must exist. 
 | `submit_reflection` | `reflect` | below | served |
 | `submit_critique` | `critic` | below | not served — Phase 3 |
 | `submit_strategy_spec` |  | `strategy-contracts.md` §3.1 | not served — no driving seat (#198) |
+| `get_improvement_brief` |  | `improvement.md` §5 | not served — Phase 2b |
+| `submit_lessons` |  | `improvement.md` §5 | not served — Phase 2b |
+| `submit_proposal` |  | `improvement.md` §5 | not served — Phase 2b |
+
+The three `improvement.md` rows follow the G1 pair's pattern — enumerated here, schemas in the file that owns the loop — and the `submit_strategy_spec` pattern for their `seats` cells: the `distill` and `proposer` seats are named in `improvement.md` §2.4 and §3.1 but do not exist yet, and a seat name this table's parser cannot find in `SEAT_CAPS` is a typo, not a plan. The cells fill when the seats ship (`improvement.md` §8).
 
 Three qualifications sit on four rows, none of them expressible in the columns. The G1 pair (`get_spec_brief`, `submit_spec_critique`) is enumerated here because the fund server serves it, but its schemas stay in `specs/strategy-contracts.md` §3.4 and that file remains their authority — restating them here would create the second source of truth this table exists to prevent. And `submit_critique` is specified below but **not served**: the Critic seat runs G1 only, and the trade-pipeline critique is Phase 3 (`specs/design.md`; the Decision stage runs as a single turn on the orchestrator's own `no_critic_seat` rows until then). `status` is exactly `served` or begins `not served`; anything else fails the test rather than being interpreted.
 
@@ -365,6 +370,8 @@ It writes nothing and returns a JSON object:
 | `journal` | ✓ | ✓ | `state/journal.py` `recent_entries(root, seat, 3)` |
 | `signals` | — | ✓ | `signals` rows for today (agent, ticker, direction, confidence, summary) |
 | `allowed_actions` | — | ✓ | injected snapshot provider: `orchestrator.daily.allowed_actions` → `{ticker: {buy, sell}}` in shares |
+| `weights` | ✓ (own row only) | ✓ (every analyst) | latest `weights` row(s) with `as_of_date` — `specs/improvement.md` §2.1; **Phase 2b** |
+| `lessons` | ✓ | ✓ | `journals/<seat>.lessons.md` — `specs/improvement.md` §2.4; **Phase 2b** |
 | `unavailable` | ✓ | ✓ | names of the sections that could not be built |
 
 The snapshot provider and journals root are bound into `build_fund_server` at composition time (like `conn` and `clock`); there is no snapshot table. **Failure semantics (invariant 4):** the handler never raises. A provider that errors or was never bound degrades only its own section to that section's empty default and appends a named entry to `unavailable`. For the PM an empty `allowed_actions` reads as "nothing is possible today" = HOLD; the orchestrator's own `pm_timeout` → hold/0 default remains the backstop underneath.
@@ -409,6 +416,10 @@ Ordering within the Decision stage: PM draft (Slack only) → `submit_critique` 
 ## 7. Strategy platform contracts — see `specs/strategy-contracts.md`
 
 The canonical schemas, content-addressed ids (`spec_id`/`config_hash`/`run_key`), state machine, tool contracts, and failure semantics for the strategy pipeline live in `specs/strategy-contracts.md`. That file was written alongside the starter kit's tested implementation (`fundbt/registry.py`, `stratgate/`) and is authoritative — an earlier draft of those schemas in this file has been removed in its favor. Shared conventions carry over unchanged: SQLite is the source of truth, Slack projection via the `events` outbox, transitions via compare-and-swap, default is REJECT. Analyst-scoring contracts (Brier/BSS → PM weights): `specs/calibration.md`, implemented in `calibration/`.
+
+## 7b. Improvement-loop contracts — see `specs/improvement.md`
+
+The `offered`, `weights`, `lessons`, and `proposals` tables, the `proposed → merged | refused | expired · merged → kept | reverted` state machine, the `get_improvement_brief` / `submit_lessons` / `submit_proposal` schemas, and the loop's failure semantics live in `specs/improvement.md`, which is authoritative for them. The same conventions carry over: SQLite is the source of truth, Slack projection via the `events` outbox, transitions via compare-and-swap, default is no-change. Until the first Phase 2b lane lands, `state/schema.sql` carries none of those tables and `tests/test_schema_contract.py` does not parse that file — the §2 DDL above and `strategy-contracts.md` §2 remain the two parsed sources.
 
 ## 8. Slack message formats (projection only)
 
