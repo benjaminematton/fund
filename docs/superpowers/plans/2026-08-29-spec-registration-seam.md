@@ -292,9 +292,11 @@ git commit -m "feat: bind a G1 verdict to the spec its turn was shown (#182)"
 **Gate passed.** Written against ruling (A) + (iii): **no cap, no `@tool` registration**, no `strategies` row.
 
 **Files:**
-- Modify: `agents/tools/fund_server.py` (`SEAT_CAPS`, new handler, new `@tool`)
-- Modify: `specs/contracts.md` §4 served-tool table
-- Test: `tests/test_submit_strategy_spec.py` (create)
+- Modify: `agents/tools/fund_server.py` — **the handler only.** No `@tool`, no `SEAT_CAPS` edit (G-2 ruling (iii))
+- Modify: `state/models.py` — `StrategySpec` gains `extra="forbid"` (F-1)
+- Modify: `specs/contracts.md` §4 — one row, status **`not served`**
+- Modify: `slackkit/render.py` — a renderer for the `#research` projection's event kind. `tests/test_slackkit.py` AST-scans every `append_event` kind and requires one, so this is forced, not optional; an unrendered kind dead-letters into a `projection_error` that fails the day's audit
+- Test: `tests/test_submit_strategy_spec.py` (create), `tests/synthetic.py` (add `spec_payload`)
 
 **Interfaces:**
 - Consumes: `state.specs.insert_strategy_spec(conn, spec: StrategySpec, now_iso: str) -> str`; `state.models.StrategySpec`.
