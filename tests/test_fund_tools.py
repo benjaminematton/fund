@@ -439,6 +439,72 @@ def test_submit_reflection_wrapper_writes_the_row_it_is_bound_to(fund_db,
         (did,)).fetchone()["reflection"].endswith("noted")
 
 
+def test_submit_spec_critique_wrapper_writes_the_spec_it_is_bound_to(
+        fund_db, sim_clock):
+    """build_fund_server's submit_spec_critique wrapper must forward
+    expected_spec_id to the handler (strategy-contracts.md §3.4). Unlike
+    submit_reflection, `spec_id` IS in this tool's schema — so a wrapper that
+    dropped the binding would still look like it worked, taking the seat's own
+    argument. Only a server built bound can write at all."""
+    import asyncio
+
+    from agents.tools.fund_server import build_fund_server
+    from tests.synthetic import seed_spec_row
+
+    sid = seed_spec_row(fund_db)
+    args = {"spec_id": sid, "verdict": "clear", "objections": []}
+
+    unbound = build_fund_server(lambda: fund_db, sim_clock, "critic",
+                                charter_version="v2",
+                                model_id="claude-sonnet-5")["instance"]
+    _, call_unbound = _handlers(unbound)
+    assert _is_error(asyncio.run(
+        call_unbound("submit_spec_critique", args))) is True
+
+    bound = build_fund_server(lambda: fund_db, sim_clock, "critic",
+                              charter_version="v2",
+                              model_id="claude-sonnet-5",
+                              expected_spec_id=sid)["instance"]
+    _, call_bound = _handlers(bound)
+    assert _is_error(asyncio.run(
+        call_bound("submit_spec_critique", args))) is False
+    assert fund_db.execute(
+        "SELECT spec_id FROM strategy_critiques").fetchone()["spec_id"] == sid
+
+
+def test_build_seat_options_threads_the_bound_spec_to_the_constructed_server(
+        tmp_path, sim_clock):
+    """The leg above that wrapper, through the real composition root: without
+    it the Critic's nightly binding stops at agents/seats.py and every G1
+    verdict is refused as unbound."""
+    import asyncio
+
+    from agents.seats import build_seat_options, load_seat_config
+    from state.db import connect
+    from tests.synthetic import seed_spec_row
+
+    db_path = tmp_path / "fund.sqlite"
+    conn = connect(db_path)
+    sid = seed_spec_row(conn)
+    conn.close()
+
+    cfg = load_seat_config("agents/config/critic.yaml")
+    options = build_seat_options(cfg, db_path, sim_clock,
+                                 expected_spec_id=sid)
+    server = options.mcp_servers["fund"]["instance"]
+    _, call_tool = _handlers(server)
+    result = asyncio.run(call_tool(
+        "submit_spec_critique",
+        {"spec_id": sid, "verdict": "clear", "objections": []}))
+
+    assert _is_error(result) is False
+    conn = connect(db_path)
+    stored = conn.execute(
+        "SELECT spec_id FROM strategy_critiques").fetchone()["spec_id"]
+    conn.close()
+    assert stored == sid
+
+
 def test_build_seat_options_threads_the_bound_id_to_the_constructed_server(
         tmp_path, sim_clock):
     """The leg above the wrapper: build_seat_options must forward

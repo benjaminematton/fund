@@ -149,6 +149,8 @@ CREATE TABLE shadow_fills (
 
 Input: all `strategy_specs` fields except ids/timestamps. Handler validates (pydantic, `extra="forbid"`), computes `spec_id`, INSERTs spec + `strategies` row in state `SPEC`, projects a summary to `#research`. Duplicate `spec_id` → return existing id (idempotent). Malformed → tool error, nothing written, **no partial specs**.
 
+> **Known divergence, to be closed when `strategies` lands (#197).** The shipped `handle_submit_strategy_spec` does everything above except the `strategies` row — that table has no implementing code yet, so the clause is deferred to #197, not withdrawn.
+
 ### 3.2 `run_backtest` (seats listed in the spec's family config)
 
 ```python

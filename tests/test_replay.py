@@ -82,7 +82,8 @@ def test_replay_critic_g1_turn_writes_the_verdict_through_the_real_handler(
         decisions, pre_hooks=[],
         executor=make_executor(lambda: fund_db, sim_clock, broker=None,
                                seat="critic", charter_version="critic-v2",
-                               model_id="claude-sonnet-5"),
+                               model_id="claude-sonnet-5",
+                               expected_spec_id=sid),
         post_hooks=[]))
 
     assert outcomes[0]["result"]["ok"] is True
@@ -90,3 +91,28 @@ def test_replay_critic_g1_turn_writes_the_verdict_through_the_real_handler(
     row = fund_db.execute(
         "SELECT spec_id, verdict, seat FROM strategy_critiques").fetchone()
     assert dict(row) == {"spec_id": sid, "verdict": "clear", "seat": "critic"}
+
+
+def test_replay_refuses_a_verdict_for_a_spec_the_recorded_turn_was_not_shown(
+        fund_db, sim_clock):
+    """The replay binding is real, not a tautology. make_executor takes the
+    spec the recorded turn was shown from its CALLER, exactly as production
+    does (strategy-contracts.md §3.4); binding it from the recording's own
+    args would compare a value against itself, and a corrupt recording — a
+    verdict naming a spec that turn's get_spec_brief never returned — would
+    replay clean into strategy_critiques, which is a write-once table."""
+    insert_strategy_spec(fund_db, StrategySpec(**SPEC),
+                         "2026-08-25T18:00:00+00:00")
+    shown = "spec_0000000000000000"          # not what the recording names
+    outcomes = asyncio.run(replay_turn(
+        load_recording(CRITIC_RECORDING), pre_hooks=[],
+        executor=make_executor(lambda: fund_db, sim_clock, broker=None,
+                               seat="critic", charter_version="critic-v2",
+                               model_id="claude-sonnet-5",
+                               expected_spec_id=shown),
+        post_hooks=[]))
+
+    assert outcomes[1]["result"]["ok"] is False
+    assert shown in outcomes[1]["result"]["error"]
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM strategy_critiques").fetchone()["c"] == 0

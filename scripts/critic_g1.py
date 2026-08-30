@@ -84,17 +84,28 @@ blocking AND the number still pending behind it — a blocked head with four
 specs queued behind it is a different operator problem from a blocked head
 that is the whole queue, and one alert must be able to tell them apart.
 Removing the block needs a spec_id argument in agents/tools/fund_server.py,
-which is out of this lane's region.
+which strategy-contracts.md §3.4 does not grant: get_spec_brief is
+unaffected by the write binding and stays argument-less. Changing that is
+#182's second half — see WHAT THE BINDING DOES NOT FIX, below.
 
-THE VERDICT IS NOT BOUND TO THE SPEC THE TURN WAS SHOWN. handle_submit_spec_
-critique builds SpecCritique(spec_id=args["spec_id"], ...) — the id comes from
-the SEAT's tool arguments, and the handler only checks that the spec is
-registered and unreviewed. The oldest-first selector binds what the seat is
-SHOWN, never what it WRITES, so a turn shown spec A can write a verdict for
-spec B; B then becomes permanently unreviewable (write-once) and A is still
-pending. This job DETECTS that — has_verdict(shown_spec_id) is False, so the
-night counts it as a failure and alerts — but it cannot PREVENT it. The fix is
-a binding in fund_server.py; escalated, out of region.
+THE VERDICT IS BOUND TO THE SPEC THE TURN WAS SHOWN (#182, strategy-
+contracts.md §3.4). _make_run_turn binds the queue head to the turn as
+expected_spec_id; handle_submit_spec_critique refuses a verdict naming any
+other spec, and refuses outright when nothing was bound. Before that, the id
+came from the SEAT's own tool arguments and the handler checked only that the
+spec was registered and unreviewed — the oldest-first selector bound what the
+seat was SHOWN, never what it WROTE, so a turn shown spec A could write a
+verdict for spec B, leaving B permanently unreviewable (write-once) while A
+stayed pending. That write is irreversible, and this job could only DETECT it
+after the fact — has_verdict(shown_spec_id) reports A's missing verdict, which
+is the symptom, and can neither see nor undo B's consumption. Detection after
+an irreversible write is not a mitigation, which is why the fix is a binding
+and not a check.
+
+WHAT THE BINDING DOES NOT FIX: the read half. get_spec_brief still takes no
+arguments (see head-of-line, above), so a spec the seat cannot critique still
+blocks every spec behind it. Binding the WRITE does not unblock the QUEUE —
+#182's second half, a separate decision.
 
 INTERRUPT SEMANTICS. There are no checkpoints on the nightly path;
 idempotency is row-level, exactly like reflect's `reflection IS NULL`.
@@ -277,18 +288,23 @@ def critique_and_log(conn, slack, clock, run_turn) -> dict:
     """One turn per queue head, up to MAX_G1_TURNS_PER_NIGHT, then drain.
     Returns the counts.
 
-    `run_turn` takes {"spec_id": ...}. That id is carried for the post-turn
-    re-read and the log line ONLY — it never reaches the prompt.
+    `run_turn` takes {"spec_id": ...}. That id is carried for the binding, the
+    post-turn re-read and the log line — it never reaches the prompt.
 
-    THERE IS NO BINDING, and that is a gap, not a design. Unlike reflect's
-    expected_decision_id, nothing ties the verdict the seat writes to the spec
-    it was shown: handle_submit_spec_critique takes spec_id from the seat's own
-    tool arguments and only checks that it is registered and unreviewed. The
-    oldest-first selector binds the SHOW, not the WRITE. The has_verdict()
-    re-read below is therefore load-bearing — it is what turns "the turn wrote
-    a verdict for some other spec" into a counted failure with an alert instead
-    of a silent success. Adding the real binding is a fund_server change, out
-    of region, escalated.
+    THE WRITE IS BOUND, as reflect's is. _make_run_turn binds that id to the
+    turn as `expected_spec_id`, and handle_submit_spec_critique refuses a
+    verdict naming any other spec, and refuses outright when nothing was bound
+    (strategy-contracts.md §3.4). The oldest-first selector binds only the
+    SHOW, so without this the seat's own tool argument decided which spec its
+    verdict consumed — and that write is irreversible, which is why this is a
+    binding rather than a check: detection after the fact reports the symptom
+    and can neither see nor undo the wrong spec's consumption.
+
+    The has_verdict() re-read below stays load-bearing, for the failure the
+    binding does NOT address: a turn that wrote NOTHING — never called the
+    tool, or called it and gave up on {"ok": false}. That is now what it
+    catches, and it is still the only thing that catches it, since
+    run_day.make_turn's run() swallows every exception.
 
     The alerts and the drain both run in `finally`, for reflect_day's N1
     reason: a DB error on a LATER iteration must not skip either. Appending
@@ -319,9 +335,10 @@ def critique_and_log(conn, slack, clock, run_turn) -> dict:
                 counts["critiqued"] += 1
                 continue
             log(f"spec {head} wrote no verdict — the turn returned without"
-                " calling submit_spec_critique (or the call was refused, or it"
-                " wrote a verdict for a DIFFERENT spec); stopping, since the"
-                " next turn would be shown the same spec")
+                " calling submit_spec_critique, or the call was refused (a"
+                " verdict naming a DIFFERENT spec is one such refusal, since"
+                " the turn is bound); stopping, since the next turn would be"
+                " shown the same spec")
             # Counted HERE, not in `finally`: the head is still pending at this
             # moment, and a read in `finally` could raise on a broken DB and
             # mask the failure it is trying to describe.
@@ -369,16 +386,20 @@ def _make_run_turn(seat: str, cfg: dict, db_path: str, clock, conn,
     calling main(), which builds real clients.
 
     The prompt names NO spec, and job['spec_id'] never reaches it — a per-run
-    value in prompt text breaks replay (CLAUDE.md). The id is carried on the
-    job dict purely so critique_and_log can re-read the right row afterwards.
+    value in prompt text breaks replay (CLAUDE.md). The id travels OUT OF BAND
+    instead, as expected_spec_id, which is what makes binding it compatible
+    with a replayable prompt at all.
 
-    NOTHING IS BOUND HERE, and that is a known gap rather than a design.
-    reflect passes expected_decision_id, which handle_submit_reflection checks.
-    There is no equivalent for G1: handle_submit_spec_critique takes spec_id
-    from the seat's own arguments, so get_spec_brief's oldest-first selector
-    binds only what the seat is SHOWN. critique_and_log's post-turn
-    has_verdict() re-read is what catches a verdict written for the wrong spec.
-    Adding a real binding is a fund_server.py change, out of region, escalated.
+    THE BINDING IS APPLIED HERE, the same way reflect applies
+    expected_decision_id. job['spec_id'] is bound to the turn and threaded
+    make_turn -> _seat_session -> build_seat_options -> build_fund_server ->
+    handle_submit_spec_critique, which refuses a verdict naming a different
+    spec and refuses an unbound turn outright (strategy-contracts.md §3.4).
+    Without it, get_spec_brief's oldest-first selector bound only what the
+    seat was SHOWN and the seat's own tool argument decided what it WROTE.
+    Because that write is irreversible — write-once, leaving the wrongly named
+    spec permanently unreviewable — detection was never a mitigation for it,
+    which is why this is a binding and not a post-turn check.
 
     NO trace_sink, deliberately. evals/live.py's rows_written scan skips
     strategy_critiques and documents that adding the Critic stage requires a
@@ -387,7 +408,8 @@ def _make_run_turn(seat: str, cfg: dict, db_path: str, clock, conn,
     emits no live trace at all rather than a divergent one."""
     def run_turn(job: dict) -> None:
         turn = run_day.make_turn(seat, cfg, db_path, clock, conn, run_date,
-                                 G1_PROMPT, tools=G1_TOOLS)
+                                 G1_PROMPT, tools=G1_TOOLS,
+                                 expected_spec_id=job["spec_id"])
         turn()
     return run_turn
 

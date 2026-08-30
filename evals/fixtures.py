@@ -66,9 +66,10 @@ def _critic_preconditions(conn, case: Case, now_iso: str,
     `submit_strategy_spec` has landed one immutable spec in state SPEC, and
     NOTHING has written a strategy_critiques row — at G1 there is no default
     row, ever (the design's inverted default). Written through
-    state.specs.insert_strategy_spec, the same function Phase 5's
-    submit_strategy_spec handler will call, so the fixture cannot construct a
-    spec production could not."""
+    state.specs.insert_strategy_spec, the same function the
+    submit_strategy_spec handler calls, so the fixture cannot construct a spec
+    production could not — and, because both hash `StrategySpec.model_dump()`,
+    the id registered here is the id `case.subjects` reports."""
     insert_strategy_spec(conn, StrategySpec(**case.spec), now_iso)
 
 

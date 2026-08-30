@@ -127,6 +127,37 @@ def seed_spec_row(conn: sqlite3.Connection, spec: dict | None = None) -> str:
     return spec["spec_id"]
 
 
+def spec_payload(**overrides) -> dict:
+    """One valid `submit_strategy_spec` payload — every §2 field EXCEPT `seat`.
+
+    `seat` is deliberately absent: the handler binds it from the calling seat
+    (strategy-contracts.md §3.1), so a payload carrying one would be either
+    redundant or a seat naming a seat it is not. A caller that passed it would
+    hit `StrategySpec(**args, seat=seat)`'s duplicate-keyword TypeError, which
+    is the right failure but not one a fixture should manufacture.
+
+    NOT make_spec(): that returns a BACKTEST CONFIG (spec_id, family,
+    param_ranges, search_budget — the subset fundbt reads), and its spec_id is
+    frozen into tests/test_golden.py. This one is the agent-facing registration
+    payload, and it carries no id at all — the id is computed from the content.
+    """
+    return dict(
+        family="F1",
+        hypothesis="Reversal pays for absorbing forced selling.",
+        mechanism_class="liquidity_provision",
+        universe={"index": "Russell 1000", "pit_constituents": True,
+                  "filters": []},
+        liquidity_bucket="mega_large",
+        signal_rule={"entry": "5d return below -1.5 sigma"},
+        param_ranges={"sigma": [1.0, 2.5, 0.25]},
+        search_budget=24, holding_period_d=5, rebalance="daily",
+        expected_turnover=42.0, exit_rule="close at 5 trading days",
+        invalidation="12m low-turnover spread negative for two quarters.",
+        capacity_usd=4000000.0,
+        predicted={"net_sharpe": 0.8, "max_dd": 0.14, "hit_rate": 0.55},
+        llm_in_loop=0) | overrides
+
+
 def make_registry(spec: dict | None = None) -> "TrialRegistry":
     """A TrialRegistry over a FRESH fund-schema database, spec row seeded.
 

@@ -23,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from fundbt.hashing import spec_id as compute_spec_id
+from state.models import StrategySpec
 
 
 @dataclass(frozen=True)
@@ -48,9 +49,21 @@ class Case:
     def subjects(self) -> list[str]:
         """The things the turn must produce exactly one row each for. Seat
         graders (I4, EXPECT) key off THIS, never off `tickers` — that is what
-        makes them seat-agnostic."""
+        makes them seat-agnostic.
+
+        A spec-shaped case hashes the COERCED fields, never the raw YAML
+        mapping. state/specs.py:insert_strategy_spec — the one write path, and
+        so the thing that decides what id the case actually registers — hashes
+        `StrategySpec.model_dump()`, where `capacity_usd: 4000000` has already
+        become `4000000.0`. Hashing the mapping instead made those two spellings
+        two different ids: the runner binds `subjects[0]`, so the turn would be
+        bound to a spec nothing registered and every verdict in the case would
+        be refused. Every case on disk happens to round-trip, which is what kept
+        this latent; the pin is
+        tests/test_evals_rig.py:test_subjects_is_the_id_the_fixture_registers.
+        """
         if self.spec is not None:
-            return [compute_spec_id(self.spec)]
+            return [compute_spec_id(StrategySpec(**self.spec).model_dump())]
         return list(self.tickers)
 
 

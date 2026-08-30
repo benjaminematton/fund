@@ -41,10 +41,17 @@ SPEC = dict(
 
 def _submit(db, **over):
     """Every call binds attribution: the columns are NOT NULL and forbid
-    'unknown', so there is no such thing as an unattributed G1 verdict."""
+    'unknown', so there is no such thing as an unattributed G1 verdict.
+
+    It also binds the spec, defaulting to whatever the caller's own args name
+    (strategy-contracts.md §3.4). These tests are about the handler's OTHER
+    refusals — wrong seat, unregistered spec, second verdict — and an unbound
+    call is refused before any of them are reached. The binding's own refusals
+    are pinned in tests/test_spec_critique_binding.py."""
     kwargs = dict(seat="critic", args={}, now_iso=NOW,
                   charter_version=CHARTER, model_id=MODEL)
     kwargs.update(over)
+    kwargs.setdefault("expected_spec_id", kwargs["args"].get("spec_id"))
     return handle_submit_spec_critique(db, **kwargs)
 
 
@@ -139,6 +146,16 @@ def test_a_second_verdict_is_refused_never_overwritten(db, spec_id):
 
 
 def test_malformed_payload_writes_nothing(db, spec_id):
+    """One case here no longer reaches validation, deliberately noted rather
+    than restructured. `{"verdict": "clear"}` names no spec, so _submit's
+    setdefault binds expected_spec_id=None and the call takes the UNBOUND
+    refusal (§3.4) before SpecCritique is ever constructed. That is the
+    correct production answer — a served turn is always bound, so a payload
+    with no spec_id cannot reach validation there either — and the assertion
+    this test makes (ok is False, zero rows) holds on both paths. What is no
+    longer covered anywhere is SpecCritique's own KeyError on a missing
+    spec_id, and nothing should be added to cover it: that path is unreachable
+    through the served tool."""
     for args in ({"spec_id": spec_id},
                  {"spec_id": spec_id, "verdict": "maybe"},
                  {"verdict": "clear"},

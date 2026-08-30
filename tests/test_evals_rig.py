@@ -231,6 +231,38 @@ def test_the_critic_precondition_seeds_the_case_spec(tmp_path):
     state.conn.close()
 
 
+def test_subjects_is_the_id_the_fixture_registers(tmp_path):
+    """`Case.subjects` and state/specs.py must hash the SAME dict.
+
+    They did not. `subjects` hashed the raw YAML mapping while
+    insert_strategy_spec hashes `StrategySpec.model_dump()`, so a case written
+    `capacity_usd: 4000000` rather than `4000000.0` yielded two ids. The runner
+    binds `subjects[0]`, so that case's turn would be bound to a spec nothing
+    registered, submit_spec_critique would refuse every verdict, and the case
+    would grade as a seat that produced nothing — the silent zero the binding
+    exists to prevent.
+
+    All twelve cases on disk round-trip identically, so no case file can catch
+    this. The payload here is deliberately un-coerced, and the first assertion
+    is what stops the test going vacuously green if it ever stops diverging.
+    """
+    from fundbt.hashing import spec_id
+    from state.models import StrategySpec
+
+    on_disk = load_case(CRITIC_CASES / "m01.yaml")
+    raw = dict(on_disk.spec)
+    raw["capacity_usd"] = int(raw["capacity_usd"])       # 4000000, not ...0.0
+    assert spec_id(raw) != spec_id(StrategySpec(**raw).model_dump()), \
+        "this payload no longer diverges under coercion — the test pins nothing"
+
+    case = Case(id="coerced", seat="critic", clock=on_disk.clock, spec=raw)
+    state = build_case_state(case, tmp_path / "fund.sqlite",
+                             tmp_path / "journals")
+    rows = state.conn.execute("SELECT spec_id FROM strategy_specs").fetchall()
+    assert [r["spec_id"] for r in rows] == case.subjects
+    state.conn.close()
+
+
 def test_the_critic_stage_prompt_names_no_spec():
     """Per-run values never enter a prompt (CLAUDE.md). The spec reaches the
     seat through get_spec_brief, so the prompt is constant across cases —
@@ -256,7 +288,8 @@ def test_a_critic_trial_records_the_critique_row_it_wrote(tmp_path):
             args={"spec_id": case.subjects[0], "verdict": "objections",
                   "objections": ["the rule filters the top turnover decile"]},
             now_iso=iso(case.clock), charter_version="v2",
-            model_id="claude-sonnet-5")
+            model_id="claude-sonnet-5",
+            expected_spec_id=case.subjects[0])
         return (["mcp__fund__get_spec_brief",
                  "mcp__fund__submit_spec_critique"], None)
 
@@ -266,6 +299,69 @@ def test_a_critic_trial_records_the_critique_row_it_wrote(tmp_path):
     assert [r["spec_id"] for r in rows] == case.subjects
     assert rows[0]["verdict"] == "objections"
     assert trace.brief_subjects == case.subjects
+
+
+def test_a_critic_trial_binds_the_turn_to_the_spec_the_case_registered(
+        tmp_path):
+    """The rig is a COMPOSITION ROOT and must bind the turn the way
+    scripts/critic_g1.py does (strategy-contracts.md §3.4).
+
+    This calls submit_spec_critique through the SERVER run_trial built —
+    not the handler directly, which is precisely what the test above cannot
+    see: a session that passes its own expected_spec_id proves nothing about
+    what the runner bound. Unbound, the served tool takes the "not bound to
+    a spec" refusal, no strategy_critiques row is written, and all twelve
+    critic cases grade as a seat that produced nothing.
+
+    The bound value is `case.subjects[0]`, which is the id
+    evals/fixtures.py:_critic_preconditions actually registered — the two
+    agree only because both hash `StrategySpec(**case.spec).model_dump()`.
+    That equality is a second derivation and is pinned separately by
+    test_subjects_is_the_id_the_fixture_registers; this test uses a case that
+    round-trips and so cannot see it."""
+    import asyncio
+
+    from evals.runner import run_trial
+    from tests.test_fund_tools import _handlers, _is_error
+
+    case = load_case(CRITIC_CASES / "m01.yaml")
+    seen = {}
+
+    def session(options, prompt, state):
+        _, call_tool = _handlers(options.mcp_servers["fund"]["instance"])
+        seen["result"] = asyncio.run(call_tool(
+            "submit_spec_critique",
+            {"spec_id": case.subjects[0], "verdict": "objections",
+             "objections": ["the rule filters the top turnover decile"]}))
+        return (["mcp__fund__submit_spec_critique"], None)
+
+    trace = run_trial("critic", case, 1, session=session, workdir=tmp_path,
+                      traces_root=tmp_path / "traces")
+
+    assert _is_error(seen["result"]) is False
+    assert [r["spec_id"] for r in trace.rows_written["strategy_critiques"]] \
+        == case.subjects
+
+
+def test_a_ticker_shaped_trial_binds_no_spec(tmp_path, monkeypatch):
+    """The other half of the same seam: a pm case has no spec, so the runner
+    must bind None. Binding `subjects[0]` unconditionally would bind a
+    TICKER as a spec id — and IndexError on any case whose tickers list is
+    empty."""
+    import evals.runner as runner
+
+    seen = {}
+    real = runner.build_seat_options
+
+    def _capture(cfg, db_path, clock, **kwargs):
+        seen.update(kwargs)
+        return real(cfg, db_path, clock, **kwargs)
+
+    monkeypatch.setattr(runner, "build_seat_options", _capture)
+    runner.run_trial("pm", _case(tmp_path), 1,
+                     session=lambda o, p, s: ([], None),
+                     workdir=tmp_path, traces_root=tmp_path / "traces")
+    assert seen["expected_spec_id"] is None
 
 
 def test_a_historical_trace_without_brief_subjects_still_loads():

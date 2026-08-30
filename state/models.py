@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Side = Literal["buy", "sell"]
 Direction = Literal["bullish", "bearish", "neutral"]
@@ -66,7 +66,17 @@ class StrategySpec(BaseModel):
     """strategy-contracts.md §2 `strategy_specs`, minus the DB-owned
     `spec_id`/`created_at`/`lineage_parent`. These fields ARE the hash input:
     fundbt.hashing.spec_id(model_dump()) is the spec's identity, so adding a
-    field here changes every spec id. Canonical DDL wins; do not invent."""
+    field here changes every spec id. Canonical DDL wins; do not invent.
+
+    `extra="forbid"` (strategy-contracts.md §3.1) is not tidiness. Under
+    pydantic's default the extra field is IGNORED, so it never reaches
+    model_dump() and never reaches the hash — two semantically different specs
+    then collide on one spec_id and the second is discarded by
+    state/specs.py's INSERT OR IGNORE with no error at all. Forbidding cannot
+    move an existing id (an ignored field was never in the hash); it only
+    turns those silent acceptances into refusals."""
+    model_config = ConfigDict(extra="forbid")
+
     family: str
     seat: str
     hypothesis: str = Field(max_length=500)
