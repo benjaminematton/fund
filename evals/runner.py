@@ -175,8 +175,22 @@ def run_trial(seat: str, case: Case, trial: int, *,
     db_path, journals_root = trial_dir / "fund.sqlite", trial_dir / "journals"
 
     state = build_case_state(case, db_path, journals_root)
+    # The rig is a composition root, so it binds the turn exactly as
+    # scripts/critic_g1.py does (strategy-contracts.md §3.4). A spec-shaped
+    # case's subject IS the id build_case_state registered — subjects and
+    # _critic_preconditions both derive it from `case.spec` through
+    # fundbt.hashing.spec_id, so there is no second id to drift. Unbound
+    # (a ticker-shaped case) stays None: those seats have no
+    # submit_spec_critique cap and the binding is inert for them.
+    #
+    # Leaving this unbound is not a degraded posture, it is a silent zero:
+    # the seat's submit_spec_critique hits the None refusal, no
+    # strategy_critiques row is written, and every critic case grades as a
+    # seat that produced nothing.
+    bound_spec = case.subjects[0] if case.spec is not None else None
     options = build_seat_options(cfg, db_path, clock, snapshot=state.snapshot,
-                                 journals_root=journals_root)
+                                 journals_root=journals_root,
+                                 expected_spec_id=bound_spec)
     prompt = stage_prompt(seat, case.tickers)
 
     tool_names, result, err = [], None, None

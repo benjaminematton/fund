@@ -84,7 +84,9 @@ blocking AND the number still pending behind it — a blocked head with four
 specs queued behind it is a different operator problem from a blocked head
 that is the whole queue, and one alert must be able to tell them apart.
 Removing the block needs a spec_id argument in agents/tools/fund_server.py,
-which is out of this lane's region.
+which strategy-contracts.md §3.4 does not grant: get_spec_brief is
+unaffected by the write binding and stays argument-less. Changing that is
+#182's second half — see WHAT THE BINDING DOES NOT FIX, below.
 
 THE VERDICT IS BOUND TO THE SPEC THE TURN WAS SHOWN (#182, strategy-
 contracts.md §3.4). _make_run_turn binds the queue head to the turn as

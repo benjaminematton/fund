@@ -269,6 +269,67 @@ def test_a_critic_trial_records_the_critique_row_it_wrote(tmp_path):
     assert trace.brief_subjects == case.subjects
 
 
+def test_a_critic_trial_binds_the_turn_to_the_spec_the_case_registered(
+        tmp_path):
+    """The rig is a COMPOSITION ROOT and must bind the turn the way
+    scripts/critic_g1.py does (strategy-contracts.md §3.4).
+
+    This calls submit_spec_critique through the SERVER run_trial built —
+    not the handler directly, which is precisely what the test above cannot
+    see: a session that passes its own expected_spec_id proves nothing about
+    what the runner bound. Unbound, the served tool takes the "not bound to
+    a spec" refusal, no strategy_critiques row is written, and all twelve
+    critic cases grade as a seat that produced nothing.
+
+    The bound value is `case.subjects[0]`, which is the id
+    evals/fixtures.py:_critic_preconditions actually registered: both go
+    through fundbt.hashing.spec_id over `case.spec`, so there is no second
+    id that could drift."""
+    import asyncio
+
+    from evals.runner import run_trial
+    from tests.test_fund_tools import _handlers, _is_error
+
+    case = load_case(CRITIC_CASES / "m01.yaml")
+    seen = {}
+
+    def session(options, prompt, state):
+        _, call_tool = _handlers(options.mcp_servers["fund"]["instance"])
+        seen["result"] = asyncio.run(call_tool(
+            "submit_spec_critique",
+            {"spec_id": case.subjects[0], "verdict": "objections",
+             "objections": ["the rule filters the top turnover decile"]}))
+        return (["mcp__fund__submit_spec_critique"], None)
+
+    trace = run_trial("critic", case, 1, session=session, workdir=tmp_path,
+                      traces_root=tmp_path / "traces")
+
+    assert _is_error(seen["result"]) is False
+    assert [r["spec_id"] for r in trace.rows_written["strategy_critiques"]] \
+        == case.subjects
+
+
+def test_a_ticker_shaped_trial_binds_no_spec(tmp_path, monkeypatch):
+    """The other half of the same seam: a pm case has no spec, so the runner
+    must bind None. Binding `subjects[0]` unconditionally would bind a
+    TICKER as a spec id — and IndexError on any case whose tickers list is
+    empty."""
+    import evals.runner as runner
+
+    seen = {}
+    real = runner.build_seat_options
+
+    def _capture(cfg, db_path, clock, **kwargs):
+        seen.update(kwargs)
+        return real(cfg, db_path, clock, **kwargs)
+
+    monkeypatch.setattr(runner, "build_seat_options", _capture)
+    runner.run_trial("pm", _case(tmp_path), 1,
+                     session=lambda o, p, s: ([], None),
+                     workdir=tmp_path, traces_root=tmp_path / "traces")
+    assert seen["expected_spec_id"] is None
+
+
 def test_a_historical_trace_without_brief_subjects_still_loads():
     """Trace.from_dict is cls(**d); a NEW required field would make every
     recorded trace unreadable and cost the archive its whole point."""
