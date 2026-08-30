@@ -192,13 +192,14 @@ CREATE TABLE IF NOT EXISTS strategy_critiques (
 -- with state/db.py:22's PRAGMA foreign_keys = ON, a lifecycle row cannot exist
 -- without the immutable pre-registration it names.
 --
--- The TABLE lands on its own (issue #197). Nothing WRITES it yet — §3.1's
--- "INSERTs spec + `strategies` row in state SPEC" is the rest of that lane —
--- and it has no state/transition.py machine, so nothing TRANSITIONS a row
--- either: try_transition() raises IllegalTransition for a table absent from
--- EDGES, which is the right behaviour until §4's edges are implemented.
--- state_version is declared because §2 declares it, not because anything
--- reads it.
+-- Registration WRITES this row (issue #197): state/specs.py's
+-- insert_strategy_spec INSERTs the spec and its lifecycle row in state SPEC
+-- in one transaction, which is §3.1's "INSERTs spec + `strategies` row in
+-- state SPEC". Nothing TRANSITIONS a row, though — this table has no
+-- state/transition.py machine, so try_transition() raises IllegalTransition
+-- for a table absent from EDGES, which is the right behaviour until §4's
+-- edges are implemented. state_version is declared because §2 declares it,
+-- not because anything reads it.
 --
 -- IF NOT EXISTS is load-bearing here and not style: state/db.py:12 matches
 -- that exact string to build _TABLES. §2 spells it CREATE TABLE, per its own

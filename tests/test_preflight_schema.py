@@ -153,8 +153,9 @@ def test_the_expected_table_count_is_pinned(tmp_path):
 
     14 -> 15 on 2026-08-30 — issue #197
     (https://github.com/benjaminematton/fund/issues/197) — the `strategies`
-    lifecycle table landed, character-exact to strategy-contracts.md §2. The
-    TABLE only: nothing writes it and it has no transition machine yet.
+    lifecycle table landed, character-exact to strategy-contracts.md §2.
+    Registration writes a row in state SPEC (state/specs.py); nothing moves
+    one, because the table has no transition machine yet.
     """
     assert len(preflight.expected_schema()) == 15
 
