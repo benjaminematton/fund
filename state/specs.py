@@ -55,22 +55,36 @@ def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
     The lifecycle row uses INSERT OR IGNORE for the same reason and NOT an
     UPSERT — it is the mutable half, and a re-registration must not rewind a
     spec that has already advanced to BACKTEST or reset the state_version a
-    CAS transition reads.
+    CAS transition reads. The rowcount gate below now stops a re-registration
+    before it reaches that statement at all; the OR IGNORE stays as the second
+    lock.
 
     ORDER IS LOAD-BEARING: strategies.strategy_id REFERENCES
     strategy_specs(spec_id) and state/db.py:22 sets PRAGMA foreign_keys = ON,
     so the spec row must exist before the lifecycle row that names it.
 
-    THE LIFECYCLE INSERT SELECTS FROM strategy_specs rather than taking `sid`
-    as a literal, so the foreign key is satisfied by construction and the two
-    rows cannot disagree about which specs exist. It has to: `INSERT OR
+    THE LIFECYCLE INSERT IS GATED ON THE SPEC INSERT'S rowcount — 1 on a
+    genuine insert, 0 when `INSERT OR IGNORE` dropped the row (both measured).
+    Only a spec written by THIS call gets a lifecycle row. Ungated, the
+    statement fires whenever the spec row exists and the lifecycle row does
+    not, and that IS an orphan: re-registering one would quietly invent
+    lifecycle state for a row nobody looked at, the silent backfill
+    _refuse_orphaned_specs below rejects by name. The read path refuses to
+    guess; the write path must not guess on its behalf, least of all in a
+    different lane and with the evidence erased.
+
+    IT ALSO SELECTS FROM strategy_specs rather than taking `sid` as a literal,
+    so the foreign key is satisfied by construction and the two rows cannot
+    disagree about which specs exist. The rowcount gate now reaches that case
+    first, so this is a second lock rather than the only one: `INSERT OR
     IGNORE` swallows a CHECK violation on the spec row but NOT a foreign-key
     violation (SQLite's ON CONFLICT algorithms do not apply to foreign keys —
     tests/synthetic.py:69 measured this). A payload pydantic accepts and the
-    DDL rejects would therefore raise IntegrityError from here instead of
+    DDL rejects would otherwise raise IntegrityError from here instead of
     reaching the handler's confirming SELECT, turning a legible "was not
-    written" refusal into a stack trace. Selecting from the spec table writes
-    zero rows in exactly that case and leaves the refusal where it belongs.
+    written" refusal into a stack trace. Measured: that payload leaves
+    rowcount 0, so the gate already skips the write, and the SELECT would
+    write zero rows in the same case.
 
     ONE COMMIT, so both rows land together or neither does — and so the
     handler's write stays the two transactions
@@ -81,15 +95,16 @@ def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
     sid = compute_spec_id(fields)
     values = [json.dumps(fields[c], sort_keys=True) if c in JSON_COLUMNS
               else fields[c] for c in COLUMNS]
-    conn.execute(
+    inserted = conn.execute(
         f"INSERT OR IGNORE INTO strategy_specs"
         f" (spec_id, {', '.join(COLUMNS)}, created_at)"
         f" VALUES ({', '.join(['?'] * (len(COLUMNS) + 2))})",
-        [sid, *values, now_iso])
-    conn.execute(
-        "INSERT OR IGNORE INTO strategies (strategy_id, state, updated_at)"
-        " SELECT spec_id, 'SPEC', ? FROM strategy_specs WHERE spec_id = ?",
-        (now_iso, sid))
+        [sid, *values, now_iso]).rowcount
+    if inserted == 1:
+        conn.execute(
+            "INSERT OR IGNORE INTO strategies (strategy_id, state, updated_at)"
+            " SELECT spec_id, 'SPEC', ? FROM strategy_specs WHERE spec_id = ?",
+            (now_iso, sid))
     conn.commit()
     return sid
 
@@ -127,13 +142,18 @@ def _refuse_orphaned_specs(conn: sqlite3.Connection) -> None:
     expected count to compare against (the selector's default limit is 1) and
     would be scoped to the queue's own filter by construction: a critiqued
     orphan changes neither count, so the case the paragraph above exists for is
-    exactly the case a count-triggered check would miss. The cost is one
-    anti-join over a primary-key index on `strategy_specs`, which holds one row
-    per pre-registered strategy — the fund's smallest table by design.
+    exactly the case a count-triggered check would miss. The cost, from
+    EXPLAIN QUERY PLAN rather than from reasoning: a full SCAN of
+    `strategy_specs` over its primary-key index (covering, so no table rows are
+    read) plus one covering-index probe into `strategies` per spec. Linear in
+    specs, not a seek — and `strategy_specs` holds one row per pre-registered
+    strategy, the fund's smallest table by design.
 
-    NOTHING IN THIS TREE PRODUCES AN ORPHAN. insert_strategy_spec above and
-    tests/synthetic.py:seed_spec_row both write the pair. A build that
-    PREDATES §3.1's paired write does: every spec it registered has no
+    NOTHING IN THIS TREE PRODUCES AN ORPHAN, AND NOTHING REPAIRS ONE.
+    insert_strategy_spec above and tests/synthetic.py:seed_spec_row both write
+    the pair, and the rowcount gate above keeps a re-registration from
+    backfilling a lifecycle row an operator has not seen. A build that PREDATES
+    §3.1's paired write produces them: every spec it registered has no
     lifecycle row, and issue #198's hand-run driver is what puts real specs on
     that path.
     """

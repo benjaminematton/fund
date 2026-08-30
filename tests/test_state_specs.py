@@ -282,6 +282,37 @@ def test_a_critiqued_spec_with_no_lifecycle_row_raises_too(conn):
     assert sid in str(exc.value)
 
 
+def test_re_registering_an_orphaned_spec_leaves_it_orphaned(conn):
+    """The write path must not perform the backfill the read path exists to
+    refuse.
+
+    The lifecycle INSERT fires only when the spec INSERT actually wrote a row.
+    Ungated, it fires whenever the spec row exists and the lifecycle row does
+    not — which IS an orphan — so re-registering one would quietly invent
+    lifecycle state for a row nobody looked at. That is the third of the three
+    tolerant remedies _refuse_orphaned_specs rejects by name, and it is the
+    worst of them: the other two at least fail at read time in a lane that can
+    see the queue, while this one erases the evidence at write time, in a
+    different lane, and returns the spec's own id as if nothing happened.
+
+    Registration is idempotent by design, so this is REACHABLE without
+    anything unusual: #198's hand-run driver re-submitting a spec a
+    pre-§3.1 build already registered is exactly the shape."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    conn.execute("DELETE FROM strategies WHERE strategy_id = ?", (sid,))
+    conn.commit()
+
+    assert insert_strategy_spec(conn, StrategySpec(**SPEC),
+                                "2026-07-20T15:00:00+00:00") == sid
+
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM strategies").fetchone()["c"] == 0, \
+        "re-registration invented a lifecycle row for a spec nobody looked at"
+    with pytest.raises(OrphanedSpecs) as exc:
+        specs_awaiting_critique(conn)
+    assert sid in str(exc.value)
+
+
 def test_the_orphan_check_never_fires_on_a_spec_the_write_path_registered(conn):
     """The half that rots quietly if it is left out: a blocking check is only
     correct if it cannot fire on a healthy tree. Every state a spec can reach

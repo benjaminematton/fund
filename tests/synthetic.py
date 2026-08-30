@@ -130,6 +130,12 @@ def seed_spec_row(conn: sqlite3.Connection, spec: dict | None = None) -> str:
         f" ({', '.join(_SPEC_ROW_COLUMNS)})"
         f" VALUES ({', '.join(['?'] * len(_SPEC_ROW_COLUMNS))})",
         values)
+    # A literal VALUES, deliberately NOT state/specs.py's gated SELECT form.
+    # If the spec INSERT above were ever dropped, that form would write nothing
+    # and this fixture would seed a silently empty database; the FK raises here
+    # instead (see the file comment above — INSERT OR IGNORE does not swallow a
+    # foreign-key violation). Loud is right in a fixture and wrong in the write
+    # path, whose caller turns a dropped INSERT into a legible refusal.
     conn.execute(
         "INSERT OR IGNORE INTO strategies (strategy_id, state, updated_at)"
         " VALUES (?, 'SPEC', ?)", (spec["spec_id"], SPEC_ROW_CREATED_AT))

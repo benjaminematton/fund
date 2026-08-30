@@ -750,14 +750,21 @@ def test_an_objections_verdict_advances_nothing_because_nothing_can_advance(db):
     would not even be a working transition, and the edge has to be designed
     (#181) rather than declared.
 
-    So the absence assertion was replaced by a STRICTLY STRONGER one against
-    the world that now exists. It no longer says "no table exists to move a
-    spec in"; it says the row that CAN now hold lifecycle state is in SPEC
-    before the verdict and BYTE-IDENTICAL after — same state, same
-    state_version, same updated_at. That is the instrument this test already
-    used on the immutable spec row, pointed at the mutable one, and unlike the
-    EDGES check it also catches an advance written as a raw UPDATE that
-    bypasses transition.py entirely.
+    So the absence assertion was replaced by one against the world that now
+    exists. It no longer says "no table exists to move a spec in"; it says the
+    row that CAN now hold lifecycle state is in SPEC before the verdict and
+    BYTE-IDENTICAL after — same state, same state_version, same updated_at.
+    That is the instrument this test already used on the immutable spec row,
+    pointed at the mutable one.
+
+    NOT "STRICTLY STRONGER", which is what an earlier draft of this docstring
+    called it — it trades along two axes. STRONGER: it detects actual
+    MOVEMENT rather than the absence of a mechanism, so unlike the EDGES check
+    it catches an advance written as a raw UPDATE that bypasses transition.py
+    entirely. NARROWER: `"strategies" not in tables` was a table-global
+    schema fact with no spec scope, while this watches one spec's row (see the
+    paragraph below). The replacement is right anyway — the old assertion's
+    premise is gone and cannot be restored — but it is not a superset.
 
     WHAT THIS DOES AND DOES NOT CATCH — stated, because "the day someone adds
     an advance path this test reddens" is more than it can promise. It reddens
