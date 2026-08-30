@@ -17,7 +17,18 @@ It researches its own ideas, argues them properly, sizes them, trades them, and
 grades itself on what actually happened. It runs every day whether or not
 anyone is watching. It trades real money — ours. And the agents inside it get
 better over months, because the firm keeps score honestly enough to know which
-of its own opinions were worth anything.
+of its own opinions were worth anything — and then does something with the
+score, without waiting to be told.
+
+That last part is what kind of firm this is. A firm run by one person can be
+one where every improvement waits on that person: read the scoreboard, decide
+what it means, edit a prompt, adjust a limit. That firm improves at the speed
+of its owner's attention — slowly, and in bursts. Or it can be one where the
+firm reads its own record, applies the rules it was given every night, and
+turns what the rules can't settle into a concrete proposal with the evidence
+attached — so the person's job is to approve or refuse, not to notice and
+author. Same person, same rules, same invariants. The difference is whose
+attention is the bottleneck. We are building the second kind.
 
 It stays small on purpose. What edge is left at this horizon lives in the
 corners that large institutions can't fit into, so size is the thing most likely
@@ -63,6 +74,24 @@ on the day the account is real as it did on every paper day before it.
 whether its confidence meant anything. Desks that turn out to have no edge get
 narrowed or retired. Nobody grades themselves.
 
+**The improvement loop.** What the scorecard says, the firm acts on, in two
+tiers. The first is rules a human already wrote, applied by code every night
+with nobody asked: analyst weights recomputed from calibration, a strategy's
+allocation ramped or cut by the kill rules, a desk narrowed once its record
+says it has no edge. The rule was the approval. The second is anything that
+would change a rule or a prompt — a charter that keeps making the same
+mistake, a limit the record says is mis-set, a desk that should exist or
+shouldn't, a strategy family worth trying. Those the firm cannot change
+itself, and doesn't try to. It writes the proposal — the diff, the evidence
+behind it, what it expects to improve, what it must not disturb, and how both
+would show up on the scorecard — and puts it in front of the human, one at a
+time and no faster than the record can grade them. Nothing in the firm edits
+its own instructions; nothing waits for the human to notice a problem either.
+And the proposals are graded too: a firm whose proposals keep failing to move
+what they predicted has learned something about its own judgment.
+Charters, thresholds, and capital change only by human commit. The proposal is
+the firm's.
+
 **Operations and the books.** The morning standup, the watch on open positions,
 the end-of-day digest, P&L attributed by desk and by strategy, and the running
 cost of the firm's own thinking.
@@ -77,9 +106,12 @@ or watched while it runs, and any seat can be asked a question and will answer
 from its own record. It's the firm's face and its running log — never the place
 decisions actually come from.
 
-**The human.** One, and it stays one. Allocates the capital, sets the limits,
-decides which desks exist, and carries what can't be handed to a process.
-Everything else, the firm does itself.
+**The human.** One, and it stays one. Holds the only hand that can commit:
+capital, limits, which desks exist, what any seat is told. Spends that hand
+mostly on the firm's own proposals — merge, refuse, or send back for more
+evidence — and on the exceptions no rule was written for. Carries what can't
+be handed to a process. Everything else, the firm does itself, and the measure
+of whether it does is how little of the human's attention a good month needs.
 
 ## A day, once it's all running
 
@@ -89,7 +121,12 @@ reads all of it, weighs each voice by its record, and decides. The gate sizes
 what it approves and refuses what it won't. The trader executes. The book is
 reconciled, the day is written down, and that night the calls that came due get
 scored against what the market actually did — which is what the desks read
-tomorrow morning before they open their mouths.
+tomorrow morning before they open their mouths. The same night the scorecard
+is recomputed and the rules run on it: weights move, an allocation ramps or is
+cut, a desk narrows. And when the record has accumulated enough to argue for
+something the rules can't touch — not every night; a graded record takes
+weeks to say anything — the firm writes the proposal: one thing, with the
+evidence and a prediction of what it will change, for the human to rule on.
 
 Most days it makes one or two small decisions. Some days the right answer is to
 do nothing at all, and it does nothing, without anyone having to intervene.
@@ -117,7 +154,12 @@ which against the base rates for this activity is a genuinely good outcome. The
 cost of running the whole thing is known and unremarkable. When something breaks
 or a feed goes quiet, the firm stops on its own rather than guessing. And it
 learns fast enough that this year's agents are measurably better than last
-year's — measurably, because anything less is a story.
+year's — measurably, because anything less is a story — and most of what made
+them better, the firm proposed itself. That has a number too: of the changes
+to charters, limits, and desks in a year, how many began as a proposal from
+the firm, against how many the human had to notice and write by hand. The
+firm is self-optimizing when the first number dominates and the human's part
+is mostly saying yes.
 
 Returns matter too, but they're the last thing to become readable and the
 easiest to fool yourself about.
@@ -129,14 +171,20 @@ what makes the rest of it worth taking seriously.
 ## Where we are
 
 As of August 2026: a paper account, two analyst desks, a portfolio manager, a
-trader, and the gate — running a real market day end to end and unattended,
-from the pre-gate through research, decision, the gate, execution,
-reconciliation, and the close. A nightly job resolves decisions once they reach
-their horizon, which is what will eventually give the grading something to work
-with.
+trader, a critic that reviews strategy specs, and the gate — running a real
+market day end to end and unattended, from the pre-gate through research,
+decision, the gate, execution, reconciliation, and the close. A nightly job
+resolves decisions once they reach their horizon, and a reflect seat writes
+one reflection per resolved decision.
 
-No debate — the decision stage records a default clearance, because there is no
-critic seat in it yet. No bull, no bear, no macro, no operations seat. The lab
+The loop is open. The grade is computed and the reflection written, and then
+nothing reads either: no prompt carries yesterday's reflections, the PM's
+weights don't come from calibration, and the scoreboard goes to a channel and
+stops there. Every change to a charter, a limit, or the watchlist so far has
+been noticed and written by the human. Today the firm is the first kind.
+
+No debate — the decision stage records a default clearance, because the critic
+doesn't sit in it yet. No bull, no bear, no macro, no operations seat. The lab
 is built and tested but nothing routes to it. Most of what this document
-describes is still ahead of us; the path is in
-[`specs/design.md`](specs/design.md) §7.
+describes is still ahead of us; closing the loop is the next step, and the
+path is in [`specs/design.md`](specs/design.md) §7.
