@@ -110,11 +110,16 @@ SPEC_SECTIONS = (
 # `trial_registry` and `holdout_evaluations` came OFF this list on 2026-08-29
 # under issue #172, which is #50's Group 2: their DDL moved out of
 # fundbt/registry.py's standalone string into state/schema.sql, so both are now
-# compared character-for-character against strategy-contracts.md §2. #50's
-# Group 1 (`strategies`, `sleeves`, `shadow_fills`) is untouched — no DDL for
-# those exists anywhere in the repo.
+# compared character-for-character against strategy-contracts.md §2.
+#
+# `strategies` came off on 2026-08-30 under issue #197, the first of #50's
+# Group 1: its DDL now has a state/schema.sql home, so it too is compared
+# character-for-character. The TABLE is what landed — there is no
+# state/transition.py machine for it — but this list is about where the DDL
+# lives, not about what reads it. `sleeves` and `shadow_fills` are the rest of
+# Group 1 and are untouched: no DDL for those exists anywhere in the repo.
 NO_SCHEMA_HOME = frozenset({
-    "strategies", "sleeves", "shadow_fills",
+    "sleeves", "shadow_fills",
 })
 
 # Everything that can follow the type in a column definition.
