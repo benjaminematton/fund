@@ -25,6 +25,7 @@ Copied from CLAUDE.md, `specs/improvement.md` and `specs/acceptance.md` Phase 2b
 - **DDL is `CREATE TABLE IF NOT EXISTS` in `state/schema.sql`** (`state/db.py:12` matches that string) and matches the spec character-for-character after normalisation (`tests/test_schema_contract.py`).
 - **Alert codes are string literals matching `^[a-z][a-z0-9_]*$`** (`scripts/check_alert_codes.py`), appended via `append_alert` / `run_day._alert`.
 - **Test invariants:** tests are the spec; never update a golden fixture or an expected value to make a test pass — where this plan changes an expected value it says which spec clause mandates the change.
+- **Charters change only by human commit.** The one charter edit here (`charters/pm.md` v6 → v7, Task 6) rides this PR and lands when the human merges it; the version bump in the header is what attributes every later PM decision to the new text (`agents/seats.py:_parse_charter_version`).
 - **No Co-Authored-By trailer in commit messages** (Benjamin's standing rule). Conventional commits.
 - **Every commit passes `make test`** (1669 passed, 1 skipped at branch point `1037519`).
 
@@ -53,6 +54,8 @@ Copied from CLAUDE.md, `specs/improvement.md` and `specs/acceptance.md` Phase 2b
 | `tests/test_fund_tools.py` | `weights` section scope, empty-table naming, the three existing pins that assumed no `weights` section. | Modify |
 | `tests/test_ops_units.py` | Five legs in the committed order. | Modify |
 | `tests/test_state.py` | `TABLES` gains `offered`, `weights`. | Modify |
+| `tests/test_preflight_schema.py` | Table-count pin 15 → 17, with its docstring entry. | Modify |
+| `charters/pm.md` | v7: Inputs and Judgment name the `weights` row; the "Phase 3+" deferral of calibration scores is retired. | Modify |
 | `specs/acceptance.md` | Tick the two Phase 2b items this lane completes. | Modify |
 
 ---
@@ -185,6 +188,15 @@ NO_SCHEMA_HOME = frozenset({
 })
 ```
 
+And in `_spec_ddl_blocks()` (line ~608), derive the label from the heading so a failure on the new file names §4 rather than §2:
+
+```python
+    return tuple((f"{path.parent.name}/{path.name}"
+                  f" §{heading.split('.')[0].removeprefix('## ')}",
+                  _section_ddl(path, heading))
+                 for path, heading in SPEC_SECTIONS)
+```
+
 - [ ] **Step 2: Run the contract test to verify it fails**
 
 Run: `.venv/bin/python3 -m pytest tests/test_schema_contract.py -v`
@@ -254,18 +266,30 @@ TABLES = {"signals", "critiques", "decisions", "tickets", "orders",
           "resolutions", "checkpoints", "events", "costs", "offered", "weights"}
 ```
 
-- [ ] **Step 5: Run the contract and state tests**
+- [ ] **Step 5: Bump the preflight table-count pin — an expected-value change, mandated by the test itself**
 
-Run: `.venv/bin/python3 -m pytest tests/test_schema_contract.py tests/test_state.py -v`
+`tests/test_preflight_schema.py::test_the_expected_table_count_is_pinned` asserts `len(preflight.expected_schema()) == 15` and its docstring says the bump "IS a second edit, on purpose: bump it in the same commit that adds the table." Change the assertion to `== 17` and append to the docstring:
+
+```
+    15 -> 17 on 2026-08-30 — issue #205, lane (a)
+    (https://github.com/benjaminematton/fund/issues/205) — `offered` (the
+    pre-gate's persisted active set) and `weights` (the nightly scoreboard)
+    landed, character-exact to improvement.md §4, which
+    tests/test_schema_contract.py now parses.
+```
+
+- [ ] **Step 6: Run the contract, state and preflight tests**
+
+Run: `.venv/bin/python3 -m pytest tests/test_schema_contract.py tests/test_state.py tests/test_preflight_schema.py -v`
 Expected: PASS. `test_schema_matches_spec[offered]` and `[weights]` are now parametrized cases; `test_every_status_table_has_a_state_machine` is unaffected (neither table has a `status` column); `test_a_database_without_the_log_gains_it_on_reconnect` still passes, which is the mechanism that carries both tables onto the droplet's existing DB.
 
-- [ ] **Step 6: Full suite, then commit**
+- [ ] **Step 7: Full suite, then commit**
 
 Run: `make test`
 Expected: PASS.
 
 ```bash
-git add state/schema.sql tests/test_schema_contract.py tests/test_state.py
+git add state/schema.sql tests/test_schema_contract.py tests/test_state.py tests/test_preflight_schema.py
 git commit -m "feat(state): offered and weights tables; improvement.md §4 joins the parsed contract set"
 ```
 
@@ -345,9 +369,13 @@ def _pre_gate_stage(ctx: StageCtx) -> list[str]:
     active set otherwise lives only in this function's return value, and the
     nightly scoring job needs it as the denominator of coverage. INSERT OR
     IGNORE, so a crash-resume that re-runs this body writes each row once.
-    Only called from inside run_stage, never from run_day's pure
-    recompute-on-done branch, so a resumed day never re-posts these alerts
-    and run_pre_gate stays write-free."""
+    One residual: scripts/run_day.py rebuilds market_inputs live per fire,
+    so a resume can DROP a ticker the first attempt offered — its row stays,
+    that day's n_offered over-counts by one, and the tell is an offered row
+    with no signals under it. Accepted: one day, visible, and the honest
+    record of what the desks were asked. Only called from inside run_stage,
+    never from run_day's pure recompute-on-done branch, so a resumed day
+    never re-posts these alerts and run_pre_gate stays write-free."""
     active: list[str] = []
     now = iso(ctx.clock.now())
     for ticker, inputs in ctx.market_inputs.items():
@@ -1131,11 +1159,9 @@ def test_a_seat_with_no_row_of_its_own_is_named_unavailable(fund_db, tmp_path):
     brief = _brief(fund_db, seat="news", journals_root=tmp_path)
     assert brief["weights"] == []
     assert brief["unavailable"] == ["weights (LookupError: no weights rows yet)"]
-
-
-def test_the_exec_seat_never_sees_weights():
-    assert not _can("exec", "read_weights") and not _can("reflect", "read_weights")
 ```
+
+(No test asserts `_can("exec", "read_weights")` — that would read the table back to itself. The exec and reflect seats' reachable surface is pinned by `test_tools_by_seat_is_exactly_what_each_seat_owns` and `test_brief_is_refused_to_seats_without_the_capability`: neither holds `get_stage_brief`, the only reader.)
 
 Then update the three existing pins that assumed no `weights` section (each is an expected-value change mandated by `improvement.md` §2.1 (ii): an empty table is *named*):
 
@@ -1191,7 +1217,15 @@ def _weights(conn: sqlite3.Connection, seat: str) -> list[dict]:
     row for a seat that reads every seat's signals, its own row otherwise.
     No row in scope is NAMED, not an empty list that reads as "no seats":
     improvement.md §2.1 (ii) — the PM proceeds with equal weights knowing
-    why. Stale rows are not this case; they carry their own as_of_date."""
+    why. Stale rows are not this case; they carry their own as_of_date —
+    which is also how a retired seat's last row reads: it stays "latest"
+    for that seat, dated the night it was last graded.
+
+    Scope follows read_signals rather than a seat NAME: the seat that reads
+    every seat's signals is the one aggregating them, and that is the grant
+    the weights sit beside. A future seat granted read_signals for another
+    reason (design.md §2's Bull/Bear) inherits every row with it — a named
+    consequence, revisited if that seat arrives."""
     rows = latest_weights(conn, agent=None if _can(seat, "read_signals") else seat)
     if not rows:
         raise LookupError("no weights rows yet")
@@ -1243,17 +1277,75 @@ and
     assert [m.split(" (")[0] for m in pm["unavailable"]] == ["weights"]
 ```
 
-Run: `.venv/bin/python3 -m pytest tests/test_sim_day.py -v`
-Expected: PASS.
+Then add the acceptance item's own clause — "assert on the rendered brief, not the prompt" — under sim, with a row the real job wrote. The sim opens `tmp_path / "fund.sqlite"`, so a DB seeded and scored before `sim_day` runs is the DB the PM's replayed `get_stage_brief` reads:
 
-- [ ] **Step 6: Full suite, then commit**
+```python
+def test_the_pm_brief_renders_the_row_the_scoring_job_wrote(tmp_path):
+    """specs/acceptance.md Phase 2b item 2, under sim: the PM's brief
+    `weights` section equals the latest row for every analyst seat, each
+    with its as_of_date — read off the replayed tool result, never
+    re-derived. The scoring job ran on an earlier night against the same
+    on-disk database the sim then opens."""
+    from datetime import datetime, timezone
+
+    from orchestrator.improve import (WeightsConfig, latest_weights,
+                                      write_weights)
+    from tests.test_improve import _two_seat_history
+
+    conn = connect(tmp_path / "fund.sqlite")
+    _two_seat_history(conn)
+    write_weights(conn, SimClock(datetime(2026, 7, 2, 20, 35, tzinfo=timezone.utc)),
+                  WeightsConfig(window_days=20, horizon_days=5))
+    expected = latest_weights(conn)
+    conn.close()
+
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  pm_recs=("mvf_pm_brief.jsonl",))
+
+    pm = _brief(sim, "decision")
+    assert pm["weights"] == expected
+    assert [(w["agent"], w["as_of_date"]) for w in pm["weights"]] == [
+        ("a", "2026-07-02"), ("b", "2026-07-02")]
+    assert [m.split(" (")[0] for m in pm["unavailable"]] == []
+```
+
+Run: `.venv/bin/python3 -m pytest tests/test_sim_day.py -v`
+Expected: PASS. If `_brief(sim, "decision")` reports zero briefs, the PM recording in use does not call `get_stage_brief` — `mvf_pm_brief.jsonl` does (it is what `test_briefs_reach_the_seats` replays); do not swap in a recording that skips the call.
+
+- [ ] **Step 6: `charters/pm.md` v7 — the charter stops saying the score is Phase 3+**
+
+`charters/pm.md` v6 tells the PM the calibration score does not exist yet (Inputs: "(Phase 3+: each analyst's rolling calibration score … join the brief.)"; Judgment: "Phase 3+: the brief carries each analyst's calibration score; until then, judge the summary's evidence"), while after step 3 the brief carries it and the tool description says to weigh by it. `calibration.md` §2 states "The PM's charter says: treat analyst signals as evidence weighted by the scoreboard" — this is the edit that makes that sentence true. `charters/_template.md`: bump the header on any change and note it in the changelog. Charters change only by human commit: this rides the PR, and the human's merge is that commit.
+
+First pin the version bump. In `tests/test_migrations.py::test_charter_version_comes_from_the_header`, change `== "v6"` to `== "v7"` (the template's rule is the mandate; the test reads the header). Run: `.venv/bin/python3 -m pytest tests/test_migrations.py -k header -v` → Expected: FAIL (`'v6' == 'v7'`).
+
+Then edit `charters/pm.md`:
+
+Header line 1: `# Portfolio Manager — v7`
+
+Inputs (line 17): replace the final parenthetical `(Phase 3+: each analyst's rolling calibration score and links to the debate threads for contested tickers join the brief.)` with:
+
+```markdown
+`weights` is each analyst's latest scoreboard row — `weight` (the deterministic pooling weight), `bss_shrunk`, `total_skill`, `reliability`, `abstention_rate`, `coverage`, and `as_of_date`, which says how fresh it is. An analyst with no row is not in the table; `weights` listed under `unavailable` means no seat has a row yet. (Phase 3+: links to the debate threads for contested tickers join the brief.)
+```
+
+Judgment (line 28): replace `- Weight analyst signals by their track record, not their confidence (Phase 3+: the brief carries each analyst's calibration score; until then, judge the summary's evidence).` with:
+
+```markdown
+- Weight analyst signals by their `weights` row, not by their confidence or their prose: `weight` is the pooling weight, `reliability` says whether their 80s hit like 80s. A seat with no row, or `weights` under `unavailable`, gets the pool's mean weight — equal weights are hard to beat.
+```
+
+Changelog (line 35): append ` · v7 \`weights\` joins Inputs and Judgment — the brief carries each analyst's calibration row (improvement.md §2.1); calibration scores are no longer Phase 3+`.
+
+Run: `.venv/bin/python3 -m pytest tests/test_migrations.py tests/test_fund_tools.py -v` → Expected: PASS. Check the charter is still ≤120 lines (`wc -l charters/pm.md`) and that the seven sections are in template order — nothing here adds a section.
+
+- [ ] **Step 7: Full suite, then commit**
 
 Run: `make test`
 Expected: PASS.
 
 ```bash
-git add agents/tools/fund_server.py tests/test_fund_tools.py tests/test_sim_day.py
-git commit -m "feat(agents): the stage brief carries the weights row — own row per analyst, every row for the PM"
+git add agents/tools/fund_server.py charters/pm.md tests/test_fund_tools.py tests/test_sim_day.py tests/test_migrations.py
+git commit -m "feat(agents): the stage brief carries the weights row; pm.md v7 weighs signals by it"
 ```
 
 ---
@@ -1378,14 +1470,39 @@ def test_skipped_seats_are_named_in_one_alert(tmp_path, monkeypatch):
 
     def partial(conn, clock, cfg):
         return {"as_of_date": "2026-07-13", "written": ["b"],
-                "unchanged": [], "skipped": ["a"]}
+                "unchanged": [], "skipped": ["quant", "macro"]}
     monkeypatch.setattr(weights_day, "write_weights", partial)
 
     weights_day.write_and_log(conn, SimClock(NIGHTLY), WeightsConfig(20, 5))
 
     alerts = _alerts(conn)
     assert [a["code"] for a in alerts] == ["weights_seat_skipped"]
-    assert "a" in alerts[0]["text"] and "non-finite" in alerts[0]["text"]
+    assert alerts[0]["text"].endswith(": quant, macro")
+    assert "2 seat(s)" in alerts[0]["text"]
+
+
+def test_a_failed_alert_write_is_logged_and_still_exits_clean(
+        tmp_path, monkeypatch, capsys):
+    """The likeliest cause of a scoring crash is the database, and the alert
+    goes through the same connection. A raise out of the except would exit
+    1 and hold back reflect_day; instead it is logged to stdout (journald)
+    and the job returns — reflect_day hits the same database and fails loud
+    on its own, which is OnFailure='s job."""
+    conn = connect(tmp_path / "fund.sqlite")
+
+    def boom(conn, clock, cfg):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(weights_day, "write_weights", boom)
+
+    def alert_boom(conn, clock, code, text, **payload):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(weights_day.run_day, "_alert", alert_boom)
+
+    out = weights_day.write_and_log(conn, SimClock(NIGHTLY), WeightsConfig(20, 5))
+
+    assert out["failed"] is True
+    assert _alerts(conn) == []
+    assert "ALERT NOT WRITTEN" in capsys.readouterr().out
 
 
 def test_the_job_never_drains_the_outbox(tmp_path, monkeypatch):
@@ -1430,12 +1547,19 @@ job is not — a missed scoreboard night is recomputed, identically, the next
 night. That is also why a SCORING failure exits 0 here: Type=oneshot stops
 at the first non-zero ExecStart, and a broken scoreboard must not hold back
 the leg that cannot be retried. Only a failure BEFORE the database is open
-(a missing env var, a paper-guard trip) exits non-zero — nothing can alert
-yet, and OnFailure= is the alert.
+(a missing env var, a paper-guard trip, a config missing a key) exits
+non-zero — nothing can alert yet, and OnFailure= is the alert. If the
+database itself is what failed, the alert write fails too: that is logged
+to stdout (journald) and the job STILL exits 0 — reflect_day then hits the
+same database and fails loud on its own, which is OnFailure='s job.
 
 NO SLACK, NO SEAT, NO BROKER. The job needs the database and the committed
 config and nothing else. Requiring a token would let an unrelated missing
-var stop the scoreboard from ever being written.
+var stop the scoreboard from ever being written. The cost of holding no
+token: an alert this job appends is posted by reflect_day's drain, and if
+that leg exits before its drain (missing key, lock held), the row sits
+undrained and reddens the next audit — audit_day's undrained check has no
+date bound. The same posture reflect_day's own alerts already have.
 
 Posture (invariant 4 / improvement.md §0.7: no row beats a wrong row):
   * ALPACA_PAPER_TRADE != 'true'  -> exit 1 before anything else
@@ -1444,6 +1568,7 @@ Posture (invariant 4 / improvement.md §0.7: no row beats a wrong row):
   * write_weights raises          -> no row for any seat (it rolled back),
                                      last good rows stand, ONE alert
                                      (weights_job_failed), exit 0
+  * ...and the alert write raises -> logged "ALERT NOT WRITTEN", exit 0
   * a seat's load-bearing value   -> that seat skipped, the rest written,
     is not finite                    ONE alert naming every such seat
                                      (weights_seat_skipped), exit 0
@@ -1493,9 +1618,16 @@ def write_and_log(conn, clock, cfg: WeightsConfig) -> dict:
         out = write_weights(conn, clock, cfg)
     except Exception as exc:
         # write_weights rolled back before re-raising: no row for any seat.
-        run_day._alert(conn, clock, "weights_job_failed",
-                       f"weights_job_failed — {type(exc).__name__}: {exc};"
-                       " no weights row written tonight, last good rows stand")
+        # The alert rides the same connection; if the DATABASE is what
+        # failed it raises too, and a raise out of here would exit 1 and
+        # hold back the perishable leg. Log it and return instead.
+        text = (f"weights_job_failed — {type(exc).__name__}: {exc};"
+                " no weights row written tonight, last good rows stand")
+        try:
+            run_day._alert(conn, clock, "weights_job_failed", text)
+        except Exception as alert_exc:
+            log(f"ALERT NOT WRITTEN ({type(alert_exc).__name__}:"
+                f" {alert_exc}) — {text}")
         return {"failed": True, "written": [], "unchanged": [], "skipped": []}
     if out["skipped"]:
         run_day._alert(conn, clock, "weights_seat_skipped",
@@ -1671,7 +1803,15 @@ git commit -m "docs: lane (a) landed — improvement.md §4 parsed, weights serv
 
 - [ ] **Step 5: Open the PR against `master`**
 
-Title: `feat: Phase 2b (a) — offered, the scoring job, and weights in the brief (#205)`. Body: the §8 (a) sentence, the Task 1 amendment called out explicitly as a spec change for the human to read first, the three expected-value changes (Task 6 step 5, the two `test_fund_tools.py` seeds) with their spec clause, and the deploy note: the droplet's existing DB gains both tables on the next `connect()` (`state/db.py:37-41`; pinned by `tests/test_state.py`), and the new unit leg needs `systemctl daemon-reload` after the file lands under `/opt/fund/ops/`. No closing keyword — #205 stays open for (b)–(f).
+Title: `feat: Phase 2b (a) — offered, the scoring job, and weights in the brief (#205)`. Body, in this order:
+
+1. The §8 (a) sentence.
+2. **Two human-commit items to read first:** the Task 1 spec amendment (six nullable columns; `n_signalled` definition), and the `charters/pm.md` v6 → v7 edit (Task 6) — every PM decision after the merge is attributed `v7`.
+3. **Expected-value changes to existing tests, each with its mandate:** `tests/test_preflight_schema.py` table count 15 → 17 (the test's own docstring); `tests/test_sim_day.py` two `unavailable == []` pins → `["weights"]` (improvement.md §2.1 (ii)); `tests/test_fund_tools.py` two tests now seed a `weights` row (same clause; the empty case gets its own test); `tests/test_ops_units.py` four legs → five; `tests/test_migrations.py` `charter_version_for({"seat": "pm"}) == "v6"` → `"v7"` (`charters/_template.md`: bump the header on any change).
+4. **Behaviour change the eval rig will show:** `evals/` builds briefs through `handle_get_stage_brief` against a DB with no `weights` rows, so every live eval case's PM/analyst brief now carries `weights: []` and `unavailable: ["weights (…)"]` until a scoring night has run on that DB. Correct per §2.1 (ii); the LLM-facing prompt changes.
+5. **Deploy note:** the droplet's existing DB gains both tables on the next `connect()` (`state/db.py:37-41`; pinned by `tests/test_state.py`); the new unit leg needs `systemctl daemon-reload` after the file lands under `/opt/fund/ops/`; the first scoring night writes rows for every seat with graded history, so the PM's first post-deploy brief already carries them.
+
+No closing keyword — #205 stays open for (b)–(f).
 
 ---
 
@@ -1687,7 +1827,9 @@ Title: `feat: Phase 2b (a) — offered, the scoring job, and weights in the brie
 | `n_offered` = offered rows in the window | 4 (`behaviour`), 5 |
 | second run on unchanged data is a no-op (same `inputs_hash`) | 5 |
 | job crash → no row, last good rows stand, one alert | 5 (rollback), 7 (`weights_job_failed`) |
-| PM brief: latest row for every analyst with `as_of_date`; analyst: own row only | 6 |
+| PM brief: latest row for every analyst with `as_of_date`; analyst: own row only | 6 (handler tests + the sim test off the replayed tool result) |
+| calibration §2: "the PM's charter says: treat analyst signals as evidence weighted by the scoreboard" | 6 (pm.md v7) |
+| `tests/test_preflight_schema.py` table-count tripwire bumped in the same commit as the DDL | 2 |
 | empty/absent table → named in `unavailable`; crashed job with rows → rows carried, nothing in `unavailable` | 6 |
 | windows and thresholds read from `config/improvement.yaml` | 4, 7 |
 | `improvement.md` §4 parsed; `lessons`/`proposals` in `NO_SCHEMA_HOME` with #50 reason | 2 |
