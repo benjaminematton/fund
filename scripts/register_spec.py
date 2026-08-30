@@ -10,8 +10,11 @@ assigned by code, never by a Slack message.
 WHY IT IS HAND-RUN AND NOT A FIFTH SYSTEMD LEG (CEO ruling B1, 2026-08-29).
 `specs/strategy.md:34` makes SPEC reachable only through *PM sponsors → SPEC*,
 and no sponsorship mechanism exists in code: `IDEA` appears four times in the
-repo, all prose, zero Python and zero SQL; there is no `ideas` table and no
-`strategies` table in `state/schema.sql`. Putting spec production on a timer
+repo, all prose, zero Python and zero SQL; there is no `ideas` table in
+`state/schema.sql`; and `strategies`, which #197 landed, is only ever WRITTEN
+at registration — `state/transition.py`'s `EDGES` carries no entry for the
+table, so nothing in code sponsors anything into SPEC. Putting spec production
+on a timer
 would enter a lifecycle state by skipping the gate that guards entry to it,
 every night, forever — and `INSERT OR IGNORE` on a content hash bounds nothing,
 because fresh prose collides on nothing. The human invocation stands in for the
@@ -38,6 +41,17 @@ WHAT THIS BUYS IMMEDIATELY: one hand-run seeds a real spec, and that evening's
 existing 16:35 `critic_g1.py` leg drains it from `specs_awaiting_critique` — the
 first live G1 night runs on a spec an agent actually wrote.
 
+WHEN TO RUN IT: after the close, and after you have taken that day's audit.
+Two SANCTIONED outcomes raise a `register_spec_wrote_nothing` alert — the
+charter-sanctioned decline, and a duplicate registration — and
+`scripts/audit_day.py` fails an audited ET day on any non-self `alert` event
+inside that day's ET window, whenever within the day it was raised. So any
+audit of today taken after either outcome reports today as FAILED with nothing
+actually wrong. The 16:35 legs sit behind `run_day`'s own `report_audit` call
+(the day's unit fires 09:35 with `TimeoutStartSec=30min`); this target has no
+schedule and therefore no such protection. Making a sanctioned decline stop
+reddening the day means splitting the alert kinds, which is a separate change.
+
 EXIT CODES ARE A CONTRACT, and they are NOT critic_g1's (invariant 4: no row
 beats a wrong row).
 
@@ -53,7 +67,12 @@ beats a wrong row).
   run_day holds its lock        -> exit 2, nothing built, nothing spent
   another register_spec running -> exit 2, nothing built, nothing spent
   a turn that raises            -> one alert, no row, exit 1
-  a turn that writes nothing    -> one alert, no row, exit 1
+  a turn that writes nothing    -> one alert FROM HERE, no row, exit 1. A
+                                   turn that crashed or blew SEAT_MAX_WALL_S
+                                   arrives on this branch too, and
+                                   run_day.make_turn has already posted its
+                                   own seat_turn_failed / seat_turn_timeout —
+                                   so those cases are TWO messages, not one.
   anything else                 -> one alert, exit 1
 
 WHY 2 AND NOT critic_g1's 0. That job is a systemd ExecStart, where a nonzero
@@ -112,7 +131,8 @@ REQUIRED_ENV = ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "FUND_DB",
 LOCK_NAME = "register_spec.lock"
 
 # How deep a G1 queue this job will count before it reports "N+". The canonical
-# selector defaults to limit=1 (state/specs.py:48-49), so a DEPTH needs a limit
+# selector defaults to limit=1 (state.specs.specs_awaiting_critique), so a
+# DEPTH needs a limit
 # argument rather than a second query carrying its own copy of the predicate —
 # a duplicated selector is how the job and the tool come to disagree about what
 # "pending" means. Same constant, same reason, as critic_g1's
@@ -154,9 +174,9 @@ REGISTER_TOOLS = ["mcp__fund__submit_strategy_spec"]
 # a CEO-reviewed diff, deliberately, not a shell argument.
 #
 # THE DECLINE IS SANCTIONED HERE and not only in the charter, because
-# register_and_log's register_spec_wrote_nothing alert tells the operator that
-# a correct decline is one of its four causes and is not a fault. That is true
-# only if the turn was permitted to decline.
+# register_and_log's register_spec_wrote_nothing alert names a correct decline
+# among the causes it can neither confirm nor rule out. That is true only if
+# the turn was permitted to decline.
 #
 # Unlike G1_PROMPT this has no evals/prompts.py twin to stay byte-identical to:
 # the rig has no `quant` cases, and evals/ is outside this lane's region.
@@ -188,7 +208,7 @@ def spec_count(conn) -> int:
     A count, not a selector, and that is CHOSEN rather than forced. A narrower
     instrument does exist: handle_submit_strategy_spec stamps `created_at` from
     the same injected clock this job holds (it passes iso(clock.now()) into
-    insert_strategy_spec, which writes it verbatim, state/specs.py:39-43), so
+    state.specs.insert_strategy_spec, which writes it verbatim), so
     "a spec created at this run's timestamp" is expressible. It is not used,
     for two reasons — a turn is not instantaneous and the wrapper stamps at
     call time, so an equality on the run's start would miss; and the count
@@ -212,11 +232,13 @@ def queue_depth(conn) -> int:
     queue, not this job's own row count.
 
     state.specs.specs_awaiting_critique is called, never re-implemented. Its
-    predicate ("no strategy_critiques row") is a known divergence from
-    strategy-contracts.md §4's canonical `strategies.state == 'SPEC'`, recorded
-    in its own docstring and at strategy-contracts.md:27, and the fix when
-    `strategies` lands is to REPLACE that selector — which a second copy of the
-    predicate here would silently survive.
+    predicate is CONJUNCTIVE — the `strategies` row is in state SPEC AND the
+    spec carries no `strategy_critiques` row — because those two conditions
+    are not interchangeable: strategy-contracts.md §2's "Correction, closed by
+    #197" paragraph records why, and the selector's own docstring says which
+    conjunct is load-bearing today. That is expected to SWAP when §4 grows a
+    G1 edge (#181). A second copy of the predicate here would go on meaning
+    today's thing after the canonical one stopped.
     """
     return len(specs_awaiting_critique(conn, limit=QUEUE_REPORT_LIMIT))
 
@@ -247,10 +269,22 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
     SO DOES A CORRECT DECLINE, and the alert has to say so. charters/quant.md's
     Mission sanctions "this family is tapped out, I am not proposing" as a
     legitimate output; this function cannot distinguish that from a seat that
-    went dark, and pretending otherwise would be a guess (invariant 4). It
-    names all FOUR causes instead — never called, refused, duplicate,
-    correctly declined — so the operator knows to read the transcript rather
-    than to open an incident.
+    went dark, and pretending otherwise would be a guess (invariant 4). So the
+    alert names the causes it KNOWS OF — never called, refused, duplicate,
+    correctly declined, crashed or timed out — without claiming that list is
+    complete, and tells the operator how to narrow it rather than to open an
+    incident.
+
+    CRASHED AND TIMED OUT REACH THIS BRANCH TOO, which is why the alert points
+    at a companion. run_day.make_turn catches SeatTurnTimeout and every other
+    exception, posts its own seat_turn_timeout / seat_turn_failed, and RETURNS
+    NORMALLY — so a fault arrives here indistinguishable from a decline, and
+    an alert telling the operator "this may not be a fault" would be actively
+    wrong for it. The companion alert is the discriminator, and scripts/
+    critic_g1.py's ALERT ARITHMETIC section documents the same two-message
+    shape for the sibling. Anything else run_day.make_turn ever starts
+    swallowing lands here the same way, so the list is stated as known, not as
+    exhaustive.
 
     THE G1 QUEUE DEPTH IS REPORTED EITHER SIDE, through
     state.specs.specs_awaiting_critique. A registration that never reaches the
@@ -289,10 +323,12 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
             if spec_count(conn) > before:
                 counts["registered"] += 1
             else:
-                log("the turn registered nothing — it returned without"
-                    " calling submit_strategy_spec, the call was refused, it"
-                    " re-registered content already on the books, or it"
-                    " correctly declined to propose")
+                log("the turn registered nothing — known causes: it returned"
+                    " without calling submit_strategy_spec, the call was"
+                    " refused, it re-registered content already on the books,"
+                    " it correctly declined to propose, or it crashed or timed"
+                    " out inside run_day.make_turn (which alerts separately"
+                    " and returns normally)")
                 failure = {"why": "wrote_nothing", "detail": ""}
                 counts["failed"] += 1
         queue_after = queue_depth(conn)
@@ -315,16 +351,22 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
         elif failure:
             run_day._alert(conn, clock, "register_spec_wrote_nothing",
                            "register_spec_wrote_nothing — the quant turn ran"
-                           " and no new spec row appeared. FOUR causes, and"
-                           " this alert cannot tell them apart: the seat"
+                           " and no new spec row appeared. This alert cannot"
+                           " tell its causes apart. The known ones: the seat"
                            " never called submit_strategy_spec; the call was"
                            " refused; it re-registered content already on the"
                            " books (a duplicate writes no row and queues no"
-                           " event); or the seat correctly declined to"
-                           " propose, which charters/quant.md sanctions"
-                           " ('this family is tapped out, I am not"
-                           " proposing') and which is not a fault. Read the"
-                           " turn's transcript before treating this as one."
+                           " event); the seat correctly declined to propose,"
+                           " which charters/quant.md sanctions ('this family"
+                           " is tapped out, I am not proposing') and which is"
+                           " not a fault; or the turn CRASHED or blew"
+                           " SEAT_MAX_WALL_S, which run_day.make_turn turns"
+                           " into a normal return, so from here it looks the"
+                           " same as the rest. CHECK FOR A COMPANION ALERT"
+                           " FIRST: a seat_turn_failed or seat_turn_timeout"
+                           " raised alongside this one means a fault, not a"
+                           " decline. Absent one, read the turn's transcript"
+                           " before treating this as a fault."
                            f" G1 queue {_count_text(queue_before)} ->"
                            f" {_count_text(queue_after)}."
                            " Nothing is queued and nothing retries")
@@ -477,8 +519,18 @@ def main(argv: list[str] | None = None) -> int:
     # so a crash or retry can neither lose nor duplicate a post; two drainers
     # break that. run_day.acquire_lock's own docstring names the same hazard
     # for overlapping run_day processes ("doubling the LLM spend and the Slack
-    # posts"); this is the cross-job case of it. Non-blocking flock, so the
-    # check costs nothing and cannot itself wait.
+    # posts"); this probe covers ONE cross-job pair of it, run_day only.
+    # Non-blocking flock, so the check costs nothing and cannot itself wait.
+    #
+    # WHAT IS NOT COVERED, named rather than left to an incident.
+    # scripts/critic_g1.py and scripts/reflect_day.py also drain() and hold
+    # locks of their own, and this job probes neither — so a hand-run
+    # overlapping either of them double-drains exactly as described above.
+    # That is not a remote window: both fire at 16:35, and this job's own
+    # stated payoff is that the evening's 16:35 critic_g1 leg picks the spec
+    # up, which is precisely when an operator would type the command. Probing
+    # every draining job's lock is a separate change (a filed issue); until it
+    # lands, run this AFTER the 16:35 legs have finished, not into them.
     #
     # The handle is RELEASED IMMEDIATELY: this job is asking whether the lock
     # is free, not claiming it for the run. Holding it would let a hand-run at

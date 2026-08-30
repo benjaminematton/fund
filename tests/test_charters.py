@@ -12,7 +12,7 @@ come to disagree with nobody noticing — and it would also let an editor
 
 Red when written, on exactly one file: charters/quant.md shipped with ten
 XML-ish tags instead of the seven sections and no changelog at all. The other
-seven charters pass unchanged, which is what makes this a conformance test
+six charters pass unchanged, which is what makes this a conformance test
 rather than a rewrite of the suite around one file.
 """
 

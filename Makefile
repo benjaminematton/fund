@@ -204,6 +204,15 @@ critic-g1: deps
 # leg drains it from specs_awaiting_critique — that leg is what turns a
 # registration into a G1 verdict, and this target does not run it.
 #
+# RUN IT AFTER THE CLOSE, and after you have taken that day's audit. Two
+# SANCTIONED outcomes of this job raise a register_spec_wrote_nothing alert:
+# the charter-sanctioned decline ("this family is tapped out") and a duplicate
+# registration. scripts/audit_day.py fails an audited ET day on any non-self
+# alert inside that day's ET window, whenever within the day it was raised, so
+# an audit of today taken after either outcome reports today as FAILED with
+# nothing actually wrong. The 16:35 legs sit behind run_day's own report_audit
+# call; this target has no schedule and no such protection.
+#
 # EXIT CODES ARE A CONTRACT (see the script's module docstring):
 #   0  a spec was registered. Nothing else returns 0.
 #   1  the run happened and produced no spec — a turn that raised, a turn that

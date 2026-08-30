@@ -14,7 +14,7 @@ max_budget_usd: 0.75
 # max_turns IS NOT THE BINDING CONSTRAINT and raising it does not buy time.
 # scripts/run_day.py:133's SEAT_MAX_WALL_S = 240s is a wall-clock ceiling on
 # ONE seat turn, whatever max_turns says, and it cannot be raised either:
-# tests/test_critic_g1_job.py:355 asserts
+# tests/test_critic_g1_job.py asserts
 # MAX_G1_TURNS_PER_NIGHT * SEAT_MAX_WALL_S <= 0.4 * 30 * 60, which is
 # 3 x 240 = 720 <= 720 — exactly saturated. Any increase to SEAT_MAX_WALL_S
 # reddens that test immediately. max_budget_usd stays the hard cost backstop,

@@ -91,6 +91,12 @@ def test_exactly_one_seat_holds_this_cap_and_it_is_the_quant_seat():
     # may be a trading-day seat. run_day.SEATS is {stage: (seat, ...)}.
     import scripts.run_day as run_day
 
+    # The comprehension below assumes that shape. Were SEATS ever flattened to
+    # {stage: seat}, it would iterate CHARACTERS and the intersection would be
+    # empty for a reason that has nothing to do with this test's premise — a
+    # vacuous pass. Assert the shape so that flattening reddens here instead.
+    assert all(isinstance(v, tuple) for v in run_day.SEATS.values())
+
     trading_day_seats = {s for seats in run_day.SEATS.values() for s in seats}
     assert set(holders) & trading_day_seats == set(), (
         "a submit_strategy_spec holder is scheduled on the trading day: its"

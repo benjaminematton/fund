@@ -14,8 +14,9 @@ untested.
 
 THE JOB IS A PRODUCER, which is why it looks different from its siblings. Every
 other nightly job drains a queue and can compute how much of its OWN work is
-outstanding; this one has none to read — there is no ideas table and no
-strategies table in state/schema.sql — so "did the turn work?" is a
+outstanding; this one has none to read — nothing in state/schema.sql holds
+work awaiting a spec, and `strategies` (landed by #197) is written only at
+registration, downstream of this job — so "did the turn work?" is a
 strategy_specs row COUNT either side, not a selector re-read. It does report
 the DOWNSTREAM G1 queue either side, through the canonical
 state.specs.specs_awaiting_critique selector, because that is the thing the
@@ -99,7 +100,8 @@ def test_the_queue_depth_comes_from_the_canonical_selector(db):
     which is the reason scripts/critic_g1.py:233-238 gives for its own
     PENDING_REPORT_LIMIT.
 
-    The selector's default is limit=1 (state/specs.py:48-49), so a DEPTH needs
+    The selector's default is limit=1 (state.specs.specs_awaiting_critique),
+    so a DEPTH needs
     an explicit limit argument. Asserted against three, which the default
     would have reported as one."""
     from state.specs import specs_awaiting_critique
@@ -123,17 +125,29 @@ def test_a_turn_that_writes_nothing_alerts_and_registers_nothing(db):
     assert counts == {"registered": 0, "failed": 1}
     assert db.execute("SELECT count(*) c FROM strategy_specs"
                       ).fetchone()["c"] == 0
-    assert any("register_spec_wrote_nothing" in t for t in _alert_texts(db))
+    texts = _alert_texts(db)
+    assert len(texts) == 1 and "register_spec_wrote_nothing" in texts[0]
     assert _undrained(db) == 0
 
 
-def test_the_wrote_nothing_alert_names_all_four_causes_and_the_queue(db):
-    """FOUR causes, not three. charters/quant.md's Mission sanctions "this
-    family is tapped out, I am not proposing" as a legitimate output, and this
-    job counts a no-write turn as FAILED — so the seat doing the right thing
-    and the seat going dark produce the identical alert. The operator can only
-    tell them apart if the alert says so; an alert that lists three causes
-    when there are four teaches the reader to distrust it.
+def test_the_wrote_nothing_alert_names_its_known_causes_and_the_queue(db):
+    """EVERY CAUSE THIS ALERT KNOWS OF, and it must not read as exhaustive.
+    charters/quant.md's Mission sanctions "this family is tapped out, I am not
+    proposing" as a legitimate output, and this job counts a no-write turn as
+    FAILED — so the seat doing the right thing and the seat going dark produce
+    the identical alert. A crashed or timed-out turn produces it too:
+    run_day.make_turn catches SeatTurnTimeout and every other exception, posts
+    its own seat_turn_timeout / seat_turn_failed, and returns NORMALLY, so
+    from here a fault is indistinguishable from a decline. The alert therefore
+    has to name the fault cases and point at the companion alert that tells
+    them apart — an alert that says "this may not be a fault" and omits the
+    two cases that always are teaches the reader to distrust it.
+
+    The list is asserted as the KNOWN causes, never as a count. The previous
+    version of this test asserted "FOUR causes" against text that said FOUR,
+    so it could not fail for the thing it existed to check: the enumeration
+    being incomplete. Adding a cause here is an edit to the alert and to these
+    assertions, not to a number in both.
 
     The queue depth is in the text for the same reason: "nothing registered"
     and "nothing registered, and there are already 2 specs waiting for G1" are
@@ -145,18 +159,19 @@ def test_the_wrote_nothing_alert_names_all_four_causes_and_the_queue(db):
 
     text = next(t for t in _alert_texts(db)
                 if "register_spec_wrote_nothing" in t)
-    assert "declined" in text                 # the sanctioned fourth cause
+    assert "declined" in text                 # the sanctioned cause
     assert "never called" in text
     assert "refused" in text
     assert "duplicate" in text or "already on the books" in text
+    # the two run_day.make_turn swallows into a normal return, and the
+    # companion alert that is the only way to tell them from a decline
+    assert "CRASHED" in text and "SEAT_MAX_WALL_S" in text
+    assert "seat_turn_failed" in text and "seat_turn_timeout" in text
     assert "G1 queue 1 -> 1." in text
 
 
-def test_a_queue_at_the_report_limit_renders_saturated_not_exact(db, monkeypatch):
-    """scripts/register_spec.py:112-118 and queue_depth's own docstring both
-    promise 'N+' once the canonical selector saturates at QUEUE_REPORT_LIMIT —
-    but every render site used to interpolate the raw int, so a queue at or
-    past the limit printed a number that reads as exact when it is a floor.
+def _saturated(capsys, db, monkeypatch, run_turn) -> tuple[str, str]:
+    """Drive register_and_log with a saturated queue; return (alert, stdout).
 
     queue_depth is monkeypatched rather than registering 50 real specs: the
     behaviour under test is what the render sites do with a saturated count,
@@ -164,14 +179,52 @@ def test_a_queue_at_the_report_limit_renders_saturated_not_exact(db, monkeypatch
     test_the_queue_depth_comes_from_the_canonical_selector's job)."""
     monkeypatch.setattr(register_spec, "queue_depth",
                         lambda conn: register_spec.QUEUE_REPORT_LIMIT)
+    register_spec.register_and_log(db, FakeSlack(), SimClock(RUN_AT), run_turn)
+    texts = _alert_texts(db)
+    assert len(texts) == 1
+    # The summary line ONLY. run_day._alert echoes the whole alert to stdout
+    # too, and that copy already carries the alert's own render — asserting
+    # against raw stdout passes on the alert's text whatever the log line did.
+    summary = [ln for ln in capsys.readouterr().out.splitlines()
+               if ln.startswith("register_spec: registered ")]
+    assert len(summary) == 1
+    return texts[0], summary[0]
 
-    register_spec.register_and_log(
-        db, FakeSlack(), SimClock(RUN_AT), lambda: None)
 
-    text = next(t for t in _alert_texts(db)
-                if "register_spec_wrote_nothing" in t)
-    assert f"G1 queue {register_spec.QUEUE_REPORT_LIMIT}+ ->" \
-        f" {register_spec.QUEUE_REPORT_LIMIT}+." in text
+def test_every_queue_render_site_saturates_rather_than_reading_exact(
+        db, monkeypatch, capsys):
+    """ALL THREE _count_text SITES, not one. queue_depth's docstring promises
+    'N+' once the canonical selector saturates at QUEUE_REPORT_LIMIT, and the
+    number is interpolated in three places — the log line, the
+    register_spec_turn_failed alert and the register_spec_wrote_nothing alert.
+    Only the last was covered, so the other two could interpolate the raw int
+    and print a floor that reads as exact with nothing red.
+
+    A SATURATED count is the only input that can tell the two renderings
+    apart: at a depth of 1 the raw int and _count_text produce identical text,
+    so an assertion at that depth passes under either implementation. This
+    test is therefore the one that pins _count_text; the depth-1 assertions
+    elsewhere pin only that a depth is reported at all."""
+    n = register_spec.QUEUE_REPORT_LIMIT
+    expect = f"G1 queue {n}+ -> {n}+"
+
+    wrote_nothing, out = _saturated(capsys, db, monkeypatch, lambda: None)
+    assert f"{expect}." in wrote_nothing
+    assert expect in out                       # the log line
+
+
+def test_the_raised_turn_alert_saturates_its_queue_render_too(
+        db, monkeypatch, capsys):
+    """The turn_failed site, which the wrote-nothing test cannot reach: the
+    two alerts are separate f-strings and each carries its own pair."""
+    def _boom():
+        raise RuntimeError("sdk exploded")
+
+    n = register_spec.QUEUE_REPORT_LIMIT
+    turn_failed, _ = _saturated(capsys, db, monkeypatch, _boom)
+
+    assert "register_spec_turn_failed" in turn_failed
+    assert f"G1 queue {n}+ -> {n}+." in turn_failed
 
 
 def test_a_re_registration_counts_as_wrote_nothing(db):
@@ -186,13 +239,22 @@ def test_a_re_registration_counts_as_wrote_nothing(db):
         db, FakeSlack(), SimClock(RUN_AT), lambda: _register(db))
 
     assert counts == {"registered": 0, "failed": 1}
-    assert any("register_spec_wrote_nothing" in t for t in _alert_texts(db))
+    texts = _alert_texts(db)
+    assert len(texts) == 1 and "register_spec_wrote_nothing" in texts[0]
 
 
 def test_a_turn_that_raises_alerts_and_writes_nothing(db):
     """Defence in depth — not reachable through run_day.make_turn today, which
     swallows everything. Costs nothing to keep, and the alternative is a
-    traceback out of a hand-run command with no Slack record."""
+    traceback out of a hand-run command with no Slack record.
+
+    The queue numbers are asserted RENDERED, not merely present. _count_text
+    is interpolated at three sites and only the wrote-nothing alert's pair was
+    checked, so this site could have printed a raw int (or the wrong end of
+    the pair) with nothing red. One spec is seeded first so the rendered
+    numbers are 1, which a missing depth read would not produce."""
+    _register(db)                              # so the depth renders non-zero
+
     def _boom():
         raise RuntimeError("sdk exploded")
 
@@ -200,9 +262,11 @@ def test_a_turn_that_raises_alerts_and_writes_nothing(db):
         db, FakeSlack(), SimClock(RUN_AT), _boom)
 
     assert counts == {"registered": 0, "failed": 1}
-    assert any("register_spec_turn_failed" in t and "sdk exploded" in t
-               and "G1 queue" in t
-               for t in _alert_texts(db))
+    texts = _alert_texts(db)
+    assert len(texts) == 1
+    assert "register_spec_turn_failed" in texts[0]
+    assert "sdk exploded" in texts[0]
+    assert "G1 queue 1 -> 1." in texts[0]
     assert _undrained(db) == 0
 
 
@@ -227,8 +291,9 @@ def test_a_failure_inside_the_body_is_alerted_and_exits_nonzero(db):
     rc = register_spec._guarded(db, FakeSlack(), SimClock(RUN_AT), _body)
 
     assert rc == 1
-    assert any("register_spec_failed" in t and "db went away" in t
-               for t in _alert_texts(db))
+    texts = _alert_texts(db)
+    assert len(texts) == 1
+    assert "register_spec_failed" in texts[0] and "db went away" in texts[0]
     assert _undrained(db) == 0
 
 

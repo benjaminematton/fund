@@ -770,6 +770,7 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
           " mega_large, mid, small, micro. `hypothesis` and `invalidation`"
           " are at most 500 characters each; `llm_in_loop` is 0 or 1;"
           " `search_budget` and `holding_period_d` are at least 1;"
+          " `expected_turnover` is at least 0;"
           " `capacity_usd` is above zero. `predicted` carries net_sharpe,"
           " max_dd and hit_rate.",
           {"type": "object",
