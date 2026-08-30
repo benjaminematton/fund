@@ -6,8 +6,11 @@ from the server's bound clock and the brief's contents from injected
 providers, never from the agent, so per-run values never enter a prompt.
 
 `specs/contracts.md` §4 is the canonical enumeration and this docstring
-deliberately does not restate it — it named four tools while seven were
-registered, which is what a second list always does."""
+deliberately does not restate it — an earlier version named four tools and was
+already three short by the time anyone read it, which is what a second list
+always does. The number of registered tools is not repeated here either: it
+moved again at #198, and a sentence warning that a second count rots has no
+business carrying one."""
 
 from __future__ import annotations
 
@@ -64,14 +67,20 @@ SEAT_CAPS: dict[str, frozenset[str]] = {
     # computed inside the tool, so it has nothing to read and one thing to
     # write.
     "reflect": frozenset({"submit_reflection"}),
-    # Offline only, on the hand-run scripts/register_spec.py job — never in
-    # the trading day and never on a timer. Deliberately NOT in
-    # scripts/run_day.py's SEATS: _turn_tools returns cfg["tools"] verbatim
-    # when a caller passes no `tools=` (agents/seats.py:145-147), and the
-    # daily research turn passes none (scripts/run_day.py:716-719), so a cap
-    # on a trading-day seat is a cap that seat holds at 09:00. One cap and no
-    # brief, like reflect: the seat is handed its subject in the prompt and
-    # has nothing to read.
+    # Offline only, on the hand-run scripts/register_spec.py job that
+    # `make register-spec` invokes — never in the trading day and never on a
+    # timer. Deliberately NOT in scripts/run_day.py's SEATS: _turn_tools
+    # returns cfg["tools"] verbatim when a caller passes no `tools=`
+    # (agents/seats.py:145-147), and the daily research turn passes none
+    # (scripts/run_day.py:716-719), so a cap on a trading-day seat is a cap
+    # that seat holds at 09:00.
+    #
+    # One cap and no brief — but NOT like reflect in the way that phrasing
+    # used to claim. Reflect is handed its subject in the prompt (its frame,
+    # from a DB row). This seat is handed nothing: register_spec.REGISTER_PROMPT
+    # is a constant and the seat composes the spec from charters/quant.md
+    # alone (🔏 OQ-1, #198). So it has nothing to read AND nothing to be told,
+    # which is the narrowest turn any seat in the fund runs.
     "quant":   frozenset({"submit_strategy_spec"}),
 }
 
@@ -276,9 +285,13 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
     append_event, ONE commit, which scripts/critic_g1.py:116 states as a fact
     the nightly job relies on. Closing the gap means changing
     insert_strategy_spec's transaction handling, and that is a shared write
-    path (evals/fixtures.py calls it too), so it is out of scope here. Zero
-    impact while nothing drives this tool; it starts to matter when #198 ships
-    a driver.
+    path (evals/fixtures.py calls it too), so it is out of scope here. It USED
+    to be zero impact, because nothing drove this tool. #198 shipped the
+    driver: `make register-spec` runs a quant turn that reaches this handler,
+    so a crash between the two commits now really can strand a registered spec
+    that #research never hears about. scripts/register_spec.py's module
+    docstring names the same gap from the caller's side, and neither of us can
+    close it — the fix is insert_strategy_spec's transaction handling.
     """
     if not _can(seat, "submit_strategy_spec"):
         return {"ok": False,
