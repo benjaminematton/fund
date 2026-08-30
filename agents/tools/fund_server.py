@@ -21,8 +21,8 @@ from orchestrator.reflect import reflection_frame, store_reflection
 from slackkit.outbox import append_event
 from state.critiques import insert_default_critiques  # noqa: F401 (re-export)
 from state.journal import recent_entries
-from state.models import Decision, SpecCritique, Signal
-from state.specs import specs_awaiting_critique
+from state.models import Decision, SpecCritique, Signal, StrategySpec
+from state.specs import insert_strategy_spec, specs_awaiting_critique
 
 # One table, not four parallel lists (ADR-0002): registering a seat is a single
 # edit, and a half-registered seat — one that may signal but gets no brief — is
@@ -208,6 +208,60 @@ def _journal(root, seat: str) -> str:
     if root is None:
         raise LookupError("no journals root bound to this seat's server")
     return recent_entries(root, seat, JOURNAL_ENTRIES)
+
+
+def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
+                                args: dict, now_iso: str) -> dict:
+    """Validate + INSERT one immutable strategy spec (§3.1).
+
+    The write path is state/specs.py:insert_strategy_spec — one INSERT in
+    the tree, so a spec the fixture builds is a spec production builds.
+    Idempotence is not implemented here: the id IS the content hash, so a
+    re-register collides on the primary key and is ignored. This handler
+    only has to report which of the two happened.
+
+    Malformed payload: pydantic extra="forbid" rejects before any write.
+    There are no partial specs.
+
+    `seat` is bound HERE, never taken from the payload: it is the one §2 field
+    the caller does not supply, because attribution is who called, not what
+    they typed. It is also part of the hash, so the same content from two
+    seats is two specs — correct, since the spec records who committed to the
+    prediction.
+
+    NOT REGISTERED AS AN `@tool`, and granted to no seat (CEO ruling G-2(iii),
+    2026-08-29). Nothing drives spec registration yet, so a cap would widen a
+    trading seat's write surface with a tool its charter never mentions and
+    no schedule ever calls. The lane that staffs a driving seat grants the cap
+    beside the charter and the schedule, where all three can be reviewed
+    together; until then `specs/contracts.md` §4 carries the row as
+    `not served` and the `_can` guard below is what stays true when it does.
+
+    DUPLICATE DETECTION IS A ROW COUNT either side of the INSERT. Honest but
+    coarse: it would misreport under a concurrent writer. The fund is
+    single-writer per turn, so it is correct today; a `SELECT 1 WHERE
+    spec_id = ?` is the alternative if that ever stops being true.
+    """
+    if not _can(seat, "submit_strategy_spec"):
+        return {"ok": False,
+                "error": f"submit_strategy_spec is not granted to seat {seat!r}"}
+    try:
+        spec = StrategySpec(**args, seat=seat)
+    except (ValidationError, TypeError) as e:
+        return {"ok": False, "error": str(e)}
+    before = conn.execute("SELECT count(*) FROM strategy_specs").fetchone()[0]
+    sid = insert_strategy_spec(conn, spec, now_iso)
+    after = conn.execute("SELECT count(*) FROM strategy_specs").fetchone()[0]
+    duplicate = after == before
+    if not duplicate:
+        # Only on a genuine insert. drain() posts every unposted row, so
+        # projecting a re-register would announce an existing spec as new —
+        # Slack is a projection of what changed, and nothing did.
+        append_event(conn, "strategy_spec",
+                     {"seat": seat, "spec_id": sid, "family": spec.family,
+                      "mechanism_class": spec.mechanism_class,
+                      "hypothesis": spec.hypothesis}, now_iso)
+    return {"ok": True, "spec_id": sid, "duplicate": duplicate}
 
 
 def handle_submit_spec_critique(conn: sqlite3.Connection, *, seat: str,

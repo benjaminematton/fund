@@ -298,6 +298,29 @@ def _render_spec_critique(payload: dict) -> Post:
                 blocks, username, icon)
 
 
+def _render_strategy_spec(payload: dict) -> Post:
+    """One newly registered strategy spec (strategy-contracts.md §3.1).
+
+    Carries a face for the same reason `spec_critique` does: `hypothesis` is
+    the seat's own claim about a mechanism, the same class of content as a
+    signal's summary — a reader must be able to tell a model's words from code
+    that cannot be argued with.
+
+    #research, and only on a first registration: a re-register writes nothing,
+    so there is nothing to announce. The spec_id is shown because it is the
+    handle every later G1/G2/G3 post will name it by."""
+    spec_id, family = payload["spec_id"], payload["family"]
+    seat = _seat(payload.get("seat", "quant"))
+    username, icon = _persona(payload.get("seat", "quant"))
+    headline = (f"registered *{family}* spec `{spec_id}`"
+                f" · {payload['mechanism_class']}")
+    body = f"> {payload['hypothesis']}"
+    return Post("#research", f"*{seat}* · {headline}\n{body}",
+                [_section(headline), _section(body),
+                 _context(seat, "awaiting G1")],
+                username, icon)
+
+
 def _render_projection_error(payload: dict) -> Post:
     return Post("#risk",
                 f"⚠️ projection error: event {payload['event_id']} "
@@ -315,6 +338,7 @@ RENDERERS: dict[str, Callable[[dict], Post]] = {
     "alert": _render_alert,
     "model_fallback_used": _render_model_fallback_used,
     "scorecard": _render_scorecard,
+    "strategy_spec": _render_strategy_spec,
     "spec_critique": _render_spec_critique,
     "projection_error": _render_projection_error,
 }

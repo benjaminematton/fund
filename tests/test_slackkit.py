@@ -176,12 +176,17 @@ SPEC_CRITIQUE = {"seat": "critic", "spec_id": "spec_0f1e2d3c4b5a6978",
                                 "the stated liquidity mechanism cannot pay"
                                 " for a momentum rule"]}
 
+STRATEGY_SPEC = {"seat": "quant", "spec_id": "spec_0f1e2d3c4b5a6978",
+                 "family": "F1", "mechanism_class": "liquidity_provision",
+                 "hypothesis": "Reversal pays for absorbing forced selling."}
+
 BLOCK_KINDS = [("signal", SIGNAL), ("decision", DECISION),
                ("gate_approved", GATE_OK), ("gate_rejected", GATE_NO),
                ("fill", FILL), ("alert", {"text": "boom"}),
                ("digest", DIGEST), ("pnl", PNL),
                ("model_fallback_used", FALLBACK), ("scorecard", SCORECARD),
-               ("spec_critique", SPEC_CRITIQUE)]
+               ("spec_critique", SPEC_CRITIQUE),
+               ("strategy_spec", STRATEGY_SPEC)]
 
 
 @pytest.mark.parametrize("kind,payload", BLOCK_KINDS)
@@ -381,7 +386,7 @@ def test_a_cleared_spec_renders_without_an_objections_block():
 
 ALL_KINDS = BLOCK_KINDS + [("projection_error", {"event_id": 3,
                                                  "kind": "bogus"})]
-SPEAKS = {"signal", "decision", "spec_critique"}
+SPEAKS = {"signal", "decision", "spec_critique", "strategy_spec"}
 
 
 @pytest.mark.parametrize("kind,payload", ALL_KINDS)
