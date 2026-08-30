@@ -370,6 +370,8 @@ It writes nothing and returns a JSON object:
 | `journal` | ✓ | ✓ | `state/journal.py` `recent_entries(root, seat, 3)` |
 | `signals` | — | ✓ | `signals` rows for today (agent, ticker, direction, confidence, summary) |
 | `allowed_actions` | — | ✓ | injected snapshot provider: `orchestrator.daily.allowed_actions` → `{ticker: {buy, sell}}` in shares |
+| `weights` | ✓ (own row only) | ✓ (every analyst) | latest `weights` row(s) with `as_of_date` — `specs/improvement.md` §2.1; **Phase 2b** |
+| `lessons` | ✓ | ✓ | `journals/<seat>.lessons.md` — `specs/improvement.md` §2.4; **Phase 2b** |
 | `unavailable` | ✓ | ✓ | names of the sections that could not be built |
 
 The snapshot provider and journals root are bound into `build_fund_server` at composition time (like `conn` and `clock`); there is no snapshot table. **Failure semantics (invariant 4):** the handler never raises. A provider that errors or was never bound degrades only its own section to that section's empty default and appends a named entry to `unavailable`. For the PM an empty `allowed_actions` reads as "nothing is possible today" = HOLD; the orchestrator's own `pm_timeout` → hold/0 default remains the backstop underneath.

@@ -170,7 +170,7 @@ default on ANY error/missing data: REJECT (reason gate_error)
 |---|---|
 | Analysts | Propose IDEAs/SPECs in their domain; run `run_backtest` within spec budgets |
 | Bull/Bear researchers | Debate G2-passing strategies before G3 (same mechanics as ticker debates) |
-| Risk Officer | Hostile review at G3; owns `stratgate/` parameter change proposals (human-committed) |
+| Risk Officer | Hostile review at G3, including of any `stratgate_threshold` proposal before it merges; the proposal itself originates from the Proposer (`specs/improvement.md` §3) and lands only by human commit |
 | PM | Sponsors SPECs, plans sleeves at halved Sharpe, sizes within §6 rules |
 | Execution Trader | Unchanged — trades the *positions* the allocated strategies emit through the §5 risk gate |
 | Ops | Incubation monitoring, shadow P&L, decay scoreboard, post-mortems |

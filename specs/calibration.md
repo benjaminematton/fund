@@ -56,6 +56,10 @@ weight_i ~ max(shrunk_BSS_i, 0)
   normalize to sum 1
 ```
 
+The floor is released per seat — never removed — by the narrowing rule in
+`specs/improvement.md` §2.3 (`weights.narrowed = 1`), after a human-committed
+window of `bss_shrunk <= 0` on ≥50 graded calls; it is restored the same way.
+
 The PM's charter says: treat analyst signals as evidence weighted by the
 scoreboard, not by persuasiveness of prose. When aggregating multiple signals
 on one ticker, pool in log-odds space with these weights (geometric mean of
@@ -92,16 +96,17 @@ training data, so their errors correlate and extremizing amplifies shared bias.
 | malformed signal row (bad direction/confidence) | drop, count, weekly `malformed_signals` line in #risk |
 | missing/NaN alpha at resolution | signal stays ungraded; > 5% ungraded → data-pipeline alarm |
 | degenerate outcomes (all same) in a window | BSS undefined → agent keeps prior weight, flag on board |
-| scoreboard job crash | last good scoreboard stands; PM weights never silently reset to equal |
-| agent disputes a score | tough — scores are code; disputes go to threshold-change proposals via Risk Officer, human commit |
+| scoreboard job crash | last good scoreboard stands (the brief carries it with its `as_of_date`); PM weights never silently reset to equal — an *empty* table is the one case that reads as equal weights, and it is named in the brief's `unavailable` (`specs/improvement.md` §2.1) |
+| agent disputes a score | tough — scores are code; a threshold change can originate only as a Proposer proposal (`specs/improvement.md` §3), human commit |
 
 ## 6. Slack projection
 
 Weekly to `#pnl` via the events outbox: the markdown table (see
 `calibration/scoreboard.py::render_markdown`) sorted by total skill, plus
 reading guide. Per-agent reliability curves attached monthly. The scoreboard
-is also injected into each analyst's morning context — seeing your own
-calibration is the cheapest charter tune-up there is.
+is also injected into each analyst's morning context — its **own** `weights`
+row only, as the brief's `weights` section (`specs/improvement.md` §2.1) —
+because seeing your own calibration is the cheapest charter tune-up there is.
 
 ## 7. Research appendix (key sources)
 
