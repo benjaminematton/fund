@@ -310,12 +310,21 @@ def test_tools_by_seat_is_exactly_what_each_seat_owns(fund_db, sim_clock):
 def test_an_unrecognized_seat_is_a_hard_stop_not_a_toolless_seat(fund_db,
                                                                  sim_clock):
     """A silently toolless seat is an analyst that never records a signal all
-    day — a full-HOLD day nobody ordered. `quant` is the live near-miss: a
-    real charter (charters/quant.md) with no entry in SEAT_CAPS. This used to
-    use `critic`, which stopped testing anything the day the Critic seat was
-    added."""
+    day — a full-HOLD day nobody ordered.
+
+    THE SENTINEL HAS MOVED TWICE, and both moves were the same defect: the
+    slug got staffed. It was `critic` until the Critic seat shipped; it was
+    `quant` until #198 shipped this one. There is no "real charter, no
+    SEAT_CAPS entry" near-miss left in the repo, so the sentinel is now the
+    other failure this guard actually catches — a TYPO of a real seat name,
+    which is the shape agents/config/*.yaml and scripts/*.py hand to
+    build_fund_server. A typo can never be staffed, so this cannot spring a
+    third time. Do NOT replace it with a seat specs/design.md §2 names as
+    future (Macro, Ops, Bull, Bear, Risk Officer) — that is how the first two
+    happened.
+    """
     with pytest.raises(ValueError, match="unrecognized seat"):
-        _server(fund_db, sim_clock, "quant")
+        _server(fund_db, sim_clock, "quantt")
 
 
 def test_a_refused_call_comes_back_as_is_error_through_the_wrapper(
