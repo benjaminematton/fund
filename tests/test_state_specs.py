@@ -128,6 +128,49 @@ def test_a_changed_field_is_a_different_spec(conn):
     assert a != b
 
 
+def test_registration_writes_the_lifecycle_row_in_state_spec(conn):
+    """strategy-contracts.md §3.1: registration "INSERTs spec + `strategies`
+    row in state SPEC". Both INSERTs live here rather than in the MCP handler
+    because this is the one write path — so the eval fixture, the tests and
+    `submit_strategy_spec` all produce the same pair of rows, and a spec is
+    never registered into a state the selector cannot see."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    row = conn.execute("SELECT * FROM strategies WHERE strategy_id = ?",
+                       (sid,)).fetchone()
+    assert row is not None, \
+        "no lifecycle row — the spec is structurally invisible to the selector"
+    assert row["state"] == "SPEC"
+    assert row["state_version"] == 0
+    assert row["updated_at"] == NOW, "updated_at is the injected clock"
+    assert row["reject_reason"] is None
+    assert row["gate_results"] is None
+
+
+def test_re_registration_does_not_reset_an_advanced_spec(conn):
+    """INSERT OR IGNORE, never an UPSERT. §3.1 makes a duplicate registration
+    idempotent — "return existing id" — and the spec table gets that free from
+    the content-addressed primary key. The lifecycle row is the mutable half,
+    so the same call must not rewind it: an UPSERT would put a spec already in
+    BACKTEST back into SPEC and reset the state_version every CAS transition
+    reads, re-queueing a strategy that has already been reviewed and run."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    advanced = "2026-07-08T15:00:00+00:00"
+    conn.execute("UPDATE strategies SET state = 'BACKTEST', state_version = 3,"
+                 " updated_at = ? WHERE strategy_id = ?", (advanced, sid))
+    conn.commit()
+
+    assert insert_strategy_spec(conn, StrategySpec(**SPEC),
+                                "2026-07-09T15:00:00+00:00") == sid
+
+    row = conn.execute("SELECT * FROM strategies WHERE strategy_id = ?",
+                       (sid,)).fetchone()
+    assert row["state"] == "BACKTEST", "re-registration rewound the lifecycle"
+    assert row["state_version"] == 3, "re-registration reset the CAS token"
+    assert row["updated_at"] == advanced
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM strategies").fetchone()["c"] == 1
+
+
 def test_awaiting_critique_decodes_json_and_drops_reviewed_specs(conn):
     sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
     pending = specs_awaiting_critique(conn)
@@ -136,6 +179,82 @@ def test_awaiting_critique_decodes_json_and_drops_reviewed_specs(conn):
     assert pending[0]["param_ranges"]["sigma"] == [1.0, 2.5, 0.25]
     conn.execute(CRITIQUE_SQL, (sid, NOW))
     conn.commit()
+    assert specs_awaiting_critique(conn) == []
+
+
+def test_a_spec_the_ddl_rejected_writes_no_lifecycle_row_and_does_not_raise(
+        tmp_path):
+    """The lifecycle INSERT SELECTs from strategy_specs instead of taking the
+    id as a literal, and that is not a style choice.
+
+    `INSERT OR IGNORE` swallows a CHECK violation on the spec row but NOT a
+    foreign-key violation — SQLite's ON CONFLICT algorithms do not apply to
+    foreign keys (tests/synthetic.py:69 measured it). So a payload pydantic
+    accepts and the DDL rejects would raise IntegrityError out of this
+    function, past agents/tools/fund_server.py's confirming SELECT, turning
+    that handler's legible "was not written" refusal into a stack trace.
+    Selecting from the spec table writes zero rows in exactly that case.
+
+    The DDL is DERIVED from state/schema.sql by substitution, never restated,
+    and the substitution count asserts the patch landed — same instrument as
+    tests/test_submit_strategy_spec.py's fixture, which is the handler-level
+    half of this. `rebalance` is the real gap: TEXT NOT NULL in the DDL, a
+    bare `str` in the model.
+    """
+    import pathlib
+    import re
+
+    import state.db
+    ddl = pathlib.Path(state.db.__file__).with_name("schema.sql").read_text()
+    patched, n = re.subn(r"^  rebalance +TEXT NOT NULL,$",
+                         "  rebalance        TEXT NOT NULL"
+                         " CHECK(rebalance IN ('weekly')),", ddl, flags=re.M)
+    assert n == 1, "schema.sql's `rebalance` column moved — re-derive this"
+    c = sqlite3.connect(tmp_path / "fund.sqlite")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    c.executescript(patched)
+
+    assert SPEC["rebalance"] == "daily"          # the CHECK admits 'weekly'
+    insert_strategy_spec(c, StrategySpec(**SPEC), NOW)   # must not raise
+
+    assert c.execute("SELECT COUNT(*) c FROM strategy_specs").fetchone()["c"] == 0
+    assert c.execute("SELECT COUNT(*) c FROM strategies").fetchone()["c"] == 0
+    c.close()
+
+
+def test_a_spec_with_no_lifecycle_row_is_not_awaiting_critique(conn):
+    """The selector INNER JOINs `strategies`, so a spec written by a path that
+    skips the lifecycle row is invisible to G1 rather than assumed pending.
+
+    Deliberate, not an oversight: defaulting a missing row to SPEC would be a
+    guess, and invariant 4 resolves ambiguity to no action. The orphan is not
+    a state any write path produces — registration writes both rows in one
+    transaction — so this pins the reach of the join, not a live hazard."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    assert [p["spec_id"] for p in specs_awaiting_critique(conn)] == [sid]
+    conn.execute("DELETE FROM strategies WHERE strategy_id = ?", (sid,))
+    conn.commit()
+    assert specs_awaiting_critique(conn) == []
+
+
+def test_a_critiqued_spec_still_in_state_spec_is_not_returned(conn):
+    """Why the selector carries BOTH predicates. §4's transition table has no
+    G1 edge, so a verdict moves nothing: the spec is still in SPEC after being
+    critiqued. On `state = 'SPEC'` alone it would be re-selected every night,
+    and submit_spec_critique is write-once (§3.4) — the second verdict is
+    refused, the turn fails, and the queue head blocks everything behind it.
+
+    The first assertion is the load-bearing one: it states the fact that makes
+    the second predicate necessary, so this reddens if a G1 edge ever lands
+    (#181) rather than silently becoming a tautology."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    conn.execute(CRITIQUE_SQL, (sid, NOW))
+    conn.commit()
+
+    assert conn.execute("SELECT state FROM strategies WHERE strategy_id = ?",
+                        (sid,)).fetchone()["state"] == "SPEC", \
+        "a G1 edge now exists — the state predicate alone may be enough"
     assert specs_awaiting_critique(conn) == []
 
 
