@@ -141,7 +141,7 @@ def test_a_current_db_is_green(tmp_path):
 
 
 def test_the_expected_table_count_is_pinned(tmp_path):
-    """14 tables today. expected_schema() reads state/schema.sql, so a table
+    """15 tables today. expected_schema() reads state/schema.sql, so a table
     added there is checked with no edit to the script — this assertion is the
     tripwire that makes such an addition deliberate. It IS a second edit, on
     purpose: bump it in the same commit that adds the table.
@@ -150,8 +150,14 @@ def test_the_expected_table_count_is_pinned(tmp_path):
     (https://github.com/benjaminematton/fund/issues/172#issuecomment-5460532548)
     — Group 2 unification landed. trial_registry and holdout_evaluations moved
     out of fundbt/registry.py's standalone DDL into state/schema.sql.
+
+    14 -> 15 on 2026-08-30 — issue #197
+    (https://github.com/benjaminematton/fund/issues/197) — the `strategies`
+    lifecycle table landed, character-exact to strategy-contracts.md §2.
+    Registration writes a row in state SPEC (state/specs.py); nothing moves
+    one, because the table has no transition machine yet.
     """
-    assert len(preflight.expected_schema()) == 14
+    assert len(preflight.expected_schema()) == 15
 
 
 def test_only_column_names_are_compared(tmp_path):
@@ -291,7 +297,7 @@ def test_a_file_that_is_not_a_database_cannot_determine(tmp_path):
 
 
 def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
-    """Zero of the 14 tables is a wrong FUND_DB or a database nothing has
+    """Zero of the 15 tables is a wrong FUND_DB or a database nothing has
     initialized — not drift. Reporting UNEXPLAINED DIVERGENCE would send an
     operator hunting a schema change that never happened."""
     db = tmp_path / "fund.sqlite"
@@ -299,7 +305,7 @@ def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
     proc = _run(db)
 
     assert proc.returncode == preflight.CANNOT_DETERMINE
-    assert "none of the 14 tables" in proc.stderr
+    assert "none of the 15 tables" in proc.stderr
 
 
 def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
@@ -311,7 +317,7 @@ def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
     — Group 2 unification landed. This test built its stand-in out of
     `trial_registry`, on the (then correct) reading that fundbt's trial
     registry lived in a separate database. `trial_registry` is now one of
-    $FUND_DB's own 14 tables, so it can no longer stand for "not the fund DB"
+    $FUND_DB's own 15 tables, so it can no longer stand for "not the fund DB"
     — it would be read as drift and reported as UNEXPLAINED DIVERGENCE. What
     this test asserts is unchanged; only the file it points at moved.
     """
@@ -405,7 +411,7 @@ def test_a_corrupt_file_is_never_blamed_on_the_directory(tmp_path):
 
 def test_a_wal_holding_the_only_copy_of_the_schema_is_read(tmp_path):
     """Why mode=ro and not immutable=1, pinned. With the DDL still in an
-    uncheckpointed `-wal`, mode=ro reads all 14 tables; immutable=1 skips the
+    uncheckpointed `-wal`, mode=ro reads all 15 tables; immutable=1 skips the
     WAL and sees the stale snapshot behind it, which would report a fully
     migrated database as empty. It also documents that a `-wal` needing replay
     does NOT fail the open — the old comment claimed it did."""

@@ -133,9 +133,10 @@ CREATE TABLE IF NOT EXISTS costs (
 
 -- Immutable pre-registration (Gate G1), verbatim from
 -- specs/strategy-contracts.md §2 — canonical, do not add fields here. No
--- UPDATE ever; supersede via lineage. `strategies` (lifecycle state) is
--- deliberately NOT here: nothing in this phase reads it, and the G1 gate
--- plan adds it with the transitions that need it.
+-- UPDATE ever; supersede via lineage. Mutable lifecycle state is the
+-- `strategies` table below (issue #197), one row per spec_id. That is the
+-- TABLE only: it has no state/transition.py machine, so no row moves between
+-- §4's states yet.
 CREATE TABLE IF NOT EXISTS strategy_specs (
   spec_id          TEXT PRIMARY KEY,
   family           TEXT NOT NULL,              -- 'F1'..'F5' | 'petition:<name>'
@@ -183,6 +184,35 @@ CREATE TABLE IF NOT EXISTS strategy_critiques (
   model_id        TEXT NOT NULL CHECK (model_id NOT IN ('none','unknown')),
   slack_ts        TEXT,
   created_at      TEXT NOT NULL
+);
+
+-- Lifecycle state (the only mutable strategy row). Verbatim from
+-- specs/strategy-contracts.md §2 — canonical, do not add fields here. The FK
+-- to strategy_specs is §1's `strategy_id = spec_id` written into the schema:
+-- with state/db.py:22's PRAGMA foreign_keys = ON, a lifecycle row cannot exist
+-- without the immutable pre-registration it names.
+--
+-- Registration WRITES this row (issue #197): state/specs.py's
+-- insert_strategy_spec INSERTs the spec and its lifecycle row in state SPEC
+-- in one transaction, which is §3.1's "INSERTs spec + `strategies` row in
+-- state SPEC". Nothing TRANSITIONS a row, though — this table has no
+-- state/transition.py machine, so try_transition() raises IllegalTransition
+-- for a table absent from EDGES, which is the right behaviour until §4's
+-- edges are implemented. state_version is declared because §2 declares it,
+-- not because anything reads it.
+--
+-- IF NOT EXISTS is load-bearing here and not style: state/db.py:12 matches
+-- that exact string to build _TABLES. §2 spells it CREATE TABLE, per its own
+-- convention; the two are the same table.
+CREATE TABLE IF NOT EXISTS strategies (
+  strategy_id      TEXT PRIMARY KEY REFERENCES strategy_specs(spec_id),
+  state            TEXT NOT NULL CHECK(state IN
+                     ('SPEC','BACKTEST','VALIDATED','INCUBATING',
+                      'ALLOCATED','SCALED','PROBATION','RETIRED','REJECTED')),
+  state_version    INTEGER NOT NULL DEFAULT 0, -- CAS token for transition()
+  reject_reason    TEXT,                       -- required when state='REJECTED'
+  gate_results     TEXT,                       -- JSON: latest G2/G3/G4 verdict blobs
+  updated_at       TEXT NOT NULL
 );
 
 -- Append-only. EVERY backtest by ANY seat. The DSR's N comes from here.

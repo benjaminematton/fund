@@ -732,28 +732,62 @@ def test_an_objections_verdict_advances_nothing_because_nothing_can_advance(db):
         IllegalTransition for a table with no machine
       * strategy_specs has no state/status column (it is immutable
         pre-registration; supersede via lineage, never UPDATE)
-      * no `strategies` lifecycle table exists — state/schema.sql:136 says so
-        deliberately
-      * specs/strategy-contracts.md §4's transition table has no G1 edge at all
+      * specs/strategy-contracts.md §4's transition table has no G1 edge at
+        all — SPEC -> BACKTEST is triggered by the first run_backtest, never
+        by a verdict
 
-    So this asserts the ABSENCE. Inventing the edge would be this lane
-    exceeding its region into canonical schema.
+    Inventing the edge would be this lane exceeding its region into canonical
+    schema.
+
+    THE ABSENCE-PROOF THAT USED TO BE HERE WAS RETIRED BY #197. A fourth
+    bullet read "no `strategies` lifecycle table exists — state/schema.sql
+    says so deliberately", asserted as `"strategies" not in tables`. #197
+    created that table, and registration now writes a lifecycle row in state
+    SPEC for every spec (state/specs.py:insert_strategy_spec), so that
+    PREMISE expired. The CLAIM did not. Nothing added a G1 edge to §4, and
+    nothing added `strategies` to EDGES — deliberately: try_transition emits
+    `SET status = ?` and this table's column is `state`, so an EDGES key alone
+    would not even be a working transition, and the edge has to be designed
+    (#181) rather than declared.
+
+    So the absence assertion was replaced by one against the world that now
+    exists. It no longer says "no table exists to move a spec in"; it says the
+    row that CAN now hold lifecycle state is in SPEC before the verdict and
+    BYTE-IDENTICAL after — same state, same state_version, same updated_at.
+    That is the instrument this test already used on the immutable spec row,
+    pointed at the mutable one.
+
+    NOT "STRICTLY STRONGER", which is what an earlier draft of this docstring
+    called it — it trades along two axes. STRONGER: it detects actual
+    MOVEMENT rather than the absence of a mechanism, so unlike the EDGES check
+    it catches an advance written as a raw UPDATE that bypasses transition.py
+    entirely. NARROWER: `"strategies" not in tables` was a table-global
+    schema fact with no spec scope, while this watches one spec's row (see the
+    paragraph below). The replacement is right anyway — the old assertion's
+    premise is gone and cannot be restored — but it is not a superset.
 
     WHAT THIS DOES AND DOES NOT CATCH — stated, because "the day someone adds
     an advance path this test reddens" is more than it can promise. It reddens
-    on exactly three shapes: a new key in state/transition.py's EDGES, a
-    `strategies` table, and a `state`/`status` column on strategy_specs. It
-    would NOT catch an advance path expressed some other way — a verdict-gated
-    call into stratgate, a lifecycle column under a different name (`phase`,
-    `stage`, `g1`), a row in another table keyed by spec_id, or a scheduler
-    that reads strategy_critiques directly. Those are the shapes to look for by
-    hand when Phase 5's registration lane lands; this test is a tripwire on the
-    three most likely ones, not a proof of vacuity."""
+    on exactly three shapes: a new key in state/transition.py's EDGES, ANY
+    mutation of this spec's `strategies` row across the verdict, and a
+    `state`/`status` column on strategy_specs. It would NOT catch an advance
+    path that runs outside this call — a verdict-gated stratgate sweep on a
+    LATER night, or a scheduler that reads strategy_critiques directly — nor a
+    lifecycle field under a different name on strategy_specs (`phase`,
+    `stage`, `g1`), nor a row in a THIRD table keyed by spec_id. It watches
+    only THIS spec's lifecycle row, so an advance that moved some other spec
+    would pass. Those are the shapes to look for by hand; this test is a
+    tripwire on the three most likely ones, not a proof of vacuity."""
     from state.transition import EDGES
 
     sid = _spec(db)
     before = dict(db.execute("SELECT * FROM strategy_specs WHERE spec_id = ?",
                              (sid,)).fetchone())
+    life = db.execute("SELECT * FROM strategies WHERE strategy_id = ?",
+                      (sid,)).fetchone()
+    assert life is not None, f"registration wrote no lifecycle row for {sid}"
+    life_before = dict(life)
+    assert life_before["state"] == "SPEC", life_before
 
     counts = critic_g1.critique_and_log(
         db, FakeSlack(), SimClock(NIGHTLY),
@@ -768,17 +802,24 @@ def test_an_objections_verdict_advances_nothing_because_nothing_can_advance(db):
     assert row["verdict"] == "objections"
     assert "funding-cost" in row["objections"]
 
-    # 2. and NOTHING else moved: the spec row is byte-identical
+    # 2. and NOTHING else moved: the immutable spec row is byte-identical
     after = dict(db.execute("SELECT * FROM strategy_specs WHERE spec_id = ?",
                             (sid,)).fetchone())
     assert after == before
 
-    # 3. because there is no advance path to withhold
+    # 3. nor did the row that CAN hold lifecycle state — same state, same CAS
+    #    token, same updated_at. Narrow assertions first, so a mutation says
+    #    WHICH column moved before the whole-row compare says "something did".
+    life_after = dict(db.execute(
+        "SELECT * FROM strategies WHERE strategy_id = ?", (sid,)).fetchone())
+    assert life_after["state"] == "SPEC", life_after
+    assert life_after["state_version"] == life_before["state_version"], \
+        (life_before, life_after)
+    assert life_after == life_before
+
+    # 4. and there is still no advance path to withhold
     assert "strategy_specs" not in EDGES
     assert "strategies" not in EDGES
-    tables = {r["name"] for r in db.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert "strategies" not in tables
     columns = {r["name"] for r in db.execute("PRAGMA table_info(strategy_specs)")}
     assert not ({"state", "status"} & columns), columns
 

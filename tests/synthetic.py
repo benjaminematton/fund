@@ -89,9 +89,16 @@ SPEC_ROW_CREATED_AT = "2026-07-09T00:00:00Z"
 
 
 def seed_spec_row(conn: sqlite3.Connection, spec: dict | None = None) -> str:
-    """INSERT the strategy_specs row that `spec`'s trials will reference.
+    """INSERT the strategy_specs row that `spec`'s trials will reference,
+    plus the `strategies` lifecycle row registration always writes with it.
 
-    Idempotent (INSERT OR IGNORE on the primary key). Returns the spec_id.
+    The lifecycle row is not optional garnish: state/specs.py's selector INNER
+    JOINs `strategies`, so a spec seeded without one looks registered and is
+    structurally invisible to G1 — the exact fail-open shape §3.4 forbids.
+    This function bypasses insert_strategy_spec (see above) and so has to
+    reproduce both of its writes, not just the first.
+
+    Idempotent (INSERT OR IGNORE on both primary keys). Returns the spec_id.
     """
     spec = spec if spec is not None else make_spec()
     values = (
@@ -123,6 +130,15 @@ def seed_spec_row(conn: sqlite3.Connection, spec: dict | None = None) -> str:
         f" ({', '.join(_SPEC_ROW_COLUMNS)})"
         f" VALUES ({', '.join(['?'] * len(_SPEC_ROW_COLUMNS))})",
         values)
+    # A literal VALUES, deliberately NOT state/specs.py's gated SELECT form.
+    # If the spec INSERT above were ever dropped, that form would write nothing
+    # and this fixture would seed a silently empty database; the FK raises here
+    # instead (see the file comment above — INSERT OR IGNORE does not swallow a
+    # foreign-key violation). Loud is right in a fixture and wrong in the write
+    # path, whose caller turns a dropped INSERT into a legible refusal.
+    conn.execute(
+        "INSERT OR IGNORE INTO strategies (strategy_id, state, updated_at)"
+        " VALUES (?, 'SPEC', ?)", (spec["spec_id"], SPEC_ROW_CREATED_AT))
     conn.commit()
     return spec["spec_id"]
 
