@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight dev-status
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status
 .PHONY: staging-day staging-reset eval eval-report critic-g1 critic-gate
 .PHONY: register-spec
 .PHONY: eval-critic-dev eval-critic-holdout
@@ -164,6 +164,10 @@ score-day: deps
 # safe to re-run — a decision that already resolved is not selected again.
 resolve: deps
 	$(PYTHON) scripts/resolve_day.py
+
+# Nightly scoring job: graded signals -> the weights table (improvement.md §2.1).
+weights: deps
+	$(PYTHON) scripts/weights_day.py
 
 # Nightly reflection: resolutions with no reflection yet -> one seat turn each
 # (design §3, §7). Rides the same 16:35 timer, third, after close-pnl and
