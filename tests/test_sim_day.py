@@ -524,7 +524,10 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
     analyst = _brief(sim, "research")
     assert (analyst["seat"], analyst["run_date"]) == ("analyst", sim.run_date)
     assert (analyst["cash"], analyst["positions"]) == (30000.0, {})
-    assert analyst["unavailable"] == []
+    # No scoring night has run before the golden day, so the weights table is
+    # empty and improvement.md §2.1 (ii) NAMES it — never an empty section that
+    # reads as "no seats". Everything else built.
+    assert [m.split(" (")[0] for m in analyst["unavailable"]] == ["weights"]
     assert "signals" not in analyst and "allowed_actions" not in analyst
 
     # the PM's brief: BOTH analysts' ACTUAL signal rows, submitted this same
@@ -532,7 +535,7 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
     # halve the evidence the decision is made on.
     pm = _brief(sim, "decision")
     assert pm["seat"] == "pm"
-    assert pm["unavailable"] == []
+    assert [m.split(" (")[0] for m in pm["unavailable"]] == ["weights"]
     assert {s["agent"] for s in pm["signals"]} == {"analyst", "news"}
     assert pm["signals"] == [{
         "agent": "analyst", "ticker": "NVDA", "direction": "bullish",
@@ -562,6 +565,35 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
         == [shown["buy"]]
 
     _assert_day_completed(sim)
+
+
+def test_the_pm_brief_renders_the_row_the_scoring_job_wrote(tmp_path):
+    """specs/acceptance.md Phase 2b item 2, under sim: the PM's brief
+    `weights` section equals the latest row for every analyst seat, each
+    with its as_of_date — read off the replayed tool result, never
+    re-derived. The scoring job ran on an earlier night against the same
+    on-disk database the sim then opens."""
+    from datetime import datetime, timezone
+
+    from orchestrator.improve import (WeightsConfig, latest_weights,
+                                      write_weights)
+    from tests.test_improve import _two_seat_history
+
+    conn = connect(tmp_path / "fund.sqlite")
+    _two_seat_history(conn)
+    write_weights(conn, SimClock(datetime(2026, 7, 2, 20, 35, tzinfo=timezone.utc)),
+                  WeightsConfig(window_days=20, horizon_days=5))
+    expected = latest_weights(conn)
+    conn.close()
+
+    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
+                  pm_recs=("mvf_pm_brief.jsonl",))
+
+    pm = _brief(sim, "decision")
+    assert pm["weights"] == expected
+    assert [(w["agent"], w["as_of_date"]) for w in pm["weights"]] == [
+        ("a", "2026-07-02"), ("b", "2026-07-02")]
+    assert [m.split(" (")[0] for m in pm["unavailable"]] == []
 
 
 # --- 5. the stop that expired at the bell (2026-08-19) ----------------------

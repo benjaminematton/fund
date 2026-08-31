@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from gate.tickets import open_tickets
 from orchestrator.clock import Clock, et_run_date, iso
+from orchestrator.improve import latest_weights
 from orchestrator.reflect import reflection_frame, store_reflection
 from slackkit.outbox import append_event
 from state.critiques import insert_default_critiques  # noqa: F401 (re-export)
@@ -49,11 +50,15 @@ from state.specs import insert_strategy_spec, specs_awaiting_critique
 #   read_allowed_actions - brief carries the gate's share budget. SEPARATE from
 #     read_signals on purpose: two sections from two different sources, and
 #     design.md §2's Bull/Bear seats plausibly want signals without the budget.
+#   read_weights         - brief carries the scoreboard (`weights` rows). Scope
+#     follows read_signals: a seat that reads every seat's signals reads every
+#     seat's row; any other seat reads its own row only (improvement.md §2.1).
 SEAT_CAPS: dict[str, frozenset[str]] = {
-    "analyst": frozenset({"get_stage_brief", "submit_signal", "read_account"}),
-    "news":    frozenset({"get_stage_brief", "submit_signal"}),
+    "analyst": frozenset({"get_stage_brief", "submit_signal", "read_account",
+                          "read_weights"}),
+    "news":    frozenset({"get_stage_brief", "submit_signal", "read_weights"}),
     "pm":      frozenset({"get_stage_brief", "submit_decision", "read_account",
-                          "read_signals", "read_allowed_actions"}),
+                          "read_signals", "read_allowed_actions", "read_weights"}),
     "exec":    frozenset({"list_open_tickets"}),
     # G1 only. Deliberately NOT get_stage_brief/submit_decision: the trade
     # pipeline still runs on the orchestrator's own `no_critic_seat` rows (the
@@ -229,6 +234,26 @@ def _journal(root, seat: str) -> str:
     if root is None:
         raise LookupError("no journals root bound to this seat's server")
     return recent_entries(root, seat, JOURNAL_ENTRIES)
+
+
+def _weights(conn: sqlite3.Connection, seat: str) -> list[dict]:
+    """This seat's scoreboard view (improvement.md §2.1): every seat's latest
+    row for a seat that reads every seat's signals, its own row otherwise.
+    No row in scope is NAMED, not an empty list that reads as "no seats":
+    improvement.md §2.1 (ii) — the PM proceeds with equal weights knowing
+    why. Stale rows are not this case; they carry their own as_of_date —
+    which is also how a retired seat's last row reads: it stays "latest"
+    for that seat, dated the night it was last graded.
+
+    Scope follows read_signals rather than a seat NAME: the seat that reads
+    every seat's signals is the one aggregating them, and that is the grant
+    the weights sit beside. A future seat granted read_signals for another
+    reason (design.md §2's Bull/Bear) inherits every row with it — a named
+    consequence, revisited if that seat arrives."""
+    rows = latest_weights(conn, agent=None if _can(seat, "read_signals") else seat)
+    if not rows:
+        raise LookupError("no weights rows yet")
+    return rows
 
 
 def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
@@ -531,11 +556,12 @@ def handle_get_stage_brief(conn: sqlite3.Connection, *, seat: str,
                            journals_root=None) -> dict:
     """Assemble one seat's read-only stage input (MVF scope §1.4, §1.7).
 
-    Seat-scoped by construction: the analyst gets the book and its own
-    journal; the PM gets those PLUS today's signal rows and the gate's
-    allowed-actions snapshot. Nothing here is parsed out of agent text and
-    nothing is written — this is the read half of the seam whose write half
-    is submit_signal/submit_decision."""
+    Seat-scoped by construction: the analyst gets the book, its own journal
+    and its own scoreboard row; the PM gets those PLUS today's signal rows,
+    every seat's scoreboard row, and the gate's allowed-actions snapshot.
+    Nothing here is parsed out of agent text and nothing is written — this
+    is the read half of the seam whose write half is
+    submit_signal/submit_decision."""
     if not _can(seat, "get_stage_brief"):
         return {"ok": False,
                 "error": f"get_stage_brief is not granted to seat {seat!r}"}
@@ -554,6 +580,9 @@ def handle_get_stage_brief(conn: sqlite3.Connection, *, seat: str,
     if _can(seat, "read_account"):
         brief["cash"] = snap.get("cash")
         brief["positions"] = snap.get("positions") or {}
+    if _can(seat, "read_weights"):
+        brief["weights"] = _section(missing, "weights",
+                                    lambda: _weights(conn, seat), [])
     if _can(seat, "read_signals"):
         brief["signals"] = _section(missing, "signals",
                                     lambda: _signal_rows(conn, run_date), [])
@@ -604,10 +633,16 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
           " Always call it once, first, before anything else in your turn —"
           " the stage prompt carries only the ticker list, so this is where"
           " the rest of your context comes from. You get: cash, positions,"
-          " and your own recent journal entries. The PM also gets today's"
+          " your own recent journal entries, and `weights` — your latest"
+          " scoreboard row (skill, calibration, behavioural rates, PM weight;"
+          " `as_of_date` says how fresh it is)."
+          " The PM also gets today's"
           " analyst signal rows and the gate's allowed-actions snapshot,"
           " {buy, sell} in SHARES per active ticker — that is your sizing"
-          " budget; asking above it just gets resized. An empty"
+          " budget; asking above it just gets resized."
+          " The PM's `weights` carries every analyst's row: weigh signals by"
+          " it, not by the prose."
+          " An empty"
           " allowed_actions means nothing is possible today: HOLD."
           " `unavailable` names any section that could not be built; treat a"
           " missing section as absent evidence, never as permission to guess."

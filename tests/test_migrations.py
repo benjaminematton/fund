@@ -234,7 +234,7 @@ def test_charter_version_comes_from_the_header():
     therefore the source of truth, not a second field to keep in sync."""
     from agents.seats import charter_version_for
 
-    assert charter_version_for({"seat": "pm"}) == "v6"
+    assert charter_version_for({"seat": "pm"}) == "v7"
     assert charter_version_for({"seat": "news"}) == "v3"
 
 
