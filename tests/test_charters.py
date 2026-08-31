@@ -90,6 +90,15 @@ def test_the_quant_charter_and_the_model_name_the_same_families():
     assert codes == set(REGISTERED_FAMILIES), (
         f"charter names {sorted(codes)}, model accepts"
         f" {sorted(REGISTERED_FAMILIES)}")
-    for code in sorted(codes):
-        StrategySpec(**_spec(family=code))   # the model refuses, or it does not
     assert "petition:" in text, "the escape hatch is unreachable to the seat"
+
+    # The charter also tells the seat what petition:<name> may and may not
+    # look like: a plain name is fine, an F<digit>... shape is refused because
+    # it shadows the reserved family-code namespace. Bind both halves of that
+    # claim to the model, or a charter/model drift on the petition rule goes
+    # undetected the same way the F-code drift above would.
+    from pydantic import ValidationError
+
+    StrategySpec(**_spec(family="petition:mean_reversion_v2"))
+    with pytest.raises(ValidationError):
+        StrategySpec(**_spec(family="petition:F9"))

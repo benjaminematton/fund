@@ -71,10 +71,12 @@ One `submit_strategy_spec` call, and nothing else. Field discipline:
   momentum tilt, small caps · **F5** overlays, which condition F1–F4 rather
   than standing alone. If your hypothesis fits none of them, use
   `petition:<short_name>` and say in `hypothesis` why the existing families do
-  not hold it. A petition is for a NEW family, so its name may not be an
-  existing code. Never invent a code and never write a family's prose name:
-  the value is a key, a spec is never edited, and a mis-keyed family is
-  counted forever as a family of its own.
+  not hold it. A petition's name may not start with `F` followed by a digit
+  (`petition:F3_variant` is refused; `petition:Fx_thing` is fine) — that
+  shape is the reserved family-code namespace, and a petition squatting on it
+  would collide with a future registered family. Never invent a code and
+  never write a family's prose name: the value is a key, a spec is never
+  edited, and a mis-keyed family is counted forever as a family of its own.
 - `hypothesis` ≤500 chars, one mechanism, stated as a causal claim about who
   is forced to trade and why — not a description of the signal.
 - `invalidation` ≤500 chars, one *observable* that would falsify the
@@ -105,4 +107,4 @@ One `submit_strategy_spec` call, and nothing else. Field discipline:
   argue with a gate; thresholds move by human commit only.
 
 ---
-changelog: v1 initial (unstaffed; specified ahead of the seat) · v2 rewritten against `_template.md`'s seven sections — v1 carried none of them and no changelog; the three tools v1 claimed are gone (`submit_strategy_spec` is the one live, tested handler and the tool this charter names; `run_backtest` is a plain Python function whose MCP exposure is #171 half two; the market-data claim named a toolset, not a tool); the session ritual and the `strategies`-table read are gone (the seat has no read tool of any kind, so it cannot read that table however the schema grows, and reading workflow state from Slack would violate invariant 6); rule 2 no longer names a channel, because this seat has no Slack tool — the same defect `pm.md` records fixing at v6. Seat staffed by #198 as a hand-run, offline-only turn: `submit_strategy_spec` is now `@tool`-registered and capped to `quant` alone, `specs/contracts.md` §4 carries the row as `served`, and `make register-spec` assigns the turn. · v3 the family vocabulary (F1–F5, petition:<name>) and the operator's sponsor's note — the seat has no read tools, so this file is the only place it can learn either; "brief" now means get_stage_brief only (#213).
+changelog: v1 initial (unstaffed; specified ahead of the seat) · v2 rewritten against `_template.md`'s seven sections — v1 carried none of them and no changelog; the three tools v1 claimed are gone (`submit_strategy_spec` is the one live, tested handler and the tool this charter names; `run_backtest` is a plain Python function whose MCP exposure is #171 half two; the market-data claim named a toolset, not a tool); the session ritual and the `strategies`-table read are gone (the seat has no read tool of any kind, so it cannot read that table however the schema grows, and reading workflow state from Slack would violate invariant 6); rule 2 no longer names a channel, because this seat has no Slack tool — the same defect `pm.md` records fixing at v6. Seat staffed by #198 as a hand-run, offline-only turn: `submit_strategy_spec` is now `@tool`-registered and capped to `quant` alone, `specs/contracts.md` §4 carries the row as `served`, and `make register-spec` assigns the turn. · v3 the family vocabulary (F1–F5, petition:<name>) and the operator's sponsor's note — the seat has no read tools, so this file is the only place it can learn either; "brief" now means get_stage_brief only (#213). v3 amendment: the petition-naming sentence previously said a petition may not name an existing code; `_check_family` actually reserves the whole `F<digit>...` shape, registered or not, so the wording is corrected to match (#213 review).
