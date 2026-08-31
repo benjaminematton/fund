@@ -1,7 +1,8 @@
 # The exec seat stops constructing order parameters
 
-**Date** 2026-08-28 · **Branch** TBD (off `master`) · **Issue** none yet — filed from a
-question, not from the board
+**Date:** 2026-08-28 · **Status:** derived design, not canonical. Defers to `specs/design.md`,
+`specs/contracts.md`, `charters/exec.md`, and `CLAUDE.md`; where this document appears to extend
+them, the canonical file must be edited first (by human commit). **Issue:** #174.
 
 ## The problem
 
