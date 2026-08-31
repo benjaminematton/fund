@@ -180,11 +180,13 @@ REGISTER_TOOLS = ["mcp__fund__submit_strategy_spec"]
 #
 # Unlike G1_PROMPT this has no evals/prompts.py twin to stay byte-identical to:
 # the rig has no `quant` cases, and evals/ is outside this lane's region.
-REGISTER_PROMPT = ("Spec registration turn. You have no brief and no read"
-                   " tools; your charter is your whole context. Follow it and"
-                   " end by calling submit_strategy_spec exactly once — or, if"
-                   " your charter's Mission applies, by declining to propose"
-                   " and saying which family is tapped out.")
+REGISTER_PROMPT = ("Spec registration turn. Your charter and this prompt,"
+                   " together, are your whole context: you have no read"
+                   " tools — no brief, no journal, no Slack, no database."
+                   " Follow the charter and end by calling"
+                   " submit_strategy_spec exactly once — or, if your"
+                   " charter's Mission applies, by declining to propose and"
+                   " saying which family is tapped out.")
 
 
 def log(msg: str) -> None:
