@@ -31,7 +31,7 @@ Copied from CLAUDE.md, `specs/improvement.md` and `specs/acceptance.md` Phase 2b
 
 ## Scope check
 
-`improvement.md` §8 (a) is one lane: pre-gate `offered` write + S1 job + `weights` + brief sections. Pieces (b)–(g) are separate lanes with their own plans; (c) and (e) depend on this lane's `weights` rows and `latest_weights()` read, so their plans are written after this lands. Nothing here touches `calibration/` (invariant §0.10: the optimiser's instruments stay out of reach) or any charter.
+`improvement.md` §8 (a) is one lane: pre-gate `offered` write + S1 job + `weights` + brief sections. Pieces (b)–(g) are separate lanes with their own plans; (c) and (e) depend on this lane's `weights` rows and `latest_weights()` read, so their plans are written after this lands. Nothing here touches `calibration/` (invariant §0.10: the optimiser's instruments stay out of reach). The one charter edit (`pm.md` v7, Task 6) is a human commit, not an agent's.
 
 ## File structure
 
@@ -1181,7 +1181,7 @@ Move the `_WEIGHTS_COLS` / `_weights_row` definitions above `test_analyst_brief_
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python3 -m pytest tests/test_fund_tools.py -v`
-Expected: the five new tests FAIL (`KeyError: 'weights'` / `_can` returns True for nothing yet is fine — that one passes); the three updated pins FAIL on `unavailable`.
+Expected: the four new tests FAIL (`KeyError: 'weights'`); the three updated pins FAIL on `unavailable`.
 
 - [ ] **Step 3: Grant the capability and build the section**
 
@@ -1569,6 +1569,9 @@ Posture (invariant 4 / improvement.md §0.7: no row beats a wrong row):
                                      last good rows stand, ONE alert
                                      (weights_job_failed), exit 0
   * ...and the alert write raises -> logged "ALERT NOT WRITTEN", exit 0
+                                     (either alert: the failure one or the
+                                     skipped-seat one — after connect(),
+                                     no branch exits non-zero)
   * a seat's load-bearing value   -> that seat skipped, the rest written,
     is not finite                    ONE alert naming every such seat
                                      (weights_seat_skipped), exit 0
@@ -1630,10 +1633,18 @@ def write_and_log(conn, clock, cfg: WeightsConfig) -> dict:
                 f" {alert_exc}) — {text}")
         return {"failed": True, "written": [], "unchanged": [], "skipped": []}
     if out["skipped"]:
-        run_day._alert(conn, clock, "weights_seat_skipped",
-                       f"weights_seat_skipped — {len(out['skipped'])} seat(s)"
-                       " had a non-finite load-bearing score and got no row"
-                       f" tonight: {', '.join(out['skipped'])}")
+        # Same guard as above, inline rather than through a shared wrapper:
+        # scripts/check_alert_codes.py checks the literal code at the call
+        # of run_day._alert, and a wrapper of another name would leave its
+        # callers unlinted (the lint's own documented edge).
+        text = (f"weights_seat_skipped — {len(out['skipped'])} seat(s)"
+                " had a non-finite load-bearing score and got no row"
+                f" tonight: {', '.join(out['skipped'])}")
+        try:
+            run_day._alert(conn, clock, "weights_seat_skipped", text)
+        except Exception as alert_exc:
+            log(f"ALERT NOT WRITTEN ({type(alert_exc).__name__}:"
+                f" {alert_exc}) — {text}")
     log(f"{out['as_of_date']} · written {', '.join(out['written']) or '—'}"
         f" · unchanged {', '.join(out['unchanged']) or '—'}"
         f" · skipped {', '.join(out['skipped']) or '—'}")
@@ -1808,7 +1819,7 @@ Title: `feat: Phase 2b (a) — offered, the scoring job, and weights in the brie
 1. The §8 (a) sentence.
 2. **Two human-commit items to read first:** the Task 1 spec amendment (six nullable columns; `n_signalled` definition), and the `charters/pm.md` v6 → v7 edit (Task 6) — every PM decision after the merge is attributed `v7`.
 3. **Expected-value changes to existing tests, each with its mandate:** `tests/test_preflight_schema.py` table count 15 → 17 (the test's own docstring); `tests/test_sim_day.py` two `unavailable == []` pins → `["weights"]` (improvement.md §2.1 (ii)); `tests/test_fund_tools.py` two tests now seed a `weights` row (same clause; the empty case gets its own test); `tests/test_ops_units.py` four legs → five; `tests/test_migrations.py` `charter_version_for({"seat": "pm"}) == "v6"` → `"v7"` (`charters/_template.md`: bump the header on any change).
-4. **Behaviour change the eval rig will show:** `evals/` builds briefs through `handle_get_stage_brief` against a DB with no `weights` rows, so every live eval case's PM/analyst brief now carries `weights: []` and `unavailable: ["weights (…)"]` until a scoring night has run on that DB. Correct per §2.1 (ii); the LLM-facing prompt changes.
+4. **Behaviour change the eval rig will show:** `evals/` builds briefs through `handle_get_stage_brief` against a DB with no `weights` rows, so every live eval case's PM/analyst brief now carries `weights: []` and `unavailable: ["weights (…)"]` until a scoring night has run on that DB. Correct per §2.1 (ii); the LLM-facing prompt changes. `evals/seats/pm.yaml` records its I5 turn/cost ceilings as measured against pm.md v6 under one `charter_sha`; after this merge every trace carries v7 and a longer brief, so that baseline is a v6 measurement until re-measured under v7 — read I5 accordingly.
 5. **Deploy note:** the droplet's existing DB gains both tables on the next `connect()` (`state/db.py:37-41`; pinned by `tests/test_state.py`); the new unit leg needs `systemctl daemon-reload` after the file lands under `/opt/fund/ops/`; the first scoring night writes rows for every seat with graded history, so the PM's first post-deploy brief already carries them.
 
 No closing keyword — #205 stays open for (b)–(f).
