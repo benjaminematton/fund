@@ -1,0 +1,14 @@
+# The improvement loop's human-committed parameters (specs/improvement.md
+# §2.1, §2.3). Same rule as config/watchlist.yaml and the gate thresholds:
+# NEVER written by an agent. A Proposer proposal may argue for a change here
+# (improvement.md §3); a human commits it.
+
+# Trailing trading days the behavioural rates (n_signalled, n_offered,
+# abstention_rate, n_distinct_conf, coverage, cost_usd) are computed over. A
+# trading day is a run_date with signals rows.
+window_days: 20
+
+# The signal horizon n_eff divides by: n_eff = n_graded / horizon_days
+# (calibration.md §4's overlap correction, N_eff ≈ N/5). Displayed beside
+# n_graded, never used as a threshold.
+horizon_days: 5
