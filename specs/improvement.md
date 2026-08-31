@@ -117,11 +117,14 @@ matrix): the PM receives the latest row for every analyst seat; each analyst rec
 latest row only** — calibration §6's "seeing your own calibration is the cheapest charter tune-up"
 — and never another seat's. Ops projects the scoreboard weekly to `#pnl` (calibration §6).
 
-**Failure, two cases, not one.** (i) Job crash or NaN: no row is written, the last good rows
-stand, the brief carries them with their `as_of_date` so the PM can see they are stale, one
-alert. (ii) No rows at all — the table is empty or absent: the section is named in `unavailable`
-and the PM proceeds with equal weights. Calibration §5's "never silently reset to equal" holds
-because (i) never resets and (ii) is named, not silent.
+**Failure, three cases.** (i) Job crash: no row is written for any seat (one transaction), the
+last good rows stand, the brief carries them with their `as_of_date` so the PM can see they are
+stale, one alert. (ii) A non-finite load-bearing value for one seat: that seat's row is skipped
+and the seat named in one alert; every other seat's row is written; a NULL in a descriptive
+column is not this case (see "Two kinds of column"). (iii) No rows at all — the table is empty
+or absent: the section is named in `unavailable` and the PM proceeds with equal weights.
+Calibration §5's "never silently reset to equal" holds because (i) and (ii) never reset and
+(iii) is named, not silent.
 
 ### 2.2 S4 — allocation and kill rules
 
