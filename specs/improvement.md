@@ -95,6 +95,23 @@ set — because the active set otherwise lives only in `run_pre_gate`'s return v
 job could see it. The evaluator's DiD windows (§3.3) are in graded calls and are computed from
 `signals`/`resolutions` directly, not from `weights` rows.
 
+**`n_signalled` counts rows the seat wrote.** `run_research` writes a neutral/0 row with
+`charter_version = 'none'` for every `(seat, ticker)` a silent seat left uncovered, so a count
+of every `signals` row would make `coverage` 1.0 by construction and the §3.3 default dead.
+`n_signalled`, the window abstention count behind `abstention_rate`, and `n_distinct_conf`
+are all over rows with `charter_version <> 'none'`. A seat that never spoke in the window has
+`n_signalled = 0`, `abstention_rate = 0.0`, `coverage = 0.0`.
+
+**Two kinds of column.** Load-bearing — `n_eff`, `brier`, `bss_shrunk`, `total_skill`,
+`weight` — are `NOT NULL`; a non-finite value there skips that seat's row for the night, names
+the seat in one alert, and writes the other seats. Descriptive — `bss`, `reliability`,
+`resolution`, `ece`, `batting`, `slugging` — store `NULL` where the sample cannot define them
+(calibration §1: Murphy terms need ≥20 calls; batting needs a directional call; slugging needs
+a loss; BSS is undefined on degenerate outcomes, calibration §5), because a placeholder number
+would be read as a measurement. A re-run on unchanged inputs writes nothing (`inputs_hash`
+equals the seat's latest row); a re-run the same night on changed inputs replaces that night's
+row (`UNIQUE (as_of_date, agent)`).
+
 **Briefs read it as data.** `get_stage_brief` gains a `weights` section (contracts §4 field
 matrix): the PM receives the latest row for every analyst seat; each analyst receives **its own
 latest row only** — calibration §6's "seeing your own calibration is the cheapest charter tune-up"
@@ -279,15 +296,15 @@ CREATE TABLE weights (                         -- the scoreboard: one row per se
   n_abstain     INTEGER NOT NULL,
   n_eff         REAL NOT NULL,                -- n_graded / horizon_days (§2.1)
   brier         REAL NOT NULL,
-  bss           REAL NOT NULL,
+  bss           REAL,                        -- NULL: undefined on degenerate outcomes (§2.1)
   bss_shrunk    REAL NOT NULL,
   total_skill   REAL NOT NULL,                -- bss_shrunk * n_graded (the ranking column)
-  reliability   REAL NOT NULL,
-  resolution    REAL NOT NULL,
-  ece           REAL NOT NULL,                -- descriptive only, never in the weight
-  batting       REAL NOT NULL,
-  slugging      REAL NOT NULL,
-  n_signalled   INTEGER NOT NULL,             -- signals rows (any direction) in the window
+  reliability   REAL,                        -- NULL under 20 graded calls (§2.1)
+  resolution    REAL,
+  ece           REAL,                        -- descriptive only, never in the weight
+  batting       REAL,                        -- NULL with no directional call
+  slugging      REAL,                        -- NULL with no directional call or no loss
+  n_signalled   INTEGER NOT NULL,             -- signals rows the seat wrote (charter_version <> 'none') in the window
   n_offered     INTEGER NOT NULL,             -- offered rows in the window (§2.1)
   abstention_rate REAL NOT NULL,              -- n_abstain / n_signalled over the window
   n_distinct_conf INTEGER NOT NULL,           -- confidence granularity over the window
@@ -464,7 +481,8 @@ never UPSERTed; one event is appended.
 
 | Failure | Behavior |
 |---|---|
-| Scoring job crash or NaN | no row; last good `weights` rows stand and the brief carries them with their `as_of_date`; one alert |
+| Scoring job crash | no row for any seat (one transaction); last good `weights` rows stand and the brief carries them with their `as_of_date`; one alert |
+| Non-finite load-bearing value for a seat | that seat's row skipped and named in one alert; the other seats' rows written; descriptive NULLs are not this case (§2.1) |
 | `weights` empty or absent | brief names `weights` in `unavailable`; PM proceeds with equal weights (named, not silent) |
 | Distill seat silent, malformed, or over cap | previous lessons file stands byte-identical; alert |
 | Proposer silent | no row, no PR; the month records `no_proposal`; nothing else |
