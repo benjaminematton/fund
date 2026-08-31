@@ -338,6 +338,15 @@ def test_golden_day(tmp_path):
     _assert_day_completed(sim)
 
 
+def test_golden_day_records_its_offered_set(tmp_path):
+    """specs/acceptance.md Phase 2b: under sim, the pre-gate stage writes one
+    `offered` row per surviving ticker. The golden day offers NVDA alone."""
+    sim = golden_day(tmp_path)
+    rows = sim.conn.execute(
+        "SELECT run_date, ticker FROM offered").fetchall()
+    assert [(r["run_date"], r["ticker"]) for r in rows] == [(sim.run_date, "NVDA")]
+
+
 # --- 2. all-hold day --------------------------------------------------------
 
 def test_all_hold_day(tmp_path):
