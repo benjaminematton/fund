@@ -7,7 +7,7 @@
 that assigns the turn, and per invariant 6 a workflow-critical turn is
 assigned by code, never by a Slack message.
 
-WHY IT IS HAND-RUN AND NOT A FIFTH SYSTEMD LEG (CEO ruling B1, 2026-08-29).
+WHY IT IS HAND-RUN AND NOT A SYSTEMD LEG (CEO ruling B1, 2026-08-29).
 `specs/strategy.md:34` makes SPEC reachable only through *PM sponsors → SPEC*,
 and no sponsorship mechanism exists in code: `IDEA` appears four times in the
 repo, all prose, zero Python and zero SQL; there is no `ideas` table in
