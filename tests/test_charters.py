@@ -71,3 +71,25 @@ def test_a_charter_header_carries_a_parseable_version(path):
     makes an unparseable header SILENT in production — the scoreboard just
     excludes the seat — so it has to be loud here instead."""
     assert _parse_charter_version(path.read_text()) != "unknown"
+
+
+def test_the_quant_charter_and_the_model_name_the_same_families():
+    """The seat has no read tools, so specs/strategy.md §3 is unreachable and
+    this file is the only place it can learn the vocabulary. Binding it to the
+    model means neither can drift alone: a charter code the model rejects, or
+    a model that stops accepting a charter code, reddens here.
+
+    No prose parsing: F-codes are tokenized and the MODEL is the authority."""
+    import re
+
+    from state.models import REGISTERED_FAMILIES, StrategySpec
+    from tests.test_state_models import _spec
+
+    text = (CHARTERS / "quant.md").read_text()
+    codes = set(re.findall(r"\bF\d+\b", text))
+    assert codes == set(REGISTERED_FAMILIES), (
+        f"charter names {sorted(codes)}, model accepts"
+        f" {sorted(REGISTERED_FAMILIES)}")
+    for code in sorted(codes):
+        StrategySpec(**_spec(family=code))   # the model refuses, or it does not
+    assert "petition:" in text, "the escape hatch is unreachable to the seat"
