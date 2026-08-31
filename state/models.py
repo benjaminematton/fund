@@ -97,14 +97,17 @@ def _check_family(v: str) -> str:
     if not name or name != name.strip():
         raise ValueError(
             "a petition needs a non-empty name with no surrounding whitespace")
-    # strategy.md:51 defines a petition as one for a NEW family, so a petition
-    # naming a registered code contradicts the spec. Derived from canon, not
-    # invented: nothing else about <name>'s characters is asserted, because
-    # nothing else is specified.
+    # strategy.md:51 defines a petition as one for a NEW family, so the
+    # `F<digit>` shape is not a petition's to take — registered or not, it is
+    # the reserved family-code namespace and a future registered family would
+    # collide with anything squatting there. Derived from canon, not invented:
+    # nothing else about <name>'s characters is asserted, because nothing else
+    # is specified.
     if re.fullmatch(r"F\d.*", name):
         raise ValueError(
             f"a petition is for a NEW family (specs/strategy.md:51) and may"
-            f" not shadow a family code; got {v!r}")
+            f" not start with 'F' followed by a digit — that shape is the"
+            f" reserved family-code namespace; got {v!r}")
     if len(v) > _FAMILY_MAX:
         raise ValueError(
             f"family is a key, not prose: at most {_FAMILY_MAX} characters")

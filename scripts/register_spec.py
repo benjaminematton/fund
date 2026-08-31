@@ -58,29 +58,32 @@ EXIT CODES ARE A CONTRACT, and they are NOT critic_g1's (invariant 4: no row
 beats a wrong row).
 
   0  a spec was registered. Nothing else returns 0, ever.
-  1  the run happened and produced no spec — a turn that raised, a turn that
-     wrote nothing, a failure anywhere inside the guard, a bad env.
+  1  no spec was registered. Two shapes share the code: the run happened and
+     produced none (a turn that raised, a turn that wrote nothing, a failure
+     anywhere inside the guard), or it was REFUSED before a client was built
+     (a bad env, no brief, an unreadable or empty brief).
   2  the run did not happen, because a lock was held. Two different locks can
      cause it and the LOG LINES tell them apart; the code does not, because
      the operator's next action is the same either way: try again later.
 
-  ALPACA_PAPER_TRADE != 'true'  -> exit 1 before a client is built
-  a missing env var             -> exit 1 naming every missing var
+  ALPACA_PAPER_TRADE != 'true'     -> exit 1 before a client is built
+  a missing env var                -> exit 1 naming every missing var
   a missing/unreadable/empty brief -> exit 1 before a client is built. A 1
-                                   rather than a 2 because 2 means "a lock was
-                                   held, try again later"; a missing note is
-                                   not a retry, it is a thing the operator
-                                   must write.
-  run_day holds its lock        -> exit 2, nothing built, nothing spent
-  another register_spec running -> exit 2, nothing built, nothing spent
-  a turn that raises            -> one alert, no row, exit 1
-  a turn that writes nothing    -> one alert FROM HERE, no row, exit 1. A
-                                   turn that crashed or blew SEAT_MAX_WALL_S
-                                   arrives on this branch too, and
-                                   run_day.make_turn has already posted its
-                                   own seat_turn_failed / seat_turn_timeout —
-                                   so those cases are TWO messages, not one.
-  anything else                 -> one alert, exit 1
+                                      rather than a 2 because 2 means "a lock
+                                      was held, try again later"; a missing
+                                      note is not a retry, it is a thing the
+                                      operator must write.
+  run_day holds its lock           -> exit 2, nothing built, nothing spent
+  another register_spec running    -> exit 2, nothing built, nothing spent
+  a turn that raises               -> one alert, no row, exit 1
+  a turn that writes nothing       -> one alert FROM HERE, no row, exit 1. A
+                                      turn that crashed or blew SEAT_MAX_WALL_S
+                                      arrives on this branch too, and
+                                      run_day.make_turn has already posted its
+                                      own seat_turn_failed / seat_turn_timeout
+                                      — so those cases are TWO messages, not
+                                      one.
+  anything else                    -> one alert, exit 1
 
 WHY 2 AND NOT critic_g1's 0. That job is a systemd ExecStart, where a nonzero
 code is a RED UNIT and a page; contention there resolves itself correctly and
@@ -232,7 +235,7 @@ def read_brief(path: str | None) -> str | None:
             " invent one. Nothing was built and nothing was spent")
         return None
     try:
-        text = Path(path).read_text()
+        text = Path(path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         # UnicodeDecodeError is a ValueError, not an OSError: uncaught it
         # escapes main from OUTSIDE _guarded, so there is no alert row and no
@@ -409,7 +412,8 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
                            f" G1 queue {_count_text(queue_before)} ->"
                            f" {_count_text(queue_after)}."
                            f" Nothing is queued and nothing retries: run"
-                           f" `make register-spec` again when you want one")
+                           f" `make register-spec BRIEF=<path>` again when you"
+                           f" want one")
         elif failure:
             run_day._alert(conn, clock, "register_spec_wrote_nothing",
                            "register_spec_wrote_nothing — the quant turn ran"

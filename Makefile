@@ -192,8 +192,10 @@ critic-g1: deps
 # specs/strategy.md makes SPEC reachable only through *PM sponsors -> SPEC* and
 # no sponsorship mechanism exists in code, so a scheduled run would enter a
 # lifecycle state by skipping the gate that guards entry to it, every night,
-# forever. The human invocation stands in for the missing sponsorship gate:
-# running this command IS the decision that there should be another spec.
+# forever. The operator's written NOTE stands in for the missing sponsorship
+# gate — not the invocation: what makes this a sponsorship is that a human
+# supplied the hypothesis, the family and the universe, not merely that a human
+# chose the moment. That is why there is no no-BRIEF form of this command.
 #
 # USAGE: make register-spec BRIEF=<path to the sponsor's note>
 # Without BRIEF the job exits 1 before building anything: a spec needs a
@@ -219,13 +221,20 @@ critic-g1: deps
 #
 # EXIT CODES ARE A CONTRACT (see the script's module docstring):
 #   0  a spec was registered. Nothing else returns 0.
-#   1  the run happened and produced no spec — a turn that raised, a turn that
-#      wrote nothing, a duplicate, a bad env, any failure inside the guard.
+#   1  no spec was registered. Either the run happened and produced none (a
+#      turn that raised, a turn that wrote nothing, a duplicate, any failure
+#      inside the guard) or it was refused before anything was built (no
+#      BRIEF, an unreadable or empty brief, a bad env).
 #   2  the run did not happen because a lock was held. Either run_day's (a
 #      trading day is in progress) or another register_spec's; the log line
 #      says which, the code does not, because the next action is the same.
+#
+# $(BRIEF) is quoted so a path with spaces stays ONE argument, and the whole
+# argument is dropped when BRIEF is unset — passing "" instead would hand the
+# script an empty path, which raises IsADirectoryError and buries the Usage
+# line under a generic read failure.
 register-spec: deps
-	$(PYTHON) scripts/register_spec.py $(BRIEF)
+	$(PYTHON) scripts/register_spec.py $(if $(BRIEF),"$(BRIEF)",)
 
 # The G1 SHIP GATE. Scores a recorded Critic eval run per class: nonzero
 # unless detection >= 8/9 and false alarm <= 1/9, with clean containment and

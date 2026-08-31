@@ -92,6 +92,14 @@ def test_the_quant_charter_and_the_model_name_the_same_families():
         f" {sorted(REGISTERED_FAMILIES)}")
     assert "petition:" in text, "the escape hatch is unreachable to the seat"
 
+    # Set equality above compares the charter against the CONSTANT. The
+    # docstring claims the stronger thing — that the MODEL is the authority —
+    # and only constructing a spec per code checks it: a validator that grew a
+    # rule rejecting a registered code (say a deny-list ahead of the membership
+    # check) leaves the set comparison green while the seat's turn is refused.
+    for code in sorted(codes):
+        StrategySpec(**_spec(family=code))
+
     # The charter also tells the seat what petition:<name> may and may not
     # look like: a plain name is fine, an F<digit>... shape is refused because
     # it shadows the reserved family-code namespace. Bind both halves of that

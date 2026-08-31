@@ -691,7 +691,9 @@ def test_a_missing_note_never_opens_the_db_or_builds_a_client(monkeypatch, db,
     """The invariant-4 claim, actually tested. Moving the read below connect()
     or _build_slack() leaves every other test in this file green while a
     missing note costs a DB open and a live Slack client."""
-    _fake_main_env(monkeypatch, db, tmp_path)     # paper_guard/require_env only
+    # the helper also patches connect/_build_slack/acquire_lock; the three
+    # setattrs below REPLACE those with recorders, so a call is visible here.
+    _fake_main_env(monkeypatch, db, tmp_path)
     opened, locked = [], []
     monkeypatch.setattr(register_spec, "connect", lambda p: opened.append(p))
     monkeypatch.setattr(register_spec, "_build_slack",
