@@ -245,7 +245,7 @@ def _weights(conn: sqlite3.Connection, seat: str) -> list[dict]:
     but as_of_date dates when the row was COMPUTED, not when the seat was
     last graded: a seat that has gone quiet still gets a fresh row every
     night, its skill numbers frozen. The decay tell is falling
-    n_signalled/coverage against a static n_graded, not the date.
+    n_signalled/coverage, not the date.
 
     Scope follows read_signals rather than a seat NAME: the seat that reads
     every seat's signals is the one aggregating them, and that is the grant
