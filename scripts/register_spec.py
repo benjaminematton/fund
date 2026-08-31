@@ -336,9 +336,10 @@ def register_and_log(conn, slack, clock, run_turn) -> dict:
             f" · G1 queue {_count_text(queue_before)} ->"
             f" {_count_text(queue_after)}")
     finally:
-        # queue_after is re-read here as well as above: on the raising branch
-        # the line above may never have run, and an alert carrying a stale
-        # depth is worse than one carrying none.
+        # queue_after is re-read here as well as above: the line above is
+        # skipped only if spec_count or queue_depth itself raised — a
+        # database failure, not a turn that raised — and an alert carrying a
+        # stale depth is worse than one carrying none.
         queue_after = queue_depth(conn)
         if failure and failure["why"] == "raised":
             run_day._alert(conn, clock, "register_spec_turn_failed",
