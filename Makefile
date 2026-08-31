@@ -195,9 +195,13 @@ critic-g1: deps
 # forever. The human invocation stands in for the missing sponsorship gate:
 # running this command IS the decision that there should be another spec.
 #
-# TAKES NO ARGUMENT. The seat composes the spec from its charter
-# (charters/quant.md); nothing per-run enters its prompt, so the human chooses
-# WHEN and never WHAT. Changing what gets proposed means editing that charter.
+# USAGE: make register-spec BRIEF=<path to the sponsor's note>
+# Without BRIEF the job exits 1 before building anything: a spec needs a
+# sponsor (specs/strategy.md §1) and this job will not invent one.
+#
+# The note is the hypothesis, the family and the universe, in prose. The seat
+# works it up against its charter (charters/quant.md) and commits the numbers;
+# the note is DATA it is told to work from, never instructions to obey.
 #
 # One Sonnet turn, $0.75 max_budget_usd backstop (agents/config/quant.yaml).
 # Nothing else picks the spec up until the evening's existing 16:35 critic-g1
@@ -221,7 +225,7 @@ critic-g1: deps
 #      trading day is in progress) or another register_spec's; the log line
 #      says which, the code does not, because the next action is the same.
 register-spec: deps
-	$(PYTHON) scripts/register_spec.py
+	$(PYTHON) scripts/register_spec.py $(BRIEF)
 
 # The G1 SHIP GATE. Scores a recorded Critic eval run per class: nonzero
 # unless detection >= 8/9 and false alarm <= 1/9, with clean containment and
