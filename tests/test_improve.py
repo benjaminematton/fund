@@ -142,6 +142,19 @@ def test_coverage_is_signalled_over_offered(conn):
     assert behaviour(conn, "a", [d])["coverage"] == 0.5
 
 
+def test_coverage_is_zero_when_signals_predate_the_offered_table(conn):
+    """`offered` is a brand-new table; production `signals` rows go back
+    before it existed. The first nightly run's trailing window can therefore
+    span a date with `signals` rows and zero `offered` rows: the seat spoke
+    (n_signalled > 0) yet n_offered == 0. coverage must degrade to 0.0, not
+    divide by zero (improvement.md §2.1)."""
+    d = _dates(1)[0]
+    _day(conn, d, 0.01, {"a": ("bullish", 70)}, offered=())
+    b = behaviour(conn, "a", [d])
+    assert (b["n_signalled"], b["n_offered"]) == (1, 0)
+    assert b["coverage"] == 0.0
+
+
 # --- hash -----------------------------------------------------------------
 
 def test_inputs_hash_is_stable_and_sensitive():
