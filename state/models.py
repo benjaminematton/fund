@@ -63,6 +63,8 @@ LiquidityBucket = Literal["mega_large", "mid", "small", "micro"]
 SpecVerdict = Literal["clear", "objections"]
 
 REGISTERED_FAMILIES = frozenset({"F1", "F2", "F3", "F4", "F5"})
+# arbitrary but generous: far below the 500-char prose caps (family is not prose),
+# comfortably above petition:<name> (a 9-char prefix + a short snake_case name)
 _FAMILY_MAX = 72
 
 

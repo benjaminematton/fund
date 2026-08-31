@@ -1,7 +1,12 @@
+import re
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from state.models import REGISTERED_FAMILIES, StrategySpec
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _spec(**over) -> dict:
@@ -14,6 +19,16 @@ def _spec(**over) -> dict:
         capacity_usd=1.0, predicted={}, llm_in_loop=0)
     base.update(over)
     return base
+
+
+def test_the_registered_families_are_the_ones_the_spec_registers():
+    """REGISTERED_FAMILIES is the authority other tests (and a later charter
+    test) import, so something must anchor it to canon or it only ever agrees
+    with itself. Derived from specs/strategy.md §3's own '### F<n>.' headings
+    rather than copied, so a spec change is caught here too."""
+    text = (ROOT / "specs" / "strategy.md").read_text()
+    headings = re.findall(r"^### (F\d+)\.", text, re.MULTILINE)
+    assert REGISTERED_FAMILIES == set(headings)
 
 
 def test_the_payload_helper_itself_is_valid():

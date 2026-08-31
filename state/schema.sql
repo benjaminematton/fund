@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS costs (
 -- §4's states yet.
 CREATE TABLE IF NOT EXISTS strategy_specs (
   spec_id          TEXT PRIMARY KEY,
-  family           TEXT NOT NULL,              -- enforced by StrategySpec.Family, NOT by this column
+  family           TEXT NOT NULL,              -- 'F1'..'F5' | 'petition:<name>'; enforced by StrategySpec.Family
   seat             TEXT NOT NULL,              -- proposing seat (charter name)
   hypothesis       TEXT NOT NULL CHECK(length(hypothesis) <= 500),
   mechanism_class  TEXT NOT NULL CHECK(mechanism_class IN
