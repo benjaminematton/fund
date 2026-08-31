@@ -221,3 +221,14 @@ def test_a_refused_payload_projects_nothing(fund_db):
     _submit(fund_db, spec_payload() | {"sharpe_target": 2.0})
     _submit(fund_db, spec_payload(), seat="exec")
     assert _count(fund_db, "events") == 0
+
+
+def test_a_family_off_the_menu_is_refused_and_writes_nothing(fund_db):
+    """The tool schema declares family as a bare string (fund_server.py:778,
+    out of region), so this is reachable by a live seat. The refusal must be
+    a clean {"ok": False}, not an unhandled ValidationError, and must leave
+    no row — invariant 4."""
+    r = _submit(fund_db, spec_payload(family="mean_reversion"))
+    assert r["ok"] is False
+    assert "family" in r["error"]
+    assert _count(fund_db) == 0
