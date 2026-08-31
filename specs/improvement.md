@@ -239,7 +239,8 @@ never assumed.
 
 Three metrics are in every proposal's `at_risk` set by default, named or not, band 0.10:
 **`abstention_rate`**, **`n_distinct_conf`** (confidence granularity), and **`coverage`**
-(`n_signalled ÷ n_offered`, from the `offered` rows the pre-gate stage writes). They are the cheapest
+(seat-written signals on offered `(run_date, ticker)` pairs ÷ `n_offered`, from the `offered`
+rows the pre-gate stage writes). They are the cheapest
 levers an instruction change can pull to flatter a Brier-based score.
 
 **The Proposer is graded, not the proposal.** No single proposal meets a significance bar at the
@@ -312,7 +313,7 @@ CREATE TABLE weights (                         -- the scoreboard: one row per se
   n_offered     INTEGER NOT NULL,             -- offered rows in the window (§2.1)
   abstention_rate REAL NOT NULL,              -- n_abstain / n_signalled over the window
   n_distinct_conf INTEGER NOT NULL,           -- confidence granularity over the window
-  coverage      REAL NOT NULL,                -- n_signalled / n_offered over the window
+  coverage      REAL NOT NULL,                -- seat-written signals on offered (run_date, ticker) pairs / n_offered, over the window
   cost_usd      REAL NOT NULL,                -- costs.usd_estimate summed over the window (est.)
   weight        REAL NOT NULL CHECK (weight >= 0 AND weight <= 1),
   narrowed      INTEGER NOT NULL DEFAULT 0,   -- §2.3: floor released

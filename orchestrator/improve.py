@@ -60,7 +60,17 @@ def behaviour(conn: sqlite3.Connection, seat: str, dates: list[str]) -> dict:
     marks a row the orchestrator wrote because the seat was silent
     (orchestrator/daily.py run_research), and counting those would make
     coverage 1.0 by construction (improvement.md §2.1). Empty `dates` is a
-    fund with no history yet: every count zero, every rate 0.0."""
+    fund with no history yet: every count zero, every rate 0.0.
+
+    `coverage`'s numerator is signals on (run_date, ticker) pairs that are
+    also in `offered`, not `n_signalled` itself: `signals` predates `offered`
+    by years in production, so a date-window ratio of the two counts reads
+    far above 1 for the fund's first ~20 nights, and nothing stops a seat
+    signalling a ticker nobody offered even once the calendars align.
+    `signals` UNIQUE (run_date, agent, ticker) caps this seat at one row per
+    pair and `offered` PRIMARY KEY (run_date, ticker) caps the join at one
+    match per pair, so the pair-joined count can never exceed n_offered —
+    coverage is bounded at 1 structurally, not by convention."""
     if not dates:
         return {"n_signalled": 0, "n_offered": 0, "n_distinct_conf": 0,
                 "abstention_rate": 0.0, "coverage": 0.0, "cost_usd": 0.0}
@@ -73,6 +83,11 @@ def behaviour(conn: sqlite3.Connection, seat: str, dates: list[str]) -> dict:
     n_offered = conn.execute(
         f"SELECT COUNT(*) n FROM offered WHERE run_date IN ({marks})",
         dates).fetchone()["n"]
+    n_covered = conn.execute(
+        f"SELECT COUNT(*) n FROM signals s JOIN offered o"
+        f" ON o.run_date = s.run_date AND o.ticker = s.ticker"
+        f" WHERE s.agent = ? AND s.charter_version <> 'none'"
+        f" AND s.run_date IN ({marks})", (seat, *dates)).fetchone()["n"]
     cost = conn.execute(
         f"SELECT COALESCE(SUM(usd_estimate), 0.0) c FROM costs"
         f" WHERE agent = ? AND run_date IN ({marks})", (seat, *dates)).fetchone()["c"]
@@ -81,7 +96,7 @@ def behaviour(conn: sqlite3.Connection, seat: str, dates: list[str]) -> dict:
             "n_offered": n_offered,
             "n_distinct_conf": spoke["distinct_conf"],
             "abstention_rate": spoke["abstain"] / n if n else 0.0,
-            "coverage": n / n_offered if n_offered else 0.0,
+            "coverage": n_covered / n_offered if n_offered else 0.0,
             "cost_usd": float(cost)}
 
 

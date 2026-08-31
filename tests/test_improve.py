@@ -157,6 +157,35 @@ def test_coverage_is_zero_when_signals_predate_the_offered_table(conn):
     assert b["coverage"] == 0.0
 
 
+def test_coverage_is_honest_over_a_mixed_window(conn):
+    """Production reality for the first ~20 nights after `offered` exists:
+    some dates in the trailing window predate it and some don't. Before this
+    fix, `n_signalled` counted every date in the window while `n_offered`
+    counted only the dates `offered` has rows for, so the two calendars
+    disagreed and coverage could climb past 1. It must instead be the
+    honest ratio over the dates `offered` actually covers."""
+    dates = _dates(3)
+    _day(conn, dates[0], 0.01, {"a": ("bullish", 70)}, offered=())
+    _day(conn, dates[1], 0.01, {"a": ("bullish", 70)}, offered=())
+    _day(conn, dates[2], 0.01, {"a": ("bullish", 70)}, offered=("NVDA", "MSFT"))
+    b = behaviour(conn, "a", dates)
+    assert (b["n_signalled"], b["n_offered"]) == (3, 2)
+    assert b["coverage"] == 0.5
+
+
+def test_an_unoffered_ticker_does_not_count_toward_coverage(conn):
+    """The seat signals a ticker nobody offered that day. A join that
+    matches on run_date alone would still count it — the date has `offered`
+    rows, just not for this ticker — so this is the case that forces the
+    join onto the (run_date, ticker) pair rather than the date alone."""
+    d = _dates(1)[0]
+    _day(conn, d, 0.01, {"a": ("bullish", 70)}, ticker="MSFT", offered=("NVDA",))
+    b = behaviour(conn, "a", [d])
+    assert (b["n_signalled"], b["n_offered"]) == (1, 1)
+    assert b["coverage"] == 0.0
+    assert b["coverage"] <= 1.0
+
+
 # --- hash -----------------------------------------------------------------
 
 def test_inputs_hash_is_stable_and_sensitive():

@@ -335,7 +335,7 @@ CREATE TABLE IF NOT EXISTS weights (
   n_offered     INTEGER NOT NULL,             -- offered rows in the window (§2.1)
   abstention_rate REAL NOT NULL,              -- n_abstain / n_signalled over the window
   n_distinct_conf INTEGER NOT NULL,           -- confidence granularity over the window
-  coverage      REAL NOT NULL,                -- n_signalled / n_offered over the window
+  coverage      REAL NOT NULL,                -- seat-written signals on offered (run_date, ticker) pairs / n_offered, over the window
   cost_usd      REAL NOT NULL,                -- costs.usd_estimate summed over the window (est.)
   weight        REAL NOT NULL CHECK (weight >= 0 AND weight <= 1),
   narrowed      INTEGER NOT NULL DEFAULT 0,   -- §2.3: floor released
