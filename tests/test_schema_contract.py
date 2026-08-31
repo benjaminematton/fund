@@ -101,6 +101,9 @@ SCHEMA = ROOT / "state" / "schema.sql"
 SPEC_SECTIONS = (
     (ROOT / "specs" / "contracts.md", "## 2. SQLite DDL"),
     (ROOT / "specs" / "strategy-contracts.md", "## 2. DDL"),
+    # improvement.md keeps its DDL in §4, not §2 (issue #50's reasoning for a
+    # per-file home carried over: contracts.md §7b points here).
+    (ROOT / "specs" / "improvement.md", "## 4. DDL"),
 )
 
 # Spec §2 tables that deliberately have no `state/schema.sql` home. Reason per
@@ -120,6 +123,10 @@ SPEC_SECTIONS = (
 # Group 1 and are untouched: no DDL for those exists anywhere in the repo.
 NO_SCHEMA_HOME = frozenset({
     "sleeves", "shadow_fills",
+    # improvement.md §4, lanes not yet landed (specs/improvement.md §8): the
+    # per-table reason is recorded in issue #50. `lessons` lands with lane (c),
+    # `proposals` with lane (e); each removes its own entry.
+    "lessons", "proposals",
 })
 
 # Everything that can follow the type in a column definition.
@@ -605,7 +612,8 @@ def _spec_ddl_blocks() -> tuple[tuple[str, str], ...]:
     of the PARSER, so that a construct the parser cannot represent does not
     also make the smoke test report a syntax problem the SQL does not have.
     """
-    return tuple((f"{path.parent.name}/{path.name} §2",
+    return tuple((f"{path.parent.name}/{path.name}"
+                  f" §{heading.split('.')[0].removeprefix('## ')}",
                   _section_ddl(path, heading))
                  for path, heading in SPEC_SECTIONS)
 

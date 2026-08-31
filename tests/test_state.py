@@ -8,7 +8,7 @@ from state.transition import (EDGES, IllegalTransition, StaleTransition,
 NOW = "2026-07-06T15:30:00+00:00"
 
 TABLES = {"signals", "critiques", "decisions", "tickets", "orders",
-          "resolutions", "checkpoints", "events", "costs"}
+          "resolutions", "checkpoints", "events", "costs", "offered", "weights"}
 
 STATUSES = {
     "decisions": ["submitted", "approved", "rejected", "held", "executed", "failed", "expired"],
