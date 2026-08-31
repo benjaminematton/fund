@@ -370,7 +370,7 @@ It writes nothing and returns a JSON object:
 | `journal` | ✓ | ✓ | `state/journal.py` `recent_entries(root, seat, 3)` |
 | `signals` | — | ✓ | `signals` rows for today (agent, ticker, direction, confidence, summary) |
 | `allowed_actions` | — | ✓ | injected snapshot provider: `orchestrator.daily.allowed_actions` → `{ticker: {buy, sell}}` in shares |
-| `weights` | ✓ (own row only) | ✓ (every analyst) | latest `weights` row(s) with `as_of_date` — `specs/improvement.md` §2.1; **Phase 2b** |
+| `weights` | ✓ (own row only) | ✓ (every analyst) | latest `weights` row(s) with `as_of_date` — `specs/improvement.md` §2.1; `orchestrator/improve.py:latest_weights` |
 | `lessons` | ✓ | ✓ | `journals/<seat>.lessons.md` — `specs/improvement.md` §2.4; **Phase 2b** |
 | `unavailable` | ✓ | ✓ | names of the sections that could not be built |
 
@@ -419,7 +419,7 @@ The canonical schemas, content-addressed ids (`spec_id`/`config_hash`/`run_key`)
 
 ## 7b. Improvement-loop contracts — see `specs/improvement.md`
 
-The `offered`, `weights`, `lessons`, and `proposals` tables, the `proposed → merged | refused | expired · merged → kept | reverted` state machine, the `get_improvement_brief` / `submit_lessons` / `submit_proposal` schemas, and the loop's failure semantics live in `specs/improvement.md`, which is authoritative for them. The same conventions carry over: SQLite is the source of truth, Slack projection via the `events` outbox, transitions via compare-and-swap, default is no-change. Until the first Phase 2b lane lands, `state/schema.sql` carries none of those tables and `tests/test_schema_contract.py` does not parse that file — the §2 DDL above and `strategy-contracts.md` §2 remain the two parsed sources.
+The `offered`, `weights`, `lessons`, and `proposals` tables, the `proposed → merged | refused | expired · merged → kept | reverted` state machine, the `get_improvement_brief` / `submit_lessons` / `submit_proposal` schemas, and the loop's failure semantics live in `specs/improvement.md`, which is authoritative for them. The same conventions carry over: SQLite is the source of truth, Slack projection via the `events` outbox, transitions via compare-and-swap, default is no-change. `offered` and `weights` live in `state/schema.sql` and `improvement.md` §4 is parsed by `tests/test_schema_contract.py` (lane (a)); `lessons` and `proposals` follow with their lanes, listed in `NO_SCHEMA_HOME` until then.
 
 ## 8. Slack message formats (projection only)
 

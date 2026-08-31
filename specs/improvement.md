@@ -12,9 +12,10 @@ Derived history — the reasoning and evidence behind this file, snapshotted and
 `research/field-brief-self-improving-agents.md` (2026-08-30),
 `docs/superpowers/specs/2026-08-30-species-two-reframe.md`. `VISION.md` says what this is for.
 
-**Tables and tool schemas here are canonical for the improvement loop.** They are not yet parsed
-by `tests/test_schema_contract.py` or `tests/test_tool_surface_canon.py`; §8 says which lane adds
-this file to each parsed set.
+**Tables and tool schemas here are canonical for the improvement loop.** §4 is parsed by
+`tests/test_schema_contract.py` (lane (a), 2026-08-30; `lessons` and `proposals` sit in
+`NO_SCHEMA_HOME` until their lanes land). §5 is not yet parsed by
+`tests/test_tool_surface_canon.py`; §8 says which lane adds it.
 
 ---
 
