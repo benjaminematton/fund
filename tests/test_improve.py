@@ -9,6 +9,7 @@ for the arithmetic.
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -165,3 +166,173 @@ def test_inputs_hash_is_stable_and_sensitive():
     assert h == inputs_hash(list(rows), dict(beh))
     assert h != inputs_hash(rows, {**beh, "cost_usd": 0.01})
     assert h != inputs_hash(rows + rows, beh)
+
+
+# --- the job --------------------------------------------------------------
+
+from orchestrator import improve                                   # noqa: E402
+from orchestrator.improve import latest_weights, write_weights     # noqa: E402
+
+
+def _rows(conn):
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM weights ORDER BY as_of_date, agent")]
+
+
+def test_the_weights_row_carries_the_calibration_values(conn, clock):
+    """Every number below is hand-computed from calibration.md §1–§2 over the
+    two-seat fixture (60 graded calls each, alternating ±1% alpha).
+
+    Seat a: p = 0.8 on every up day and 0.2 on every down day, so every
+    squared error is 0.04 -> brier 0.04. Base rate 0.5, reference Brier 0.25
+    -> BSS 1 - 0.04/0.25 = 0.84 (recency weights cancel on identical errors).
+    Pool: 60 rows at 0.04 + 60 at 0.25 -> 0.145 -> pool BSS 0.42.
+    Shrink w = 60/(60+30) = 2/3 -> 2/3*0.84 + 1/3*0.42 = 0.70; total 42.0.
+    Murphy (exact, two forecast values, n_bins = 3): reliability 0.04,
+    resolution 0.25, ECE 0.20. Batting 1.0 (every directional call won);
+    slugging is undefined with no loss -> NULL.
+    Seat b: brier 0.25, BSS 0.0, shrunk 1/3*0.42 = 0.14, total 8.4; one
+    forecast value -> reliability 0, resolution 0, ECE 0; no directional call
+    -> batting and slugging NULL. n_abstain 60.
+    PM weights: raw 0.70 / 0.14, floor 0.5 * 0.42 = 0.21 lifts b, then
+    normalise over 0.91 -> a 0.769231, b 0.230769.
+    n_eff = 60 / 5 = 12. Window (20 days): a spoke 20 times at one
+    confidence, $1.00 est.; b abstained 20 of 20.
+    """
+    _two_seat_history(conn)
+
+    out = write_weights(conn, clock, CFG)
+
+    assert out == {"as_of_date": AS_OF, "written": ["a", "b"],
+                   "unchanged": [], "skipped": []}
+    a, b = _rows(conn)
+    assert (a["agent"], a["as_of_date"], a["created_at"]) == ("a", AS_OF, iso(NIGHTLY))
+    assert (a["n_graded"], a["n_abstain"], a["n_eff"]) == (60, 0, 12.0)
+    assert a["brier"] == pytest.approx(0.04)
+    assert a["bss"] == pytest.approx(0.84)
+    assert a["bss_shrunk"] == pytest.approx(0.70)
+    assert a["total_skill"] == pytest.approx(42.0)
+    assert (a["reliability"], a["resolution"], a["ece"]) == (
+        pytest.approx(0.04), pytest.approx(0.25), pytest.approx(0.20))
+    assert a["batting"] == 1.0 and a["slugging"] is None
+    assert (a["n_signalled"], a["n_offered"], a["n_distinct_conf"]) == (20, 20, 1)
+    assert (a["abstention_rate"], a["coverage"]) == (0.0, 1.0)
+    assert a["cost_usd"] == pytest.approx(1.0)
+    assert a["weight"] == pytest.approx(0.70 / 0.91)
+    assert (a["narrowed"], len(a["inputs_hash"])) == (0, 64)
+
+    assert (b["n_graded"], b["n_abstain"]) == (60, 60)
+    assert b["brier"] == pytest.approx(0.25) and b["bss"] == pytest.approx(0.0)
+    assert b["bss_shrunk"] == pytest.approx(0.14)
+    assert b["total_skill"] == pytest.approx(8.4)
+    assert (b["reliability"], b["resolution"], b["ece"]) == (0.0, 0.0, 0.0)
+    assert (b["batting"], b["slugging"]) == (None, None)
+    assert (b["abstention_rate"], b["cost_usd"]) == (1.0, 0.0)
+    assert b["weight"] == pytest.approx(0.21 / 0.91)
+    assert a["weight"] + b["weight"] == pytest.approx(1.0)
+
+
+def test_a_second_run_on_unchanged_data_writes_nothing(conn, clock):
+    _two_seat_history(conn)
+    write_weights(conn, clock, CFG)
+    before = _rows(conn)
+
+    out = write_weights(conn, clock, CFG)
+
+    assert out["written"] == [] and out["unchanged"] == ["a", "b"]
+    assert _rows(conn) == before
+
+
+def test_a_same_night_rerun_on_changed_data_replaces_that_nights_row(conn, clock):
+    """resolve_day re-fired after a failed drain resolves more; the night's
+    scoreboard is recomputed. UNIQUE (as_of_date, agent): still one row."""
+    dates = _two_seat_history(conn)
+    write_weights(conn, clock, CFG)
+    first = {r["agent"]: r["inputs_hash"] for r in _rows(conn)}
+    _day(conn, "2026-07-10", 0.02, {"a": ("bullish", 60), "b": ("neutral", 50)})
+
+    out = write_weights(conn, clock, CFG)
+
+    assert out["written"] == ["a", "b"]
+    rows = _rows(conn)
+    assert len(rows) == 2 and all(r["as_of_date"] == AS_OF for r in rows)
+    assert all(r["inputs_hash"] != first[r["agent"]] for r in rows)
+    assert rows[0]["n_graded"] == 61
+
+
+def test_the_next_night_keeps_the_old_row_beside_the_new(conn, clock):
+    _two_seat_history(conn)
+    write_weights(conn, clock, CFG)
+    _day(conn, "2026-07-10", 0.02, {"a": ("bullish", 60), "b": ("neutral", 50)})
+    clock.advance(days=1)
+
+    write_weights(conn, clock, CFG)
+
+    assert [(r["as_of_date"], r["agent"]) for r in _rows(conn)] == [
+        (AS_OF, "a"), (AS_OF, "b"), ("2026-07-14", "a"), ("2026-07-14", "b")]
+
+
+def test_a_non_finite_load_bearing_value_skips_that_seat_and_names_it(
+        conn, clock, monkeypatch):
+    """improvement.md §2.1 "Two kinds of column": a NaN where the weight or
+    the ranking column should be is no row for that seat, never a placeholder
+    (invariant 4). The other seat is still written."""
+    import math
+
+    from calibration.scoring import AgentScore
+
+    _two_seat_history(conn)
+    real = improve.score_agents
+
+    def poisoned(rows):
+        scores, weights = real(rows)
+        broken = [AgentScore(**{**vars(s), "brier": math.nan}) if s.seat == "a"
+                  else s for s in scores]
+        return broken, weights
+    monkeypatch.setattr(improve, "score_agents", poisoned)
+
+    out = write_weights(conn, clock, CFG)
+
+    assert out["skipped"] == ["a"] and out["written"] == ["b"]
+    assert [r["agent"] for r in _rows(conn)] == ["b"]
+
+
+def test_a_raise_mid_job_writes_no_row_at_all(conn, clock, monkeypatch):
+    """All-or-nothing (improvement.md §6, "no row for any seat"): the rows are
+    computed before any is written and land in one transaction."""
+    _two_seat_history(conn)
+    real = improve.behaviour
+
+    def boom(c, seat, dates):
+        if seat == "b":
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(c, seat, dates)
+    monkeypatch.setattr(improve, "behaviour", boom)
+
+    with pytest.raises(sqlite3.OperationalError):
+        write_weights(conn, clock, CFG)
+    assert _rows(conn) == []
+
+
+def test_no_graded_seat_writes_nothing_and_says_so(conn, clock):
+    assert write_weights(conn, clock, CFG) == {
+        "as_of_date": AS_OF, "written": [], "unchanged": [], "skipped": []}
+    assert _rows(conn) == []
+
+
+# --- the read -------------------------------------------------------------
+
+def test_latest_weights_returns_each_seats_newest_row(conn, clock):
+    _two_seat_history(conn)
+    write_weights(conn, clock, CFG)
+    _day(conn, "2026-07-10", 0.02, {"a": ("bullish", 60), "b": ("neutral", 50)})
+    clock.advance(days=1)
+    write_weights(conn, clock, CFG)
+
+    rows = latest_weights(conn)
+    assert [(r["agent"], r["as_of_date"]) for r in rows] == [
+        ("a", "2026-07-14"), ("b", "2026-07-14")]
+    assert set(rows[0]) == {c[1] for c in conn.execute("PRAGMA table_info(weights)")}
+    assert rows[1]["batting"] is None                    # NULL survives as None
+    assert [r["agent"] for r in latest_weights(conn, agent="b")] == ["b"]
+    assert latest_weights(conn, agent="nobody") == []

@@ -91,3 +91,121 @@ def inputs_hash(seat_rows: list[dict], beh: dict) -> str:
     means nothing changed and nothing is written (improvement.md §2.1)."""
     blob = json.dumps({"rows": seat_rows, "window": beh}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
+
+
+# --- the `weights` row --------------------------------------------------------
+
+# Columns whose value the PM acts on. A non-finite value here is "no row for
+# this seat tonight" (§2.1, §6), never a placeholder. Every other REAL column
+# is descriptive and stores NULL where the sample cannot define it.
+LOAD_BEARING = ("n_eff", "brier", "bss_shrunk", "total_skill", "weight")
+
+_COLS = ("as_of_date", "agent", "n_graded", "n_abstain", "n_eff", "brier", "bss",
+         "bss_shrunk", "total_skill", "reliability", "resolution", "ece",
+         "batting", "slugging", "n_signalled", "n_offered", "abstention_rate",
+         "n_distinct_conf", "coverage", "cost_usd", "weight", "narrowed",
+         "inputs_hash", "created_at")
+
+# Same night, changed inputs: replace that night's row. UNIQUE (as_of_date,
+# agent) is what makes this a replacement and not a second row.
+_UPSERT = (f"INSERT INTO weights ({', '.join(_COLS)})"
+           f" VALUES ({', '.join(':' + c for c in _COLS)})"
+           " ON CONFLICT(as_of_date, agent) DO UPDATE SET "
+           + ", ".join(f"{c} = excluded.{c}" for c in _COLS
+                       if c not in ("as_of_date", "agent")))
+
+# Each seat's newest row. §4: "latest row per seat" = MAX(as_of_date) per
+# agent, and the UNIQUE makes it one.
+_LATEST = """
+SELECT w.* FROM weights w
+  JOIN (SELECT agent, MAX(as_of_date) AS d FROM weights GROUP BY agent) m
+    ON m.agent = w.agent AND m.d = w.as_of_date
+"""
+
+
+def _descriptive(value: float | None) -> float | None:
+    """NULL for a value the sample cannot define: Murphy terms under 20
+    calls, batting with no directional call, slugging with no loss (inf),
+    BSS on degenerate outcomes. Python's sqlite3 would bind NaN as NULL
+    anyway; this makes it a decision rather than an accident, and turns inf
+    — which SQLite would store — into the same NULL."""
+    return float(value) if value is not None and math.isfinite(value) else None
+
+
+def _row(score: AgentScore, weight: float, beh: dict, cfg: WeightsConfig,
+         digest: str, as_of_date: str, now_iso: str) -> dict:
+    return {
+        "as_of_date": as_of_date, "agent": score.seat,
+        "n_graded": score.n_graded, "n_abstain": score.n_abstain,
+        "n_eff": score.n_graded / cfg.horizon_days,
+        "brier": score.brier,
+        "bss": _descriptive(score.bss),
+        "bss_shrunk": score.bss_shrunk,
+        "total_skill": score.total_skill,
+        "reliability": _descriptive(score.reliability),
+        "resolution": _descriptive(score.resolution),
+        "ece": _descriptive(score.ece),
+        "batting": _descriptive(score.batting),
+        "slugging": _descriptive(score.slugging),
+        **beh,
+        "weight": weight, "narrowed": 0,
+        "inputs_hash": digest, "created_at": now_iso,
+    }
+
+
+def write_weights(conn: sqlite3.Connection, clock: Clock,
+                  cfg: WeightsConfig) -> dict:
+    """One `weights` row per graded seat for tonight (improvement.md §2.1).
+    Returns {"as_of_date", "written", "unchanged", "skipped"}, each list in
+    seat order, for the job log.
+
+    All-or-nothing: every row is computed before any is written and one
+    commit lands them, so a raise anywhere leaves the table exactly as it
+    was (invariant 7 — no-change) and the caller alerts once. A seat whose
+    load-bearing values are not finite is skipped and named, never written
+    with a placeholder (invariant 4). A seat whose inputs hash to its latest
+    row's hash is unchanged and not rewritten; a changed seat the same night
+    replaces that night's row.
+    """
+    as_of_date = et_run_date(clock.now())
+    now_iso = iso(clock.now())
+    rows = scoreboard_rows(conn)
+    scores, weights = score_agents(rows)
+    dates = window_dates(conn, as_of_date, cfg.window_days)
+    latest = {r["agent"]: r["inputs_hash"] for r in latest_weights(conn)}
+    out = {"as_of_date": as_of_date, "written": [], "unchanged": [], "skipped": []}
+    pending: list[dict] = []
+    try:
+        for score in scores:
+            beh = behaviour(conn, score.seat, dates)
+            seat_rows = [r for r in rows if r["seat"] == score.seat]
+            digest = inputs_hash(seat_rows, beh)
+            if latest.get(score.seat) == digest:
+                out["unchanged"].append(score.seat)
+                continue
+            row = _row(score, weights[score.seat], beh, cfg, digest,
+                       as_of_date, now_iso)
+            if any(not math.isfinite(row[k]) for k in LOAD_BEARING):
+                out["skipped"].append(score.seat)
+                continue
+            pending.append(row)
+        for row in pending:
+            conn.execute(_UPSERT, row)
+            out["written"].append(row["agent"])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return out
+
+
+def latest_weights(conn: sqlite3.Connection,
+                   agent: str | None = None) -> list[dict]:
+    """Every seat's newest row — or one seat's — as plain dicts carrying every
+    `weights` column, in agent order. A NULL descriptive column comes back
+    None. The brief's `weights` section reads this; so does the job, for the
+    no-op check."""
+    sql = _LATEST + (" WHERE w.agent = ?" if agent is not None else "") \
+        + " ORDER BY w.agent"
+    params = (agent,) if agent is not None else ()
+    return [dict(r) for r in conn.execute(sql, params)]
