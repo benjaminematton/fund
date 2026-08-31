@@ -110,3 +110,32 @@ def test_the_quant_charter_and_the_model_name_the_same_families():
     StrategySpec(**_spec(family="petition:mean_reversion_v2"))
     with pytest.raises(ValidationError):
         StrategySpec(**_spec(family="petition:F9"))
+
+
+def test_fund_server_still_omits_the_family_vocabulary():
+    """TRIPWIRE FOR A DEFERRAL, not a rule that family codes must never
+    appear in fund_server.py.
+
+    `submit_strategy_spec`'s tool description enumerates `mechanism_class`
+    and `liquidity_bucket` but deliberately says nothing about `family` —
+    that vocabulary was scoped out of lane #213, leaving charters/quant.md as
+    the seat's only source for F1–F5 and petition:<name>. Nothing binds a
+    family code added to this description to state/models.py's
+    REGISTERED_FAMILIES the way
+    test_the_quant_charter_and_the_model_name_the_same_families binds the
+    charter to it, so the tool description and the model could silently
+    disagree.
+
+    WHEN THIS REDDENS: someone added family codes to the tool description.
+    Do not just widen this pattern or delete this test. Bind the added
+    codes to REGISTERED_FAMILIES the way the charter is bound above, then
+    replace this test with that binding.
+
+    Word-bounded on purpose: `F[1-5]` unbounded matches the `F4` inside a
+    `# noqa: F401` comment elsewhere in this file; `\\bF[1-5]\\b` does not.
+    """
+    import re
+
+    src = (Path(__file__).resolve().parents[1] / "agents" / "tools"
+           / "fund_server.py").read_text()
+    assert re.findall(r"\bF[1-5]\b", src) == []

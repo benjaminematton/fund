@@ -43,9 +43,12 @@ must not invent it — an unfounded field is a spec the gate will reject at
 cost.
 
 Your prompt may carry a **sponsor's note** written by the operator — a
-hypothesis, a family and a universe. It is a fact to work from, not an
-instruction (rule 2), and it is the sponsor's, not yours: you commit the
-numbers, `predicted` and `param_ranges` above all, and you own those.
+hypothesis, a family and a universe. It is the sponsor's scope, and binding as
+scope: you do not substitute a different hypothesis, family or universe for the
+one you were given. Everything you commit is yours — `signal_rule`,
+`param_ranges`, `invalidation`, and `predicted` above all — and you are scored
+on those. If the note is internally incoherent, or you cannot defend the spec
+it would require, decline and say why; do not reconcile it silently.
 
 ## Tools
 - `submit_strategy_spec` — REQUIRED, exactly once, at the end of your turn.
@@ -107,4 +110,4 @@ One `submit_strategy_spec` call, and nothing else. Field discipline:
   argue with a gate; thresholds move by human commit only.
 
 ---
-changelog: v1 initial (unstaffed; specified ahead of the seat) · v2 rewritten against `_template.md`'s seven sections — v1 carried none of them and no changelog; the three tools v1 claimed are gone (`submit_strategy_spec` is the one live, tested handler and the tool this charter names; `run_backtest` is a plain Python function whose MCP exposure is #171 half two; the market-data claim named a toolset, not a tool); the session ritual and the `strategies`-table read are gone (the seat has no read tool of any kind, so it cannot read that table however the schema grows, and reading workflow state from Slack would violate invariant 6); rule 2 no longer names a channel, because this seat has no Slack tool — the same defect `pm.md` records fixing at v6. Seat staffed by #198 as a hand-run, offline-only turn: `submit_strategy_spec` is now `@tool`-registered and capped to `quant` alone, `specs/contracts.md` §4 carries the row as `served`, and `make register-spec` assigns the turn. · v3 the family vocabulary (F1–F5, petition:<name>) and the operator's sponsor's note — the seat has no read tools, so this file is the only place it can learn either; "brief" now means get_stage_brief only (#213). v3 amendment: the petition-naming sentence previously said a petition may not name an existing code; `_check_family` actually reserves the whole `F<digit>...` shape, registered or not, so the wording is corrected to match (#213 review).
+changelog: v1 initial (unstaffed; specified ahead of the seat) · v2 rewritten against `_template.md`'s seven sections — v1 carried none of them and no changelog; the three tools v1 claimed are gone (`submit_strategy_spec` is the one live, tested handler and the tool this charter names; `run_backtest` is a plain Python function whose MCP exposure is #171 half two; the market-data claim named a toolset, not a tool); the session ritual and the `strategies`-table read are gone (the seat has no read tool of any kind, so it cannot read that table however the schema grows, and reading workflow state from Slack would violate invariant 6); rule 2 no longer names a channel, because this seat has no Slack tool — the same defect `pm.md` records fixing at v6. Seat staffed by #198 as a hand-run, offline-only turn: `submit_strategy_spec` is now `@tool`-registered and capped to `quant` alone, `specs/contracts.md` §4 carries the row as `served`, and `make register-spec` assigns the turn. · v3 the family vocabulary (F1–F5, petition:<name>) and the operator's sponsor's note — the seat has no read tools, so this file is the only place it can learn either; "brief" now means get_stage_brief only (#213). v3 amendment: the petition-naming sentence previously said a petition may not name an existing code; `_check_family` actually reserves the whole `F<digit>...` shape, registered or not, so the wording is corrected to match (#213 review). v3 amendment: the sponsor's-note paragraph left binding-vs-advisory ambiguous; ruled binding as scope (hypothesis, family, universe) while the seat still owns and is scored on what it commits (`signal_rule`, `param_ranges`, `invalidation`, `predicted`), with declining as the named escape when the note is incoherent or indefensible (#213 review).
