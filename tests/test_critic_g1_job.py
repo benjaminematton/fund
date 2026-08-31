@@ -225,7 +225,7 @@ def test_the_blocking_alert_counts_everything_still_queued(db):
     count is what tells an operator whether this is one stuck spec or a stalled
     pipeline."""
     for i in range(5):
-        _spec(db, family=f"F{i}", created_at=f"2026-08-20T18:00:{i:02d}+00:00")
+        _spec(db, family=f"F{i + 1}", created_at=f"2026-08-20T18:00:{i:02d}+00:00")
 
     counts = critic_g1.critique_and_log(db, FakeSlack(), SimClock(NIGHTLY),
                                         lambda job: None)
@@ -301,7 +301,7 @@ def test_a_verdict_is_written_once_so_a_re_fire_cannot_double_it(db):
 def test_the_night_is_capped_and_a_silent_cap_is_alerted(db):
     n = critic_g1.MAX_G1_TURNS_PER_NIGHT
     for i in range(n + 2):
-        _spec(db, family=f"F{i}", created_at=f"2026-08-20T18:00:{i:02d}+00:00")
+        _spec(db, family=f"F{i + 1}", created_at=f"2026-08-20T18:00:{i:02d}+00:00")
     ran = []
 
     def _turn(job):
@@ -325,7 +325,7 @@ def test_a_cap_that_exactly_drains_the_queue_raises_no_alert(db):
     """The cap alert must mean "there is a backlog", not "we hit the number"."""
     n = critic_g1.MAX_G1_TURNS_PER_NIGHT
     for i in range(n):
-        _spec(db, family=f"F{i}", created_at=f"2026-08-20T18:00:{i:02d}+00:00")
+        _spec(db, family=f"F{i + 1}", created_at=f"2026-08-20T18:00:{i:02d}+00:00")
 
     counts = critic_g1.critique_and_log(
         db, FakeSlack(), SimClock(NIGHTLY),

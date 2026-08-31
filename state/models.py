@@ -5,10 +5,11 @@ is the G1 one)."""
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 Side = Literal["buy", "sell"]
 Direction = Literal["bullish", "bearish", "neutral"]
@@ -61,6 +62,60 @@ MechanismClass = Literal["behavioral", "institutional", "risk_premium",
 LiquidityBucket = Literal["mega_large", "mid", "small", "micro"]
 SpecVerdict = Literal["clear", "objections"]
 
+REGISTERED_FAMILIES = frozenset({"F1", "F2", "F3", "F4", "F5"})
+# arbitrary but generous: far below the 500-char prose caps (family is not prose),
+# comfortably above petition:<name> (a 9-char prefix + a short snake_case name)
+_FAMILY_MAX = 72
+
+
+def _check_family(v: str) -> str:
+    """`family` is a KEY, and a wrong one is permanent and silent.
+
+    strategy_specs is immutable with no delete path, and state/schema.sql:236
+    denormalizes family onto trial_registry as the family-N denominator behind
+    the deflated-Sharpe correction — so 'F1' and 'mean_reversion' are two
+    families to that counter and the correction under-deflates every trial in
+    the real one, forever.
+
+    THIS IS THE ONLY ENFORCEMENT. schema.sql:142 carries the vocabulary as a
+    COMMENT and no CHECK, and a CHECK could not be added: CREATE TABLE IF NOT
+    EXISTS is a no-op against the droplet's existing table (state/db.py:43-44)
+    and state/migrations.py expresses only ADD COLUMN (:45-51).
+
+    A validator rather than Field(pattern=...) because pydantic's regex engine
+    has NO LOOK-AHEAD (verified: SchemaError at class definition), so the
+    petition-shadowing rule is inexpressible as a pattern — and because a
+    refusal here says WHY, where a pattern mismatch does not.
+    """
+    if v in REGISTERED_FAMILIES:
+        return v
+    if not v.startswith("petition:"):
+        raise ValueError(
+            f"family must be one of {sorted(REGISTERED_FAMILIES)} (specs/"
+            f"strategy.md §3) or 'petition:<name>'; got {v!r}")
+    name = v[len("petition:"):]
+    if not name or name != name.strip():
+        raise ValueError(
+            "a petition needs a non-empty name with no surrounding whitespace")
+    # strategy.md:51 defines a petition as one for a NEW family, so the
+    # `F<digit>` shape is not a petition's to take — registered or not, it is
+    # the reserved family-code namespace and a future registered family would
+    # collide with anything squatting there. Derived from canon, not invented:
+    # nothing else about <name>'s characters is asserted, because nothing else
+    # is specified.
+    if re.fullmatch(r"F\d.*", name):
+        raise ValueError(
+            f"a petition is for a NEW family (specs/strategy.md:51) and may"
+            f" not start with 'F' followed by a digit — that shape is the"
+            f" reserved family-code namespace; got {v!r}")
+    if len(v) > _FAMILY_MAX:
+        raise ValueError(
+            f"family is a key, not prose: at most {_FAMILY_MAX} characters")
+    return v
+
+
+Family = Annotated[str, AfterValidator(_check_family)]
+
 
 class StrategySpec(BaseModel):
     """strategy-contracts.md §2 `strategy_specs`, minus the DB-owned
@@ -77,7 +132,7 @@ class StrategySpec(BaseModel):
     turns those silent acceptances into refusals."""
     model_config = ConfigDict(extra="forbid")
 
-    family: str
+    family: Family
     seat: str
     hypothesis: str = Field(max_length=500)
     mechanism_class: MechanismClass
