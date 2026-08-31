@@ -2,6 +2,7 @@
 
 .PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight dev-status
 .PHONY: staging-day staging-reset eval eval-report critic-g1 critic-gate
+.PHONY: register-spec
 .PHONY: eval-critic-dev eval-critic-holdout
 
 # Bootstrap: plain `make test` works from a clean checkout or a fresh git
@@ -176,10 +177,51 @@ reflect: deps
 # recoverable goes behind the leg whose misses are not.
 # Safe to re-run and cheap to re-run: a spec that already carries a verdict is
 # not selected again, so a re-fire pays only for what is still pending. Costs
-# $0 on a night with an empty queue, which is every night until a
-# submit_strategy_spec producer exists.
+# $0 on a night with an empty queue. Until #198 that was every night; now it is
+# every night nobody ran `make register-spec`, which is a human decision rather
+# than a property of the system.
 critic-g1: deps
 	$(PYTHON) scripts/critic_g1.py
+
+# Hand-run spec registration: ONE `quant` turn that registers ONE strategy spec
+# (issue #198). This is `strategy_specs`'s only producer in the fund's own
+# production database (evals/fixtures.py calls insert_strategy_spec directly,
+# against a fresh eval database, to seed Critic test cases).
+#
+# NEVER on a timer, and deliberately not a fifth systemd leg (CEO ruling B1).
+# specs/strategy.md makes SPEC reachable only through *PM sponsors -> SPEC* and
+# no sponsorship mechanism exists in code, so a scheduled run would enter a
+# lifecycle state by skipping the gate that guards entry to it, every night,
+# forever. The human invocation stands in for the missing sponsorship gate:
+# running this command IS the decision that there should be another spec.
+#
+# TAKES NO ARGUMENT. The seat composes the spec from its charter
+# (charters/quant.md); nothing per-run enters its prompt, so the human chooses
+# WHEN and never WHAT. Changing what gets proposed means editing that charter.
+#
+# One Sonnet turn, $0.75 max_budget_usd backstop (agents/config/quant.yaml).
+# Nothing else picks the spec up until the evening's existing 16:35 critic-g1
+# leg drains it from specs_awaiting_critique — that leg is what turns a
+# registration into a G1 verdict, and this target does not run it.
+#
+# RUN IT AFTER THE CLOSE, and after you have taken that day's audit. Two
+# SANCTIONED outcomes of this job raise a register_spec_wrote_nothing alert:
+# the charter-sanctioned decline ("this family is tapped out") and a duplicate
+# registration. scripts/audit_day.py fails an audited ET day on any non-self
+# alert inside that day's ET window, whenever within the day it was raised, so
+# an audit of today taken after either outcome reports today as FAILED with
+# nothing actually wrong. The 16:35 legs sit behind run_day's own report_audit
+# call; this target has no schedule and no such protection.
+#
+# EXIT CODES ARE A CONTRACT (see the script's module docstring):
+#   0  a spec was registered. Nothing else returns 0.
+#   1  the run happened and produced no spec — a turn that raised, a turn that
+#      wrote nothing, a duplicate, a bad env, any failure inside the guard.
+#   2  the run did not happen because a lock was held. Either run_day's (a
+#      trading day is in progress) or another register_spec's; the log line
+#      says which, the code does not, because the next action is the same.
+register-spec: deps
+	$(PYTHON) scripts/register_spec.py
 
 # The G1 SHIP GATE. Scores a recorded Critic eval run per class: nonzero
 # unless detection >= 8/9 and false alarm <= 1/9, with clean containment and

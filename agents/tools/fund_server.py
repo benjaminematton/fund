@@ -6,11 +6,11 @@ from the server's bound clock and the brief's contents from injected
 providers, never from the agent, so per-run values never enter a prompt.
 
 `specs/contracts.md` §4 is the canonical enumeration and this docstring
-deliberately does not restate it — it named four tools while seven were
-registered, which is what a second list always does. Note the count of
-HANDLERS here is larger than the count of registered tools:
-handle_submit_strategy_spec ships without an `@tool` (§4 row `not served`,
-#198)."""
+deliberately does not restate it — an earlier version named four tools and was
+already three short by the time anyone read it, which is what a second list
+always does. The number of registered tools is not repeated here either: it
+moved again at #198, and a sentence warning that a second count rots has no
+business carrying one."""
 
 from __future__ import annotations
 
@@ -67,6 +67,21 @@ SEAT_CAPS: dict[str, frozenset[str]] = {
     # computed inside the tool, so it has nothing to read and one thing to
     # write.
     "reflect": frozenset({"submit_reflection"}),
+    # Offline only, on the hand-run scripts/register_spec.py job that
+    # `make register-spec` invokes — never in the trading day and never on a
+    # timer. Deliberately NOT in scripts/run_day.py's SEATS: _turn_tools
+    # returns cfg["tools"] verbatim when a caller passes no `tools=`
+    # (agents/seats.py:145-147), and the daily research turn passes none
+    # (scripts/run_day.py:716-719), so a cap on a trading-day seat is a cap
+    # that seat holds at 09:00.
+    #
+    # One cap and no brief — but NOT like reflect in the way that phrasing
+    # used to claim. Reflect is handed its subject in the prompt (its frame,
+    # from a DB row). This seat is handed nothing: register_spec.REGISTER_PROMPT
+    # is a constant and the seat composes the spec from charters/quant.md
+    # alone (🔏 OQ-1, #198). So it has nothing to read AND nothing to be told,
+    # which is the narrowest turn any seat in the fund runs.
+    "quant":   frozenset({"submit_strategy_spec"}),
 }
 
 
@@ -220,8 +235,10 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
                                 args: dict, now_iso: str) -> dict:
     """Validate + INSERT one immutable strategy spec (§3.1).
 
-    The write path is state/specs.py:insert_strategy_spec — one INSERT in
-    the tree, so a spec the fixture builds is a spec production builds.
+    The write path is state/specs.py:insert_strategy_spec — the one write
+    path in the tree (#197: it INSERTs both the `strategy_specs` row and the
+    `strategies` lifecycle row, in one commit), so a spec the fixture builds
+    is a spec production builds.
     Idempotence is not implemented here: the id IS the content hash, so a
     re-register collides on the primary key and is ignored. This handler
     only has to report which of the two happened.
@@ -235,13 +252,15 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
     seats is two specs — correct, since the spec records who committed to the
     prediction.
 
-    NOT REGISTERED AS AN `@tool`, and granted to no seat (CEO ruling G-2(iii),
-    2026-08-29). Nothing drives spec registration yet, so a cap would widen a
-    trading seat's write surface with a tool its charter never mentions and
-    no schedule ever calls. The lane that staffs a driving seat grants the cap
-    beside the charter and the schedule, where all three can be reviewed
-    together; until then `specs/contracts.md` §4 carries the row as
-    `not served` and the `_can` guard below is what stays true when it does.
+    REGISTERED AS AN `@tool` AND GRANTED TO `quant` ALONE (#198). CEO ruling
+    G-2(iii), 2026-08-29, held the cap back until a driving seat existed,
+    because a cap without one widens a trading seat's write surface with a
+    tool its charter never mentions and no schedule ever calls. #198 staffs
+    that seat — charter, cap, config and registration in one commit — and
+    `quant` is deliberately absent from `scripts/run_day.py`'s SEATS, so no
+    trading-day seat carries this write. `specs/contracts.md` §4 carries the
+    row as `served`; the `_can` guard below is what stays true whatever the
+    registration says.
 
     DUPLICATE DETECTION IS A ROW COUNT either side of the INSERT. Honest but
     coarse: it would misreport under a concurrent writer. The fund is
@@ -268,9 +287,13 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
     append_event, ONE commit, which scripts/critic_g1.py:116 states as a fact
     the nightly job relies on. Closing the gap means changing
     insert_strategy_spec's transaction handling, and that is a shared write
-    path (evals/fixtures.py calls it too), so it is out of scope here. Zero
-    impact while nothing drives this tool; it starts to matter when #198 ships
-    a driver.
+    path (evals/fixtures.py calls it too), so it is out of scope here. It USED
+    to be zero impact, because nothing drove this tool. #198 shipped the
+    driver: `make register-spec` runs a quant turn that reaches this handler,
+    so a crash between the two commits now really can strand a registered spec
+    that #research never hears about. scripts/register_spec.py's module
+    docstring names the same gap from the caller's side, and neither of us can
+    close it — the fix is insert_strategy_spec's transaction handling.
     """
     if not _can(seat, "submit_strategy_spec"):
         return {"ok": False,
@@ -732,6 +755,69 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
         # of value CLAUDE.md keeps out of prompts for replay determinism.
         return {"content": [{"type": "text", "text": "reflection recorded"}]}
 
+    @tool("submit_strategy_spec",
+          "Quant researcher only. Register ONE immutable strategy spec —"
+          " the G1 pre-registration. Call it exactly once, at the end of"
+          " your turn; a turn that ends without it registered nothing."
+          " Written once: a spec is never edited and a change is a NEW"
+          " spec. You do not pass your own seat — the fund binds it, because"
+          " attribution is who called, not what was typed. Registering"
+          " identical content twice returns the same id and writes nothing;"
+          " that is a duplicate, not an error. Your `predicted` numbers are"
+          " your calibration record, so commit to them here."
+          " `mechanism_class` is one of behavioral, institutional,"
+          " risk_premium, liquidity_provision. `liquidity_bucket` is one of"
+          " mega_large, mid, small, micro. `hypothesis` and `invalidation`"
+          " are at most 500 characters each; `llm_in_loop` is 0 or 1;"
+          " `search_budget` and `holding_period_d` are at least 1;"
+          " `expected_turnover` is at least 0;"
+          " `capacity_usd` is above zero. `predicted` carries net_sharpe,"
+          " max_dd and hit_rate.",
+          {"type": "object",
+           "properties": {
+             "family":           {"type": "string"},
+             "hypothesis":       {"type": "string"},
+             "mechanism_class":  {"type": "string"},
+             "universe":         {"type": "object"},
+             "liquidity_bucket": {"type": "string"},
+             "signal_rule":      {"type": "object"},
+             "param_ranges":     {"type": "object"},
+             "search_budget":    {"type": "integer"},
+             "holding_period_d": {"type": "integer"},
+             "rebalance":        {"type": "string"},
+             "expected_turnover": {"type": "number"},
+             "exit_rule":        {"type": "string"},
+             "invalidation":     {"type": "string"},
+             "capacity_usd":     {"type": "number"},
+             "predicted":        {"type": "object"},
+             "llm_in_loop":      {"type": "integer"}},
+           "required": ["family", "hypothesis", "mechanism_class", "universe",
+                        "liquidity_bucket", "signal_rule", "param_ranges",
+                        "search_budget", "holding_period_d", "rebalance",
+                        "expected_turnover", "exit_rule", "invalidation",
+                        "capacity_usd", "predicted", "llm_in_loop"],
+           "additionalProperties": False})
+    async def submit_strategy_spec(args):
+        result = handle_submit_strategy_spec(
+            conn_factory(), seat=seat, args=args, now_iso=iso(clock.now()))
+        if not result["ok"]:
+            return {"content": [{"type": "text",
+                                 "text": f"error: {result['error']}"}],
+                    "is_error": True}
+        # The id IS in the message, unlike submit_reflection's, and the
+        # difference is real rather than an inconsistency. reflect withholds a
+        # SURROGATE decision id — a per-run value whose appearance in a
+        # transcript breaks replay (CLAUDE.md). This id is a CONTENT HASH of
+        # the payload the seat just sent, so it is a deterministic function of
+        # the turn's own output and reproduces exactly on replay. It is also
+        # the handle every later G1/G2/G3 post names the spec by, and
+        # `duplicate` is the one fact the seat cannot infer: a re-register
+        # writes nothing, and reporting it as a fresh success would be
+        # fail-open (invariant 4).
+        return {"content": [{"type": "text",
+                             "text": f"spec registered: {result['spec_id']}"
+                                     f" (duplicate: {result['duplicate']})"}]}
+
     # The exec seat deliberately has NO brief: it acts only on open tickets
     # the gate already approved, and widening its read surface widens the
     # only seat that can trade (invariant 2).
@@ -744,7 +830,8 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
                  ("list_open_tickets", list_open_tickets),
                  ("get_spec_brief", get_spec_brief),
                  ("submit_spec_critique", submit_spec_critique),
-                 ("submit_reflection", submit_reflection))
+                 ("submit_reflection", submit_reflection),
+                 ("submit_strategy_spec", submit_strategy_spec))
     if seat not in SEAT_CAPS:
         raise ValueError(
             f"build_fund_server: unrecognized seat {seat!r} — expected one of"

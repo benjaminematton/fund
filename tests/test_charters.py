@@ -1,0 +1,73 @@
+"""charters/*.md conform to charters/_template.md structurally (#198).
+
+NOT a review of what a charter SAYS — agents/seats.py sends these files
+verbatim as system prompts and no test can judge a prompt. What is checkable
+is the shape _template.md:3 already mandates: "exactly these seven sections,
+in this order", a version in the header, and a changelog at the bottom.
+
+THE REQUIRED HEADINGS ARE PARSED OUT OF _template.md, never typed here. A
+second hand-maintained copy of the list is how the template and the charters
+come to disagree with nobody noticing — and it would also let an editor
+"fix" a failure by editing this file. The template is the spec; this reads it.
+
+Red when written, on exactly one file: charters/quant.md shipped with ten
+XML-ish tags instead of the seven sections and no changelog at all. The other
+six charters pass unchanged, which is what makes this a conformance test
+rather than a rewrite of the suite around one file.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from agents.seats import _parse_charter_version
+
+CHARTERS = Path(__file__).resolve().parents[1] / "charters"
+TEMPLATE = CHARTERS / "_template.md"
+
+
+def _headings(text: str) -> list[str]:
+    return [ln.strip() for ln in text.splitlines() if ln.startswith("## ")]
+
+
+REQUIRED = _headings(TEMPLATE.read_text())
+SHIPPED = sorted(p for p in CHARTERS.glob("*.md") if p.name != "_template.md")
+
+
+def test_the_template_still_defines_seven_sections():
+    """The instrument before the measurement. Every assertion below is
+    derived from this list, so a template that stopped carrying seven
+    headings would silently relax all of them to nothing."""
+    assert len(REQUIRED) == 7
+    assert REQUIRED[0] == "## Identity" and REQUIRED[-1] == "## Judgment"
+
+
+def test_there_are_charters_to_check():
+    """An empty glob passes every parametrized test below by vacuum. Pin the
+    population so a moved directory reddens instead of going quiet."""
+    assert len(SHIPPED) >= 7
+
+
+@pytest.mark.parametrize("path", SHIPPED, ids=lambda p: p.name)
+def test_a_charter_carries_the_templates_seven_sections_in_order(path):
+    assert _headings(path.read_text()) == REQUIRED
+
+
+@pytest.mark.parametrize("path", SHIPPED, ids=lambda p: p.name)
+def test_a_charter_carries_a_changelog(path):
+    """_template.md:3: "bump the header on any change and note it in the
+    changelog at the bottom". A charter with no changelog cannot record why
+    a prompt changed, and the prompt is the seat."""
+    assert any(ln.startswith("changelog:")
+               for ln in path.read_text().splitlines())
+
+
+@pytest.mark.parametrize("path", SHIPPED, ids=lambda p: p.name)
+def test_a_charter_header_carries_a_parseable_version(path):
+    """_parse_charter_version returns 'unknown' rather than raising, by
+    design (invariant 4: a formatting slip must not take a day down). That
+    makes an unparseable header SILENT in production — the scoreboard just
+    excludes the seat — so it has to be loud here instead."""
+    assert _parse_charter_version(path.read_text()) != "unknown"

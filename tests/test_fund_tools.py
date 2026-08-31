@@ -305,17 +305,29 @@ def test_tools_by_seat_is_exactly_what_each_seat_owns(fund_db, sim_clock):
     assert _tool_names(fund_db, sim_clock, "exec") == {"list_open_tickets"}
     assert _tool_names(fund_db, sim_clock, "critic") == {
         "get_spec_brief", "submit_spec_critique"}
+    # One cap, and it is a WRITE with no matching read (#198): the quant seat
+    # has no brief. Whatever it is asked to register arrives in its prompt.
+    assert _tool_names(fund_db, sim_clock, "quant") == {"submit_strategy_spec"}
 
 
 def test_an_unrecognized_seat_is_a_hard_stop_not_a_toolless_seat(fund_db,
                                                                  sim_clock):
     """A silently toolless seat is an analyst that never records a signal all
-    day — a full-HOLD day nobody ordered. `quant` is the live near-miss: a
-    real charter (charters/quant.md) with no entry in SEAT_CAPS. This used to
-    use `critic`, which stopped testing anything the day the Critic seat was
-    added."""
+    day — a full-HOLD day nobody ordered.
+
+    THE SENTINEL HAS MOVED TWICE, and both moves were the same defect: the
+    slug got staffed. It was `critic` until the Critic seat shipped; it was
+    `quant` until #198 shipped this one. There is no "real charter, no
+    SEAT_CAPS entry" near-miss left in the repo, so the sentinel is now the
+    other failure this guard actually catches — a TYPO of a real seat name,
+    which is the shape agents/config/*.yaml and scripts/*.py hand to
+    build_fund_server. A typo can never be staffed, so this cannot spring a
+    third time. Do NOT replace it with a seat specs/design.md §2 names as
+    future (Macro, Ops, Bull, Bear, Risk Officer) — that is how the first two
+    happened.
+    """
     with pytest.raises(ValueError, match="unrecognized seat"):
-        _server(fund_db, sim_clock, "quant")
+        _server(fund_db, sim_clock, "quantt")
 
 
 def test_a_refused_call_comes_back_as_is_error_through_the_wrapper(
@@ -470,6 +482,43 @@ def test_submit_spec_critique_wrapper_writes_the_spec_it_is_bound_to(
         call_bound("submit_spec_critique", args))) is False
     assert fund_db.execute(
         "SELECT spec_id FROM strategy_critiques").fetchone()["spec_id"] == sid
+
+
+def test_submit_strategy_spec_wrapper_registers_and_reports_a_duplicate(
+        fund_db, sim_clock):
+    """The wrapper's own contract, which neither the handler tests nor the
+    canon tests reach: it must report `duplicate` back to the seat, because a
+    re-register writes no row and queues no event
+    (agents/tools/fund_server.py's handle_submit_strategy_spec) and reporting
+    it as a fresh success would be fail-open (invariant 4).
+
+    The id IS in the message, unlike submit_reflection's. That is deliberate,
+    not an inconsistency: reflect withholds a SURROGATE decision id, a per-run
+    value whose appearance in a transcript breaks replay (CLAUDE.md); this one
+    is a CONTENT HASH of the payload the seat just sent, so it is a
+    deterministic function of the turn's own output and reproduces exactly on
+    replay. Two calls, one id, one row."""
+    from tests.synthetic import spec_payload
+
+    payload = spec_payload()
+
+    first = _call(fund_db, sim_clock, "quant", "submit_strategy_spec", payload)
+    assert _is_error(first) is False
+    sid = fund_db.execute(
+        "SELECT spec_id, seat FROM strategy_specs").fetchone()
+    assert first.content[0].text == (
+        f"spec registered: {sid['spec_id']} (duplicate: False)")
+    # The seat is bound by the handler, never taken from the payload — and
+    # spec_payload() carries no `seat` key at all to be taken from.
+    assert sid["seat"] == "quant"
+
+    second = _call(fund_db, sim_clock, "quant", "submit_strategy_spec",
+                   payload)
+    assert _is_error(second) is False
+    assert second.content[0].text == (
+        f"spec registered: {sid['spec_id']} (duplicate: True)")
+    assert fund_db.execute(
+        "SELECT count(*) c FROM strategy_specs").fetchone()["c"] == 1
 
 
 def test_build_seat_options_threads_the_bound_spec_to_the_constructed_server(

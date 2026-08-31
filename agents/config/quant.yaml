@@ -1,0 +1,41 @@
+seat: quant
+# Strong tier (specs/design.md:70 seat table). A spec is a falsifiable causal
+# claim plus fourteen fields that have to cohere with it; that is the same
+# class of judgment the PM and the Critic make. Pin exact ids here, never in
+# code.
+model: claude-sonnet-5
+fallback_model: claude-sonnet-5
+max_budget_usd: 0.75
+# One submit_strategy_spec call is the whole turn, and charters/quant.md rule 3
+# says there is "no second chance in the same turn" — so this must NOT fund a
+# retry the charter forbids. 4, matching reflect, which is the other one-call
+# no-brief seat.
+#
+# max_turns IS NOT THE BINDING CONSTRAINT and raising it does not buy time.
+# scripts/run_day.py:133's SEAT_MAX_WALL_S = 240s is a wall-clock ceiling on
+# ONE seat turn, whatever max_turns says, and it cannot be raised either:
+# tests/test_critic_g1_job.py asserts
+# MAX_G1_TURNS_PER_NIGHT * SEAT_MAX_WALL_S <= 0.4 * 30 * 60, which is
+# 3 x 240 = 720 <= 720 — exactly saturated. Any increase to SEAT_MAX_WALL_S
+# reddens that test immediately. max_budget_usd stays the hard cost backstop,
+# and this seat runs only when a human invokes `make register-spec`, so there
+# is no unattended volume behind either number.
+max_turns: 4
+# NO BROKER ACCESS, exactly like reflect. `tools` omits the alpaca glob
+# entirely, which is what actually makes it unavailable — this seat has ONE
+# cap, it is a write, and it has no read tool of any kind, so it has nothing
+# to ask a broker. specs/design.md:70's seat table describes a research seat
+# with market data; this seat's REGISTRATION turn is not that turn, and a
+# standing surface wider than any turn it runs is surface nobody is using.
+#
+# alpaca_toolsets is still required even so: build_seat_options wires the
+# alpaca MCP server unconditionally for every seat, and scripts/run_day.py's
+# run_seat_turn (REQUIRED_SERVERS = {"alpaca", "fund"}) refuses the turn unless
+# BOTH report connected — so a broker outage that has nothing to do with spec
+# registration still stops this seat's turn. That coupling is issue #108, real
+# for every seat, not special-cased here. The narrowest read-only toolset is
+# declared so that an empty value can never be read as "unset, default to all".
+alpaca_toolsets: "stock-data"
+tools: ["mcp__fund__*"]
+disallowed_tools: ["mcp__alpaca__place_*"]   # belt, though tools is the brace
+setting_sources: []

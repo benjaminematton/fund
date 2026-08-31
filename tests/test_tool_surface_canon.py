@@ -39,6 +39,7 @@ from agents.tools.fund_server import SEAT_CAPS
 # Imported, not re-implemented: `_handlers` carries the mcp 1.x/2.x shim for
 # reaching the registered surface, and a second copy of it would rot the day
 # the pin moves — which is precisely the day this test has to still work.
+from tests.synthetic import spec_payload
 from tests.test_fund_tools import _handlers, _is_error, _server
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -61,6 +62,11 @@ ARGS: dict[str, dict] = {
                         "thesis": "t", "invalidation": "i"},
     "submit_spec_critique": {"spec_id": "spec-1", "verdict": "clear"},
     "submit_reflection": {"prose": "p"},
+    # The registration payload, from tests/synthetic.py rather than typed out:
+    # `seat` is bound by the handler and every other §2 field must be present
+    # and valid, or the wrong-seat call below is refused for the wrong reason
+    # and the seat guard is never reached.
+    "submit_strategy_spec": spec_payload(),
 }
 
 
