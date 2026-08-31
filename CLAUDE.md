@@ -88,6 +88,12 @@ A rule is ratified only if `git show origin/master:CLAUDE.md` contains it. This 
 
 A real failure becomes a permanent eval case, written by a human, once. Eligibility and the procedure: `docs/agents/regression-ratchet.md`.
 
+### Dev cycle
+
+`.claude/health.md`, `.claude/standup.md` and `.claude/regions/` feed `morning-standup`
+and `eod-digest`; `/setup-dev-cycle` writes them. A lane's region-journal entry rides in
+its PR.
+
 ## Compact instructions
 
 When compacting, preserve verbatim: the test invariants in the Test invariants section; which plan tasks are complete with commit SHAs; any deviation from `plans/phase-1a.md` / `plans/phase-1b.md` and why. Discard file reads, test output, and exploration traces.
