@@ -68,7 +68,7 @@ def test_the_nightly_unit_runs_its_five_legs_in_the_committed_order():
                                      alert, and because a scoring failure
                                      exits 0 (scripts/weights_day.py) it can
                                      never hold the perishable leg back
-      reflect_day             third: PERISHABLE. reflect_day's _DUE_WHERE
+      reflect_day            fourth: PERISHABLE. reflect_day's _DUE_WHERE
                                      bounds on resolved_at within
                                      REFLECT_LOOKBACK_DAYS=7 and _AGED_OUT_WHERE
                                      alerts on rows that fell below the window
