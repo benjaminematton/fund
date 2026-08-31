@@ -242,8 +242,10 @@ def _weights(conn: sqlite3.Connection, seat: str) -> list[dict]:
     No row in scope is NAMED, not an empty list that reads as "no seats":
     improvement.md §2.1 (ii) — the PM proceeds with equal weights knowing
     why. Stale rows are not this case; they carry their own as_of_date —
-    which is also how a retired seat's last row reads: it stays "latest"
-    for that seat, dated the night it was last graded.
+    but as_of_date dates when the row was COMPUTED, not when the seat was
+    last graded: a seat that has gone quiet still gets a fresh row every
+    night, its skill numbers frozen. The decay tell is falling
+    n_signalled/coverage against a static n_graded, not the date.
 
     Scope follows read_signals rather than a seat NAME: the seat that reads
     every seat's signals is the one aggregating them, and that is the grant
@@ -635,7 +637,8 @@ def build_fund_server(conn_factory: Callable[[], sqlite3.Connection],
           " the rest of your context comes from. You get: cash, positions,"
           " your own recent journal entries, and `weights` — your latest"
           " scoreboard row (skill, calibration, behavioural rates, PM weight;"
-          " `as_of_date` says how fresh it is)."
+          " `as_of_date` is the night it was computed, not last graded —"
+          " watch `n_signalled`/`coverage` for a quiet seat)."
           " The PM also gets today's"
           " analyst signal rows and the gate's allowed-actions snapshot,"
           " {buy, sell} in SHARES per active ticker — that is your sizing"

@@ -15,9 +15,10 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from orchestrator import improve
 from orchestrator.clock import SimClock, iso
 from orchestrator.improve import (WeightsConfig, behaviour, inputs_hash,
-                                  window_dates)
+                                  latest_weights, window_dates, write_weights)
 from state.db import connect
 
 NIGHTLY = datetime(2026, 7, 13, 20, 35, tzinfo=timezone.utc)   # 16:35 ET
@@ -199,10 +200,6 @@ def test_inputs_hash_is_stable_and_sensitive():
 
 
 # --- the job --------------------------------------------------------------
-
-from orchestrator import improve                                   # noqa: E402
-from orchestrator.improve import latest_weights, write_weights     # noqa: E402
-
 
 def _rows(conn):
     return [dict(r) for r in conn.execute(

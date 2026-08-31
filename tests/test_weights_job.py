@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator import improve
 from orchestrator.clock import SimClock
 from orchestrator.improve import WeightsConfig
 from state.db import connect
