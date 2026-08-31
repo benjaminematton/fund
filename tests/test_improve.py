@@ -9,6 +9,7 @@ for the arithmetic.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
@@ -272,13 +273,19 @@ def test_the_next_night_keeps_the_old_row_beside_the_new(conn, clock):
         (AS_OF, "a"), (AS_OF, "b"), ("2026-07-14", "a"), ("2026-07-14", "b")]
 
 
+@pytest.mark.parametrize("field, poison", [("brier", math.nan),
+                                            ("total_skill", math.inf)])
 def test_a_non_finite_load_bearing_value_skips_that_seat_and_names_it(
-        conn, clock, monkeypatch):
-    """improvement.md §2.1 "Two kinds of column": a NaN where the weight or
-    the ranking column should be is no row for that seat, never a placeholder
-    (invariant 4). The other seat is still written."""
-    import math
-
+        conn, clock, monkeypatch, field, poison):
+    """improvement.md §2.1 "Two kinds of column": a non-finite load-bearing
+    value is no row for that seat, never a placeholder (invariant 4). NaN and
+    inf both qualify, and only NaN is backstopped elsewhere — SQLite itself
+    binds it as NULL, which NOT NULL would catch even unguarded. inf binds as
+    a real float and stores silently: none of n_eff/brier/bss_shrunk/
+    total_skill carry a CHECK (only `weight` does), so total_skill — the PM's
+    ranking column — is what gets poisoned for the inf case here, the column
+    with no backstop and the worst consequence. The other seat is still
+    written."""
     from calibration.scoring import AgentScore
 
     _two_seat_history(conn)
@@ -286,7 +293,7 @@ def test_a_non_finite_load_bearing_value_skips_that_seat_and_names_it(
 
     def poisoned(rows):
         scores, weights = real(rows)
-        broken = [AgentScore(**{**vars(s), "brier": math.nan}) if s.seat == "a"
+        broken = [AgentScore(**{**vars(s), field: poison}) if s.seat == "a"
                   else s for s in scores]
         return broken, weights
     monkeypatch.setattr(improve, "score_agents", poisoned)
@@ -312,6 +319,43 @@ def test_a_raise_mid_job_writes_no_row_at_all(conn, clock, monkeypatch):
     with pytest.raises(sqlite3.OperationalError):
         write_weights(conn, clock, CFG)
     assert _rows(conn) == []
+
+
+def test_a_raise_mid_write_loop_rolls_back_and_writes_no_row_at_all(
+        tmp_path, clock):
+    """The test above raises during compute, before any INSERT runs. A raise
+    can also land in the write loop, with a row already staged in the open
+    transaction — that is what `conn.rollback()` in write_weights' except
+    clause is actually for. Without it, the pending row survives the raise
+    (a connection reads its own uncommitted writes) and a later commit on
+    this same connection would land a one-seat scoreboard: exactly the
+    partial write invariant 4 forbids. `in_transaction is False` is the
+    assertion that tells a real rollback apart from a table that merely
+    never got written to.
+
+    A plain sqlite3.Connection subclass stands in for a disk-I/O failure on
+    the second seat's INSERT, since monkeypatching a function (as above)
+    can't land the raise inside the write loop itself."""
+    class _BoomOnSecondInsert(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if sql.startswith("INSERT INTO weights"):
+                self._n = getattr(self, "_n", 0) + 1
+                if self._n == 2:
+                    raise sqlite3.OperationalError("disk I/O error")
+            return super().execute(sql, parameters)
+
+    db_path = tmp_path / "fund.sqlite"
+    seed = connect(db_path)
+    _two_seat_history(seed)
+    seed.close()
+    conn = sqlite3.connect(str(db_path), factory=_BoomOnSecondInsert)
+    conn.row_factory = sqlite3.Row
+
+    with pytest.raises(sqlite3.OperationalError):
+        write_weights(conn, clock, CFG)
+
+    assert _rows(conn) == []
+    assert conn.in_transaction is False
 
 
 def test_no_graded_seat_writes_nothing_and_says_so(conn, clock):
