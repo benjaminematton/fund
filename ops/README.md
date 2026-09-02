@@ -30,7 +30,7 @@ journal: `journalctl -u fund-daily`.
 | unit | fires | runs |
 |---|---|---|
 | `fund-daily.timer` | 09:35 ET Mon–Fri | `scripts/run_day.py` |
-| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py`, then `scripts/reflect_day.py`, then `scripts/critic_g1.py` |
+| `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py`, then `scripts/weights_day.py`, then `scripts/reflect_day.py`, then `scripts/critic_g1.py` |
 | `fund-backup.timer` | 17:30 ET daily | `ops/backup.sh` |
 | `fund-alert@.service` | on any of the above failing | `ops/notify_failure.sh` |
 
@@ -44,7 +44,7 @@ Four things about these are deliberate and should not be "tidied":
 - **No `Restart=` anywhere.** Invariant 4's default is HOLD. A failed day waits
   for a human; it does not retry itself.
 - **The nightly unit's leg order is behaviour, not formatting.** `Type=oneshot`
-  shares one `TimeoutStartSec` across all four legs, so the last leg is the one
+  shares one `TimeoutStartSec` across all five legs, so the last leg is the one
   the guillotine lands on. `critic_g1.py` is last **because its misses are
   recoverable**: `specs_awaiting_critique` has no date bound, so a spec skipped
   tonight is re-selected every future night. `reflect_day.py` is ahead of it
@@ -150,12 +150,12 @@ projection event on purpose, because `drain` posts every unposted row and one
 event per reflection would mean one Slack message per resolved decision, every
 night. `SLACK_BOT_TOKEN` is needed only to drain this job's own alerts (a
 failed turn, a wrote-nothing rollup, a capped backlog, an aged-out decision).
-It is the third leg of `fund-pnl.timer`, so a missing key does not block P&L or
-resolution posts — only this job's own alerting. It runs behind the arithmetic
-legs deliberately for this reason. It is no longer the *last* leg:
-`scripts/critic_g1.py` (issue #169) runs fourth, and needs the same two keys
-for the same reasons. Both LLM-spending legs sit behind both arithmetic ones;
-`ops/fund-pnl.service` explains the order between the two of them.
+It is the fourth leg of `fund-pnl.timer`, so a missing key does not block P&L
+or resolution posts — only this job's own alerting. It runs behind the
+arithmetic legs deliberately for this reason. It is no longer the *last* leg:
+`scripts/critic_g1.py` (issue #169) runs fifth, and needs the same two keys
+for the same reasons. Both LLM-spending legs sit behind all three arithmetic
+ones; `ops/fund-pnl.service` explains the order between the two of them.
 
 `/etc/fund/env` also carries the heartbeat target, which is why the units can
 stay free of any hardcoded monitoring URL:
@@ -618,8 +618,8 @@ journalctl -u fund-daily -n 100 --no-pager     # the day's log
 journalctl -u fund-daily --since "09:30"       # this morning
 systemctl list-timers 'fund-*' --no-pager      # when does it next fire
 systemctl --failed                             # anything broken
-systemctl start fund-pnl.service               # P&L + resolutions + reflections + G1 by hand
-journalctl -u fund-pnl -n 200 --no-pager       # what the four nightly legs did
+systemctl start fund-pnl.service               # P&L + resolutions + weights + reflections + G1 by hand
+journalctl -u fund-pnl -n 200 --no-pager       # what the five nightly legs did
 ls -la /var/lib/fund/backups/                  # snapshots
 ```
 

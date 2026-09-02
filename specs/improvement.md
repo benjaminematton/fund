@@ -12,9 +12,10 @@ Derived history — the reasoning and evidence behind this file, snapshotted and
 `research/field-brief-self-improving-agents.md` (2026-08-30),
 `docs/superpowers/specs/2026-08-30-species-two-reframe.md`. `VISION.md` says what this is for.
 
-**Tables and tool schemas here are canonical for the improvement loop.** They are not yet parsed
-by `tests/test_schema_contract.py` or `tests/test_tool_surface_canon.py`; §8 says which lane adds
-this file to each parsed set.
+**Tables and tool schemas here are canonical for the improvement loop.** §4 is parsed by
+`tests/test_schema_contract.py` (lane (a), 2026-08-30; `lessons` and `proposals` sit in
+`NO_SCHEMA_HOME` until their lanes land). §5 is not yet parsed by
+`tests/test_tool_surface_canon.py`; §8 says which lane adds it.
 
 ---
 
@@ -95,16 +96,36 @@ set — because the active set otherwise lives only in `run_pre_gate`'s return v
 job could see it. The evaluator's DiD windows (§3.3) are in graded calls and are computed from
 `signals`/`resolutions` directly, not from `weights` rows.
 
+**`n_signalled` counts rows the seat wrote.** `run_research` writes a neutral/0 row with
+`charter_version = 'none'` for every `(seat, ticker)` a silent seat left uncovered, so a count
+of every `signals` row would make `coverage` 1.0 by construction and the §3.3 default dead.
+`n_signalled`, the window abstention count behind `abstention_rate`, and `n_distinct_conf`
+are all over rows with `charter_version <> 'none'`. A seat that never spoke in the window has
+`n_signalled = 0`, `abstention_rate = 0.0`, `coverage = 0.0`.
+
+**Two kinds of column.** Load-bearing — `n_eff`, `brier`, `bss_shrunk`, `total_skill`,
+`weight` — are `NOT NULL`; a non-finite value there skips that seat's row for the night, names
+the seat in one alert, and writes the other seats. Descriptive — `bss`, `reliability`,
+`resolution`, `ece`, `batting`, `slugging` — store `NULL` where the sample cannot define them
+(calibration §1: Murphy terms need ≥20 calls; batting needs a directional call; slugging needs
+a loss; BSS is undefined on degenerate outcomes, calibration §5), because a placeholder number
+would be read as a measurement. A re-run on unchanged inputs writes nothing (`inputs_hash`
+equals the seat's latest row); a re-run the same night on changed inputs replaces that night's
+row (`UNIQUE (as_of_date, agent)`).
+
 **Briefs read it as data.** `get_stage_brief` gains a `weights` section (contracts §4 field
 matrix): the PM receives the latest row for every analyst seat; each analyst receives **its own
 latest row only** — calibration §6's "seeing your own calibration is the cheapest charter tune-up"
 — and never another seat's. Ops projects the scoreboard weekly to `#pnl` (calibration §6).
 
-**Failure, two cases, not one.** (i) Job crash or NaN: no row is written, the last good rows
-stand, the brief carries them with their `as_of_date` so the PM can see they are stale, one
-alert. (ii) No rows at all — the table is empty or absent: the section is named in `unavailable`
-and the PM proceeds with equal weights. Calibration §5's "never silently reset to equal" holds
-because (i) never resets and (ii) is named, not silent.
+**Failure, three cases.** (i) Job crash: no row is written for any seat (one transaction), the
+last good rows stand, the brief carries them with their `as_of_date` so the PM can see they are
+stale, one alert. (ii) A non-finite load-bearing value for one seat: that seat's row is skipped
+and the seat named in one alert; every other seat's row is written; a NULL in a descriptive
+column is not this case (see "Two kinds of column"). (iii) No rows at all — the table is empty
+or absent: the section is named in `unavailable` and the PM proceeds with equal weights.
+Calibration §5's "never silently reset to equal" holds because (i) and (ii) never reset and
+(iii) is named, not silent.
 
 ### 2.2 S4 — allocation and kill rules
 
@@ -218,7 +239,8 @@ never assumed.
 
 Three metrics are in every proposal's `at_risk` set by default, named or not, band 0.10:
 **`abstention_rate`**, **`n_distinct_conf`** (confidence granularity), and **`coverage`**
-(`n_signalled ÷ n_offered`, from the `offered` rows the pre-gate stage writes). They are the cheapest
+(seat-written signals on offered `(run_date, ticker)` pairs ÷ `n_offered`, from the `offered`
+rows the pre-gate stage writes). They are the cheapest
 levers an instruction change can pull to flatter a Brier-based score.
 
 **The Proposer is graded, not the proposal.** No single proposal meets a significance bar at the
@@ -279,19 +301,19 @@ CREATE TABLE weights (                         -- the scoreboard: one row per se
   n_abstain     INTEGER NOT NULL,
   n_eff         REAL NOT NULL,                -- n_graded / horizon_days (§2.1)
   brier         REAL NOT NULL,
-  bss           REAL NOT NULL,
+  bss           REAL,                        -- NULL: undefined on degenerate outcomes (§2.1)
   bss_shrunk    REAL NOT NULL,
   total_skill   REAL NOT NULL,                -- bss_shrunk * n_graded (the ranking column)
-  reliability   REAL NOT NULL,
-  resolution    REAL NOT NULL,
-  ece           REAL NOT NULL,                -- descriptive only, never in the weight
-  batting       REAL NOT NULL,
-  slugging      REAL NOT NULL,
-  n_signalled   INTEGER NOT NULL,             -- signals rows (any direction) in the window
+  reliability   REAL,                        -- NULL under 20 graded calls (§2.1)
+  resolution    REAL,
+  ece           REAL,                        -- descriptive only, never in the weight
+  batting       REAL,                        -- NULL with no directional call
+  slugging      REAL,                        -- NULL with no directional call or no loss
+  n_signalled   INTEGER NOT NULL,             -- signals rows the seat wrote (charter_version <> 'none') in the window
   n_offered     INTEGER NOT NULL,             -- offered rows in the window (§2.1)
   abstention_rate REAL NOT NULL,              -- n_abstain / n_signalled over the window
   n_distinct_conf INTEGER NOT NULL,           -- confidence granularity over the window
-  coverage      REAL NOT NULL,                -- n_signalled / n_offered over the window
+  coverage      REAL NOT NULL,                -- seat-written signals on offered (run_date, ticker) pairs / n_offered, over the window
   cost_usd      REAL NOT NULL,                -- costs.usd_estimate summed over the window (est.)
   weight        REAL NOT NULL CHECK (weight >= 0 AND weight <= 1),
   narrowed      INTEGER NOT NULL DEFAULT 0,   -- §2.3: floor released
@@ -464,7 +486,8 @@ never UPSERTed; one event is appended.
 
 | Failure | Behavior |
 |---|---|
-| Scoring job crash or NaN | no row; last good `weights` rows stand and the brief carries them with their `as_of_date`; one alert |
+| Scoring job crash | no row for any seat (one transaction); last good `weights` rows stand and the brief carries them with their `as_of_date`; one alert |
+| Non-finite load-bearing value for a seat | that seat's row skipped and named in one alert; the other seats' rows written; descriptive NULLs are not this case (§2.1) |
 | `weights` empty or absent | brief names `weights` in `unavailable`; PM proceeds with equal weights (named, not silent) |
 | Distill seat silent, malformed, or over cap | previous lessons file stands byte-identical; alert |
 | Proposer silent | no row, no PR; the month records `no_proposal`; nothing else |

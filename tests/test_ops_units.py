@@ -53,14 +53,22 @@ def test_no_restart_directive():
     assert not any(l.startswith("Restart=") for l in directives), directives
 
 
-def test_the_nightly_unit_runs_its_four_legs_in_the_committed_order():
+def test_the_nightly_unit_runs_its_five_legs_in_the_committed_order():
     """Type=oneshot runs ExecStart lines IN ORDER and stops at the first one
     that exits nonzero, so this order is behaviour, not formatting. Until
     2026-08-28 no test read this file at all.
 
       close_pnl, resolve_day  first: arithmetic, no LLM budget, and nothing is
                                      reflectable until resolutions exist
-      reflect_day             third: PERISHABLE. reflect_day's _DUE_WHERE
+      weights_day             third: arithmetic, no LLM budget, no token, and
+                                     IMPERISHABLE — an unchanged night hashes
+                                     to its latest row and a missed night is
+                                     recomputed identically the next. Ahead of
+                                     reflect so reflect's drain posts its
+                                     alert, and because a scoring failure
+                                     exits 0 (scripts/weights_day.py) it can
+                                     never hold the perishable leg back
+      reflect_day            fourth: PERISHABLE. reflect_day's _DUE_WHERE
                                      bounds on resolved_at within
                                      REFLECT_LOOKBACK_DAYS=7 and _AGED_OUT_WHERE
                                      alerts on rows that fell below the window
@@ -81,7 +89,8 @@ def test_the_nightly_unit_runs_its_four_legs_in_the_committed_order():
     fires on an overrun, a nonzero exit, or the guillotine.
     """
     assert [Path(cmd.split()[-1]).name for cmd in _exec_starts(PNL)] == [
-        "close_pnl.py", "resolve_day.py", "reflect_day.py", "critic_g1.py"]
+        "close_pnl.py", "resolve_day.py", "weights_day.py", "reflect_day.py",
+        "critic_g1.py"]
 
 
 def test_the_nightly_unit_still_bounds_and_alerts_itself():

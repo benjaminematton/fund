@@ -129,10 +129,34 @@ def test_brief_is_refused_to_seats_without_the_capability(fund_db, seat):
     assert "brief" not in result
 
 
+# --- the weights section (specs/improvement.md §2.1) --------------------------
+
+_WEIGHTS_COLS = ("as_of_date", "agent", "n_graded", "n_abstain", "n_eff", "brier",
+                 "bss", "bss_shrunk", "total_skill", "reliability", "resolution",
+                 "ece", "batting", "slugging", "n_signalled", "n_offered",
+                 "abstention_rate", "n_distinct_conf", "coverage", "cost_usd",
+                 "weight", "narrowed", "inputs_hash", "created_at")
+
+
+def _weights_row(conn, agent, as_of, weight=0.5):
+    """A minimal scoreboard row, written directly: this file tests the READ."""
+    vals = dict(as_of_date=as_of, agent=agent, n_graded=60, n_abstain=0,
+                n_eff=12.0, brier=0.04, bss=0.84, bss_shrunk=0.7,
+                total_skill=42.0, reliability=None, resolution=None, ece=None,
+                batting=1.0, slugging=None, n_signalled=20, n_offered=20,
+                abstention_rate=0.0, n_distinct_conf=1, coverage=1.0,
+                cost_usd=1.0, weight=weight, narrowed=0,
+                inputs_hash=f"h-{agent}-{as_of}", created_at=f"{as_of}T20:35:00+00:00")
+    conn.execute(f"INSERT INTO weights ({', '.join(_WEIGHTS_COLS)}) VALUES"
+                 f" ({', '.join(':' + c for c in _WEIGHTS_COLS)})", vals)
+    conn.commit()
+
+
 def test_analyst_brief_is_the_book_and_its_own_journal(tmp_path, fund_db):
     """Seat-scoped by construction: the analyst gets account context, never
     the PM's signal table or the gate's sizing budget."""
     append_entry(tmp_path, "analyst", "2026-07-02", "signals: NVDA bullish (61/100)")
+    _weights_row(fund_db, "analyst", "2026-07-03")
     brief = _brief(fund_db, seat="analyst", journals_root=tmp_path)
     assert (brief["run_date"], brief["seat"]) == (RUN, "analyst")
     assert (brief["cash"], brief["positions"]) == (30000.0, {"MSFT": 40})
@@ -144,6 +168,7 @@ def test_analyst_brief_is_the_book_and_its_own_journal(tmp_path, fund_db):
 def test_pm_brief_adds_todays_signals_and_the_gate_budget(tmp_path, fund_db,
                                                           sim_clock):
     _sig(fund_db, sim_clock, summary="capex re-accelerating")
+    _weights_row(fund_db, "analyst", "2026-07-03")
     brief = _brief(fund_db, journals_root=tmp_path)
     assert brief["signals"] == [{"agent": "analyst", "ticker": "NVDA",
                                  "direction": "bullish", "confidence": 72,
@@ -193,7 +218,47 @@ def test_unbound_providers_are_named_not_faked(fund_db):
     brief = _brief(fund_db, snapshot=None)
     assert brief["allowed_actions"] == {} and brief["journal"] == ""
     assert [m.split(" (")[0] for m in brief["unavailable"]] == [
-        "account snapshot", "journal", "allowed actions"]
+        "account snapshot", "journal", "weights", "allowed actions"]
+
+
+def test_pm_brief_carries_every_seats_latest_weights_row(fund_db, tmp_path):
+    _weights_row(fund_db, "analyst", "2026-07-02", weight=0.4)
+    _weights_row(fund_db, "analyst", "2026-07-03", weight=0.6)
+    _weights_row(fund_db, "news", "2026-07-03", weight=0.4)
+    brief = _brief(fund_db, journals_root=tmp_path)
+    assert [(w["agent"], w["as_of_date"], w["weight"]) for w in brief["weights"]] == [
+        ("analyst", "2026-07-03", 0.6), ("news", "2026-07-03", 0.4)]
+    assert set(brief["weights"][0]) == set(_WEIGHTS_COLS) | {"id"}
+    assert brief["weights"][0]["slugging"] is None             # NULL, not 0
+    assert brief["unavailable"] == []
+
+
+def test_analyst_brief_carries_its_own_row_and_no_other_seats(fund_db, tmp_path):
+    """calibration.md §6: seeing your own calibration is the cheapest charter
+    tune-up; another seat's is not yours to see (improvement.md §2.1)."""
+    _weights_row(fund_db, "analyst", "2026-07-03", weight=0.6)
+    _weights_row(fund_db, "news", "2026-07-03", weight=0.4)
+    for seat in ("analyst", "news"):
+        brief = _brief(fund_db, seat=seat, journals_root=tmp_path)
+        assert [w["agent"] for w in brief["weights"]] == [seat]
+        assert brief["unavailable"] == []
+
+
+def test_an_empty_weights_table_is_named_unavailable_not_faked(fund_db, tmp_path):
+    """improvement.md §2.1 case (ii): no rows at all is named, so the PM
+    proceeds with equal weights knowingly. Case (i) — a crashed job with rows
+    present — is the test above: the stale rows are carried with their
+    as_of_date and nothing lands in `unavailable`."""
+    brief = _brief(fund_db, journals_root=tmp_path)
+    assert brief["weights"] == []
+    assert brief["unavailable"] == ["weights (LookupError: no weights rows yet)"]
+
+
+def test_a_seat_with_no_row_of_its_own_is_named_unavailable(fund_db, tmp_path):
+    _weights_row(fund_db, "analyst", "2026-07-03")
+    brief = _brief(fund_db, seat="news", journals_root=tmp_path)
+    assert brief["weights"] == []
+    assert brief["unavailable"] == ["weights (LookupError: no weights rows yet)"]
 
 
 def test_brief_writes_nothing(fund_db, sim_clock):

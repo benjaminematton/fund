@@ -122,25 +122,37 @@ def run_pre_gate(ctx: StageCtx) -> list[str]:
 
 
 def _pre_gate_stage(ctx: StageCtx) -> list[str]:
-    """The pre_gate stage body: run_pre_gate's pure computation, plus one
-    alert per ticker dropped because BOTH shapes came back gate_error — a
-    malformed/NaN feed, not the legitimate no_headroom/nothing_held skip,
-    which must stay silent (review Important 5). Only called from inside
-    run_stage, never from run_day's pure recompute-on-done branch, so a
-    resumed day never re-posts these alerts."""
+    """The pre_gate stage body: run_pre_gate's pure computation, plus two
+    writes. One alert per ticker dropped because BOTH shapes came back
+    gate_error — a malformed/NaN feed, not the legitimate no_headroom/
+    nothing_held skip, which must stay silent (review Important 5). And one
+    `offered` row per surviving ticker (specs/improvement.md §2.1): the
+    active set otherwise lives only in this function's return value, and the
+    nightly scoring job needs it as the denominator of coverage. INSERT OR
+    IGNORE, so a crash-resume that re-runs this body writes each row once.
+    One residual: scripts/run_day.py rebuilds market_inputs live per fire,
+    so a resume can DROP a ticker the first attempt offered — its row stays,
+    that day's n_offered over-counts by one, and the tell is an offered row
+    with no signals under it. Accepted: one day, visible, and the honest
+    record of what the desks were asked. Only called from inside run_stage,
+    never from run_day's pure recompute-on-done branch, so a resumed day
+    never re-posts these alerts and run_pre_gate stays write-free."""
     active: list[str] = []
-    now = None
+    now = iso(ctx.clock.now())
     for ticker, inputs in ctx.market_inputs.items():
         results = [_sized(inputs, side, "advisory") for side in ("buy", "sell")]
         if any(isinstance(r, Approved) for r in results):
             active.append(ticker)
         elif all(isinstance(r, Rejected) and r.reason == "gate_error" for r in results):
-            if now is None:
-                now = iso(ctx.clock.now())
             append_alert(ctx.conn, "gate_error",
                          f"gate_error {ticker} — dropped from"
                          " today's universe (malformed feed)",
                          now_iso=now, ticker=ticker)
+    for ticker in active:
+        ctx.conn.execute(
+            "INSERT OR IGNORE INTO offered (run_date, ticker, created_at)"
+            " VALUES (?, ?, ?)", (ctx.run_date, ticker, now))
+    ctx.conn.commit()
     return active
 
 

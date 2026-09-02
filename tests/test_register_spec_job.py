@@ -296,7 +296,7 @@ def test_the_job_never_registers_a_spec_of_its_own(db):
 
 
 def test_a_failure_inside_the_body_is_alerted_and_exits_nonzero(db):
-    """No systemd unit stands behind this job (CEO ruling B1: no fifth leg),
+    """No systemd unit stands behind this job (CEO ruling B1: hand-run, not a systemd leg),
     so unlike critic_g1 there is no OnFailure= to carry a failure out of the
     box. The drained alert and the nonzero exit are the whole report."""
     def _body():

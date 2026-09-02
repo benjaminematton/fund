@@ -6,9 +6,10 @@ from datetime import timedelta
 import pytest
 
 from orchestrator.clock import iso
-from orchestrator.daily import (StageCtx, allowed_actions, run_close, run_day,
-                                run_decision, run_execution, run_gate,
-                                run_pre_gate, run_research)
+from orchestrator.daily import (StageCtx, _pre_gate_stage, allowed_actions,
+                                run_close, run_day, run_decision,
+                                run_execution, run_gate, run_pre_gate,
+                                run_research, run_stage)
 from slackkit.fake import FakeSlack
 from slackkit.outbox import append_event
 
@@ -84,6 +85,43 @@ def test_pre_gate_drops_garbage_inputs(fund_db, sim_clock):
     """NaN vol -> gate_error on both shapes -> dropped, never a crash."""
     market = {"NVDA": _nvda_inputs(vol_60d=float("nan"))}
     assert run_pre_gate(_ctx(fund_db, sim_clock, market)) == []
+
+
+def _offered(conn):
+    return [(r["run_date"], r["ticker"], r["created_at"]) for r in conn.execute(
+        "SELECT run_date, ticker, created_at FROM offered ORDER BY ticker")]
+
+
+def test_pre_gate_stage_records_the_offered_set(fund_db, sim_clock):
+    """specs/improvement.md §2.1: the active set otherwise lives only in
+    run_pre_gate's return value, and no night job could see it. One row per
+    surviving ticker; the {buy:0, sell:0} ticker is absent, not present."""
+    market = {"NVDA": _nvda_inputs(),
+              "AAPL": _nvda_inputs(ticker="AAPL", cash=0.0, held_qty=0),
+              "MSFT": _nvda_inputs(ticker="MSFT", cash=0.0, held_qty=40)}
+    ctx = _ctx(fund_db, sim_clock, market)
+
+    active = run_stage(ctx, "pre_gate", lambda: _pre_gate_stage(ctx))
+
+    assert active == ["NVDA", "MSFT"]
+    now = iso(sim_clock.now())
+    assert _offered(fund_db) == [(RUN, "MSFT", now), (RUN, "NVDA", now)]
+
+
+def test_pre_gate_offered_write_is_idempotent_on_resume(fund_db, sim_clock):
+    """run_stage re-runs a 'running' body on crash-resume. Two runs, one row."""
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    _pre_gate_stage(ctx)
+    _pre_gate_stage(ctx)
+    assert len(_offered(fund_db)) == 1
+
+
+def test_pre_gate_recompute_on_a_done_stage_writes_nothing(fund_db, sim_clock):
+    """run_day's `done` branch recomputes the active set through run_pre_gate,
+    which stays pure: the rows were written by the first run."""
+    ctx = _ctx(fund_db, sim_clock, {"NVDA": _nvda_inputs()})
+    assert run_pre_gate(ctx) == ["NVDA"]
+    assert _offered(fund_db) == []
 
 
 # --- allowed-actions snapshot (the PM's sizing budget) ----------------------

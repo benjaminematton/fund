@@ -287,3 +287,59 @@ CREATE TABLE IF NOT EXISTS protection (
   created_at        TEXT NOT NULL,
   UNIQUE (alpaca_order_id, observed_at)
 );
+
+-- The pre-gate's active set, persisted (specs/improvement.md §2.1, §4 —
+-- canonical, do not add fields here). Written by orchestrator/daily.py's
+-- _pre_gate_stage for every ticker that survives the {buy:0, sell:0} drop:
+-- the only durable record of what the desks were asked to look at, and the
+-- denominator of weights.coverage. Not a workflow table: no status.
+--
+-- IF NOT EXISTS is load-bearing here and not style: state/db.py:12 matches
+-- that exact string to build _TABLES. §4 spells it CREATE TABLE, per its own
+-- convention; the two are the same table.
+CREATE TABLE IF NOT EXISTS offered (
+  run_date      TEXT NOT NULL,
+  ticker        TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  PRIMARY KEY (run_date, ticker)
+);
+
+-- The scoreboard: one row per graded seat per night (specs/improvement.md
+-- §2.1, §4 — canonical, do not add fields here). Written only by
+-- orchestrator/improve.py's write_weights; read by the stage brief's
+-- `weights` section. "Latest row per seat" = MAX(as_of_date) per agent; the
+-- UNIQUE makes it one row. Nullable columns are the descriptive terms the
+-- sample cannot always define (§2.1 "Two kinds of column").
+--
+-- The `weight` CHECK below is safe only because this table is new: CREATE
+-- TABLE IF NOT EXISTS is a no-op against a table that already exists, and
+-- state/migrations.py can only express ALTER TABLE ... ADD COLUMN, not the
+-- rebuild SQLite needs to add a CHECK to an existing table — see issue #154.
+CREATE TABLE IF NOT EXISTS weights (
+  id            INTEGER PRIMARY KEY,
+  as_of_date    TEXT NOT NULL,                -- scoreboard date (ET)
+  agent         TEXT NOT NULL,
+  n_graded      INTEGER NOT NULL,
+  n_abstain     INTEGER NOT NULL,
+  n_eff         REAL NOT NULL,                -- n_graded / horizon_days (§2.1)
+  brier         REAL NOT NULL,
+  bss           REAL,                        -- NULL: undefined on degenerate outcomes (§2.1)
+  bss_shrunk    REAL NOT NULL,
+  total_skill   REAL NOT NULL,                -- bss_shrunk * n_graded (the ranking column)
+  reliability   REAL,                        -- NULL under 20 graded calls (§2.1)
+  resolution    REAL,
+  ece           REAL,                        -- descriptive only, never in the weight
+  batting       REAL,                        -- NULL with no directional call
+  slugging      REAL,                        -- NULL with no directional call or no loss
+  n_signalled   INTEGER NOT NULL,             -- signals rows the seat wrote (charter_version <> 'none') in the window
+  n_offered     INTEGER NOT NULL,             -- offered rows in the window (§2.1)
+  abstention_rate REAL NOT NULL,              -- n_abstain / n_signalled over the window
+  n_distinct_conf INTEGER NOT NULL,           -- confidence granularity over the window
+  coverage      REAL NOT NULL,                -- seat-written signals on offered (run_date, ticker) pairs / n_offered, over the window
+  cost_usd      REAL NOT NULL,                -- costs.usd_estimate summed over the window (est.)
+  weight        REAL NOT NULL CHECK (weight >= 0 AND weight <= 1),
+  narrowed      INTEGER NOT NULL DEFAULT 0,   -- §2.3: floor released
+  inputs_hash   TEXT NOT NULL,                -- hash of the graded rows that produced this row
+  created_at    TEXT NOT NULL,
+  UNIQUE (as_of_date, agent)
+);

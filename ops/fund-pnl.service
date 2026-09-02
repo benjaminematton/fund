@@ -1,5 +1,5 @@
 [Unit]
-Description=fund — post-close jobs (P&L $ and %% vs SPY; nightly resolutions; G1 critiques; reflections)
+Description=fund — post-close jobs (P&L $ and %% vs SPY; nightly resolutions; G1 critiques; reflections; scoreboard weights)
 Documentation=file:///opt/fund/ops/README.md
 OnFailure=fund-alert@%n.service
 
@@ -24,14 +24,23 @@ ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/close_pnl.py
 # resolutions write — acceptable, since both are retried on the next fire and
 # resolve_day selects only what is still outstanding.
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/resolve_day.py
-# Third: the reflection turns. Runs only if both legs above succeeded, which is
-# correct — if nothing resolved, nothing is reflectable. It is ahead of the G1
-# leg deliberately, and the reason is PERISHABILITY: reflect_day selects on
-# resolved_at inside a REFLECT_LOOKBACK_DAYS=7 window and its _AGED_OUT_WHERE
-# exists to alert on rows that fell below that window and will NEVER be
-# written. A reflection this unit fails to buy for seven nights is destroyed.
+# Third: the nightly scoring job (specs/improvement.md §2.1) — graded signals
+# into the `weights` table the morning brief reads. Arithmetic only: no LLM,
+# no Slack token, no broker. It needs tonight's resolutions, so it follows
+# resolve_day; it precedes reflect_day so that leg's drain posts any alert it
+# appended, and because it is IMPERISHABLE where reflect is not — a scoring
+# failure exits 0 by design (see the script's docstring) so it can never
+# hold back the leg that cannot be retried.
+ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/weights_day.py
+# Fourth: the reflection turns. Runs only if all three legs above succeeded,
+# which is correct — if nothing resolved, nothing is reflectable. It is
+# ahead of the G1 leg deliberately, and the reason is PERISHABILITY:
+# reflect_day selects on resolved_at inside a REFLECT_LOOKBACK_DAYS=7
+# window and its _AGED_OUT_WHERE exists to alert on rows that fell below
+# that window and will NEVER be written. A reflection this unit fails to
+# buy for seven nights is destroyed.
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/reflect_day.py
-# Fourth and last: nightly G1 enforcement (issue #169). One Critic turn per
+# Fifth and last: nightly G1 enforcement (issue #169). One Critic turn per
 # pending strategy spec, hard-capped at scripts/critic_g1.py's
 # MAX_G1_TURNS_PER_NIGHT.
 #

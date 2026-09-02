@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve reflect schema-pin surface-pin score-day preflight dev-status
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status
 .PHONY: staging-day staging-reset eval eval-report critic-g1 critic-gate
 .PHONY: register-spec
 .PHONY: eval-critic-dev eval-critic-holdout
@@ -165,14 +165,19 @@ score-day: deps
 resolve: deps
 	$(PYTHON) scripts/resolve_day.py
 
+# Nightly scoring job: graded signals -> the weights table (improvement.md §2.1).
+weights: deps
+	$(PYTHON) scripts/weights_day.py
+
 # Nightly reflection: resolutions with no reflection yet -> one seat turn each
-# (design §3, §7). Rides the same 16:35 timer, third, after close-pnl and
-# resolve — nothing is reflectable until resolve has written the outcome.
+# (design §3, §7). Rides the same 16:35 timer, fourth, after close-pnl,
+# resolve, and weights — nothing is reflectable until resolve has written
+# the outcome.
 reflect: deps
 	$(PYTHON) scripts/reflect_day.py
 
 # Nightly G1 enforcement: registered strategy specs with no verdict -> one
-# Critic turn each (issue #169). Rides the same 16:35 fire, FOURTH and last,
+# Critic turn each (issue #169). Rides the same 16:35 fire, FIFTH and last,
 # after reflect — ops/fund-pnl.service explains why the leg whose misses are
 # recoverable goes behind the leg whose misses are not.
 # Safe to re-run and cheap to re-run: a spec that already carries a verdict is
