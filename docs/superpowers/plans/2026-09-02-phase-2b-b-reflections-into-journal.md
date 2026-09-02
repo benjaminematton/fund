@@ -10,7 +10,8 @@ Three design choices, each an answer to a demonstrated failure from this plan's 
 
 1. **Unwindowed sweep.** The turn loop's `REFLECT_LOOKBACK_DAYS` window exists because *turns cost money*; journal appends are free. A windowed sweep created a silent permanent-loss class (a reflection written, its projection failing, the window moving past it — demonstrated). Unwindowed, any later fire catches up, and the deploy-day backfill is bounded by the fund's whole history (38 decisions ever). The marker check is what bounds work, not a date.
 2. **Line-anchored synthetic marker, not a frame substring.** A whole-file substring scan on the frame's first line was demonstrated suppressible by prose that quotes another decision's frame — which seats naturally do. The marker is a string no seat ever sees (frames don't contain it), matched only as a complete line (`re.M`), and unique per decision (`decisions` UNIQUE `(run_date, ticker)`, `state/schema.sql:63`; `resolutions.decision_id` UNIQUE, `:99`). Residual: a seat that emits the exact marker line, character-for-character at line start, inside prose could still suppress — named in the docstring as accepted, since prose never legitimately contains the `— reflection · ` prefix.
-3. **One section per sweep, header `## {night} · reflections`.** `orchestrator/daily.py:430-438`'s `_append_entry_once` checks `f"## {run_date}\n" in file` — a bare-dated reflections section written by the 16:35 job before a crashed trading day resumes would make `run_close` skip the PM's decision line for that day, forever (demonstrated mechanism). The ` · reflections` suffix means neither writer's check can match the other's sections. Aggregation also keeps a multi-reflection night from evicting the PM's own daily record out of the brief's 3-section `journal` window (`JOURNAL_ENTRIES = 3`, `fund_server.py`).
+3. **Seat prose is defanged before it enters the file.** This lane introduces the journal's first seat-authored free text — every existing writer emits code-built lines — and two consumers treat the file's raw bytes as structure: `_append_entry_once`'s substring key (`"## {date}\n"`, even mid-line) and `recent_entries`' `"\n## "` split. Prose containing `## ` was demonstrated to forge the first and fragment the second. Fix at the single entry point: every run of two-or-more `#` in the reflection text is collapsed to one (`re.sub(r"#{2,}", "#", …)`) as it is journaled. The frame is code-built and never contains `#`, so acceptance (b)'s "frame and prose" is satisfied with this one documented transformation; the DB keeps the untouched original.
+4. **One section per sweep, header `## {night} · reflections`.** `orchestrator/daily.py:430-438`'s `_append_entry_once` checks `f"## {run_date}\n" in file` — a bare-dated reflections section written by the 16:35 job before a crashed trading day resumes would make `run_close` skip the PM's decision line for that day, forever (demonstrated mechanism). The ` · reflections` suffix means neither writer's check can match the other's sections. Aggregation also keeps a multi-reflection night from evicting the PM's own daily record out of the brief's 3-section `journal` window (`JOURNAL_ENTRIES = 3`, `fund_server.py`).
 
 **Tech Stack:** Python 3.12, existing `state/journal.py` and `orchestrator/reflect.py`, pytest. No new dependencies.
 
@@ -211,11 +212,33 @@ def test_blank_or_unwritten_reflections_are_not_projected(conn, tmp_path):
 
     assert out == {"journaled": 0, "already": 0, "blank": 1}
     assert not (tmp_path / "journals" / f"{DECIDING_SEAT}.md").exists()
+
+
+def test_prose_markdown_headings_cannot_forge_headers_or_split_sections(
+        conn, tmp_path):
+    """This file's first free text meets two consumers that read raw bytes:
+    _append_entry_once's substring key ("## {date}\\n", matched even
+    mid-line — a forged FUTURE date would make run_close silently skip that
+    day's PM record forever) and recent_entries' "\\n## " split (a prose
+    heading fragments the aggregated section and eats the brief's 3-section
+    window). Both demonstrated in review; both die at the defang."""
+    from state.journal import recent_entries
+
+    _reflected(conn, prose="lesson:\n## 2026-12-01\nand mid-line ## 2026-12-02\nhold")
+    root = tmp_path / "journals"
+
+    journal_reflections(conn, root, run_date=NIGHT)
+
+    text = _pm_journal(root)
+    assert "## 2026-12-01" not in text and "## 2026-12-02" not in text
+    assert "# 2026-12-01" in text                    # prose kept, defanged
+    assert text.count("\n## ") == 1                  # one real section
+    assert "hold" in recent_entries(root, DECIDING_SEAT, 1)
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `.venv/bin/python3 -m pytest tests/test_reflect.py -k "projection or reflections or sweep or blank" -v`
+Run: `.venv/bin/python3 -m pytest tests/test_reflect.py -k "projection or reflections or sweep or blank or prose" -v`
 Expected: FAIL at import — `ImportError: cannot import name 'DECIDING_SEAT'`.
 
 - [ ] **Step 3: Implement**
@@ -241,10 +264,12 @@ DECIDING_SEAT = "pm"
 # The idempotence marker's prefix. A SYNTHETIC line, deliberately not the
 # frame's first line: seats quote frames in prose (they are handed one every
 # reflect turn), and a substring scan on a frame header was demonstrated
-# suppressible by exactly such a quote. No seat ever sees this prefix, and
-# the check below matches it only as a complete line — the residual (prose
-# emitting the exact marker line, character-for-character at line start) is
-# accepted and would take deliberate construction, not a natural quote.
+# suppressible by exactly such a quote. No seat whose text reaches this
+# journal ever sees the prefix before writing (the PM reads it in later
+# briefs, but the PM's own journal writes are code-built), and the check
+# below matches it only as a complete line — the residual (prose emitting
+# the exact marker line, character-for-character at line start) is accepted
+# and would take deliberate construction, not a natural quote.
 REFLECTION_MARKER_PREFIX = "— reflection · "
 
 # Every written reflection, with the decision fields the marker is built
@@ -306,7 +331,15 @@ def journal_reflections(conn, journals_root, *, run_date: str) -> dict:
         if re.search(rf"^{re.escape(marker)}$", existing, re.M):
             out["already"] += 1
             continue
-        pieces.append(f"{marker}\n{row['reflection']}")
+        # Defang before the file's structural consumers can see it: prose is
+        # the first free text this file has ever held, and both
+        # _append_entry_once (substring "## {date}\n", even mid-line) and
+        # recent_entries ("\n## " split) read raw bytes. Collapsing every
+        # #-run to one "#" kills both triggers everywhere while keeping the
+        # prose readable; the frame is code-built and never contains "#",
+        # and the DB keeps the untouched original.
+        defanged = re.sub(r"#{2,}", "#", row["reflection"])
+        pieces.append(f"{marker}\n{defanged}")
         out["journaled"] += 1
     if pieces:
         append_entry(journals_root, DECIDING_SEAT,
@@ -599,7 +632,7 @@ Title: `feat: Phase 2b (b) — reflections reach the PM journal (#205)`. Body:
 
 1. The §8 (b) sentence and acceptance item (b).
 2. **What this deliberately does not do:** the Slack-thread sink — #57's other half. `design.md` §3 defers it with no owner; whether it survives at all (a per-decision thread post is a VISION-era question) is Benjamin's decision. #57 stays open until he rules; a comment on #57 records the split.
-3. **Design notes a reviewer should check:** the three review-driven choices from the plan header (unwindowed sweep; synthetic line-anchored marker; ` · reflections` header suffix vs `_append_entry_once`), each with its demonstrated failure. Name the accepted residual (a deliberately constructed marker line in prose).
+3. **Design notes a reviewer should check:** the four review-driven choices from the plan header (unwindowed sweep; synthetic line-anchored marker; prose defang — the journal's first free text meets two raw-byte consumers; ` · reflections` header suffix vs `_append_entry_once`), each with its demonstrated failure. Name the accepted residual (a deliberately constructed marker line in prose) and the defang's one visible effect (a `##`-run in prose renders as `#`; the DB keeps the original).
 4. **No expected-value changes to existing tests.** No DDL, no tool, no charter, no config, no new alert code.
 5. Deploy note: code-only — droplet pull suffices; **no unit change** (run #220's `cmp` drift check anyway, expected SAME on all seven). First post-deploy 16:35 fire backfills every historical written reflection into `journals/pm.md` in one section — bounded by the fund's whole history, and the next morning's PM brief will show it.
 6. The issue-number rule: `#205` and `#57` referenced with no closing keyword anywhere in the body.
@@ -616,4 +649,4 @@ Then comment on #57: "The journal half landed with Phase 2b (b) (PR #<n>): writt
 
 **Placeholder scan:** none. **Type consistency:** `journal_reflections(conn, journals_root, *, run_date) -> dict` identical at definition, monkeypatch (`boom(conn, root, *, run_date)`), and call site; `journals_root_from(environ) -> Path` used in `main()` and its test.
 
-**For the round-2 reviewer:** (1) confirm the `finally` insertion point in the current `reflect_day.py` — after the rollup append, before `drain` — matches the file as it stands; (2) re-run the prose-quote attack against the new marker; (3) check the backfill test's claim against `_WRITTEN` (no date predicate anywhere).
+**Round-2 findings, addressed:** the prose-forge/fragmentation major → the defang (design note 3, Task 1's forge test replaying both demonstrated attacks); the `-k` filter minor → `prose` added; the "no seat ever sees" overclaim → docstring now scoped to seats whose text reaches the journal. Declined as YAGNI: pre-scanning the file into a marker set (an optimization the reviewer itself called not required); the cosmetic ever-growing `already`/`blank` log counts (log noise, no loss, and the counts are the honest state).
