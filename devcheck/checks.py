@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 from devcheck.model import Finding, Snapshot
 
 
@@ -101,8 +103,18 @@ _DEGRADATION_CODES = ("gate_error", "pm_timeout", "critic_timeout", "missing_sig
 
 
 def check_degradations(s: Snapshot) -> Finding:
-    """Invariant 4 — every error resolves to HOLD. Correct, and worth seeing."""
-    seen = [c for c in s.scorecard_codes if c in _DEGRADATION_CODES]
+    """Invariant 4 — every error resolves to HOLD. Correct, and worth seeing.
+
+    Reads alert CODES. It was fed event `kind`s until 2026-09-02, which made it
+    green on every day the fund had ever run: `kind` is alert/digest/pnl and can
+    never equal `pm_timeout`. The function was fine; its input was the wrong
+    column, and only the composition root could see that.
+    """
+    if s.alert_codes is None:
+        return Finding("degradations", "warn",
+                       "alert codes were not read, so whether any stage degraded to its "
+                       "default is unknown — not a clean day, an unmeasured one")
+    seen = [c for c in s.alert_codes if c in _DEGRADATION_CODES]
     if not seen:
         return Finding("degradations", "ok", "no stage degraded to its default")
     return Finding(
@@ -211,6 +223,28 @@ def check_deploy_state(s: Snapshot) -> Finding:
     )
 
 
+def _alert_codes_line(s: Snapshot) -> str:
+    """What actually alerted, appended to a red `services`.
+
+    WHY. A unit's exit status says a run failed, never WHICH failure it was, so
+    a new failure under a standing red is invisible. `services` was red for nine
+    days on #141's `accounting_shortfall`; on 2026-08-31 the Alpaca MCP server
+    stopped importing and raised `seat_turn_failed` instead. The line looked
+    identical, the fund placed no order for three days, and the 09-02 EOD digest
+    attributed it to #141 in writing. The distinguishing evidence was one query
+    away the whole time.
+    """
+    if s.alert_codes is None:
+        return " — alert codes UNREAD, so which failure this is was never established"
+    if not s.alert_codes:
+        day = f" on {s.alert_date}" if s.alert_date else ""
+        return f" — no alert rows{day}, so the exit code is the only evidence"
+    counts = Counter(s.alert_codes)
+    codes = ", ".join(f"{c} x{n}" if n > 1 else c for c, n in sorted(counts.items()))
+    day = f" {s.alert_date}" if s.alert_date else ""
+    return f" — alerts{day}: {codes}"
+
+
 def check_services(s: Snapshot) -> Finding:
     """The scheduled units that constitute the fund actually running."""
     bad = [r for r in s.services.values() if r.result != "success"]
@@ -218,7 +252,7 @@ def check_services(s: Snapshot) -> Finding:
         names = ", ".join(sorted(s.services))
         return Finding("services", "ok", f"last run succeeded: {names}" if names else "no units read")
     parts = [f"{r.unit}: {r.result}" + (f" at {r.last_run}" if r.last_run else "") for r in bad]
-    return Finding("services", "alert", "; ".join(sorted(parts)))
+    return Finding("services", "alert", "; ".join(sorted(parts)) + _alert_codes_line(s))
 
 
 def check_database(s: Snapshot) -> Finding:

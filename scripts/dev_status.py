@@ -320,6 +320,7 @@ def build_snapshot() -> Snapshot:
 
     positions, _open_orders, broker_fills, broker_error = _positions_and_coverage()
     head, origin, behind = _deploy_state()
+    alert_codes, alert_date = _alert_codes()
 
     return Snapshot(
         droplet_env=_droplet_env(),
@@ -331,7 +332,8 @@ def build_snapshot() -> Snapshot:
         checkpoints=[(str(r["run_date"]), str(r["stage"]), str(r["status"])) for r in checkpoint_rows],
         journals_written=_journals_written(run_date),
         seats_participating={str(r["agent"]) for r in participants} & set(SEATS),
-        scorecard_codes=_scorecard_codes(),
+        alert_codes=alert_codes,
+        alert_date=alert_date,
         positions=positions,
         open_orders=[],
         due_unresolved=[int(r["id"]) for r in due_rows],
@@ -366,13 +368,58 @@ def _journals_written(run_date: str) -> set[str]:
     return {Path(n.strip()).stem for n in raw.splitlines() if n.strip()} & set(SEATS)
 
 
-def _scorecard_codes() -> list[str]:
-    """Alert codes raised on the droplet's most recent run date."""
+def parse_alert_codes(rows: list[dict]) -> list[str]:
+    """`events.payload` JSON -> the `code` of each row, one entry per alert.
+
+    Split out from the query so it can be tested against real captured payloads.
+    Its predecessor selected `kind` while claiming in its docstring to return
+    alert codes; `kind` is alert/digest/pnl/scorecard and check_degradations
+    filters for gate_error/pm_timeout/..., so those sets never intersected and
+    `degradations` was green on every day the fund had ever run. Nothing caught
+    it because the checks are tested against hand-written Snapshots and this
+    layer had no tests at all.
+
+    An unparsable payload is still an alert that happened, so it is returned as
+    `unparsable_payload` rather than dropped: losing one here makes the day read
+    quieter than it was, which is the direction that hides things.
+
+    Repeats are kept, not deduped. `pm_timeout` fired once per ticker on
+    2026-09-02; collapsing to a set reports one degraded stage where there were
+    three.
+    """
+    codes = []
+    for row in rows:
+        raw = row.get("payload")
+        if not raw:
+            continue
+        try:
+            code = json.loads(raw).get("code")
+        except (ValueError, TypeError, AttributeError):
+            codes.append("unparsable_payload")
+            continue
+        codes.append(str(code) if code else "uncoded_alert")
+    return codes
+
+
+def _alert_codes() -> tuple[list[str] | None, str]:
+    """(alert codes on the droplet's most recent run date, that date).
+
+    `None` means the read failed — never `[]`, which reads as "nothing alerted".
+
+    The date bound is the latest date across ALL events, not the latest date
+    carrying an alert. Scoping it to alerts would print last week's codes beside
+    today's failed unit as though they were today's, which is a worse failure
+    than printing none.
+    """
     rows = _sql(
-        "select kind from events where date(created_at) = "
+        "select payload from events where kind = 'alert' and date(created_at) = "
         "(select max(date(created_at)) from events)"
-    ) or []
-    return [str(r["kind"]) for r in rows if r.get("kind")]
+    )
+    if rows is None:
+        return None, ""
+    day = _sql("select max(date(created_at)) as d from events") or []
+    date = str(day[0].get("d") or "") if day else ""
+    return parse_alert_codes(rows), date
 
 
 def main() -> int:

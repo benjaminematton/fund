@@ -54,7 +54,14 @@ class Snapshot:
     checkpoints: Sequence[tuple[str, str, str]]   # (run_date, stage, status)
     journals_written: frozenset[str] | set[str]
     seats_participating: frozenset[str] | set[str]
-    scorecard_codes: Sequence[str]
+    # Alert CODES (`payload.code`) on the droplet's most recent run date — not
+    # event `kind`s. The distinction is the whole point: this field used to be
+    # fed `kind`, whose values are alert/digest/pnl/scorecard, while
+    # check_degradations filters it for gate_error/pm_timeout/... Those sets
+    # never intersect, so `degradations` was green on every day the fund has
+    # ever run, including 2026-09-02, when pm_timeout fired three times.
+    # None = not read; never an empty list, which reads as "no alerts".
+    alert_codes: Sequence[str] | None
     positions: Sequence[Position] | None   # None = not read; never inferred
     open_orders: Sequence[OpenOrder]
     due_unresolved: Sequence[int]       # decision ids past horizon with no resolution
@@ -62,6 +69,7 @@ class Snapshot:
     origin_master: str
     commits_behind: int
     services: Mapping[str, ServiceResult]
+    alert_date: str = ""               # the run date alert_codes came from, for display
     broker_error: str = ""             # why the book was unread, when it was
     db_read_ok: bool = True            # False = the fund DB could not be read at all
     suppressed: frozenset[str] = field(default_factory=frozenset)

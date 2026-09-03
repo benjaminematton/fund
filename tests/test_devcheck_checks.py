@@ -25,7 +25,8 @@ def _snap(**over) -> Snapshot:
         checkpoints=[],
         journals_written=set(),
         seats_participating=set(),
-        scorecard_codes=[],
+        alert_codes=[],
+        alert_date="2026-09-02",
         positions=[],
         open_orders=[],
         due_unresolved=[],
@@ -133,13 +134,13 @@ def test_degradations_warn_on_gate_error():
     """Invariant 4 says a gate_error resolves to HOLD, which is correct
     behaviour — so this warns, it does not alert. The day was not wrong;
     it was degraded, and a degraded day that nobody sees becomes normal."""
-    f = _only(evaluate(_snap(scorecard_codes=["gate_error"])), "degradations")
+    f = _only(evaluate(_snap(alert_codes=["gate_error"])), "degradations")
     assert f.severity == "warn"
     assert "gate_error" in f.detail
 
 
 def test_degradations_warn_on_pm_timeout():
-    f = _only(evaluate(_snap(scorecard_codes=["pm_timeout"])), "degradations")
+    f = _only(evaluate(_snap(alert_codes=["pm_timeout"])), "degradations")
     assert f.severity == "warn"
 
 
@@ -359,3 +360,69 @@ def test_unread_book_names_why_it_could_not_be_read():
               "position_coverage")
     assert f.severity == "alert"
     assert "no ALPACA_API_KEY in this shell" in f.detail
+
+
+# --- alert codes on a red `services`, and the degradations input --------------
+# Regression cover for 2026-08-31 → 09-02: the Alpaca MCP server stopped
+# importing, every seat defaulted to HOLD, and `services` had ALREADY been red
+# for nine days on #141. The new failure produced an identical line and was
+# attributed to #141 in writing. These pin the difference being visible.
+
+def _units(**results):
+    from devcheck.model import ServiceResult
+    return {u: ServiceResult(u, r, "Wed 2026-09-02 09:36:51 EDT")
+            for u, r in results.items()}
+
+
+def test_a_red_service_names_which_alerts_fired():
+    f = _only(evaluate(_snap(services=_units(**{"fund-daily": "exit-code"}),
+                             alert_codes=["seat_turn_failed"] * 3 + ["pm_timeout"],
+                             alert_date="2026-09-02")), "services")
+    assert f.severity == "alert"
+    assert "seat_turn_failed x3" in f.detail, f.detail
+    assert "pm_timeout" in f.detail and "pm_timeout x" not in f.detail  # count only when >1
+    assert "2026-09-02" in f.detail
+
+
+def test_two_reds_with_different_codes_do_not_read_alike():
+    """The masking failure itself: #141's red and the outage's red must differ."""
+    known = _only(evaluate(_snap(services=_units(**{"fund-daily": "exit-code"}),
+                                 alert_codes=["accounting_shortfall"])), "services")
+    novel = _only(evaluate(_snap(services=_units(**{"fund-daily": "exit-code"}),
+                                 alert_codes=["seat_turn_failed"])), "services")
+    assert known.detail != novel.detail
+    assert "accounting_shortfall" in known.detail
+    assert "seat_turn_failed" in novel.detail
+
+
+def test_unread_alert_codes_are_never_rendered_as_no_alerts():
+    """`None` is 'could not read'. An empty list is 'nothing alerted'. Rendering
+    the first as the second is how absence becomes health."""
+    unread = _only(evaluate(_snap(services=_units(**{"fund-daily": "exit-code"}),
+                                  alert_codes=None)), "services")
+    empty = _only(evaluate(_snap(services=_units(**{"fund-daily": "exit-code"}),
+                                 alert_codes=[], alert_date="2026-09-02")), "services")
+    assert "UNREAD" in unread.detail
+    assert "no alert rows" in empty.detail
+    assert unread.detail != empty.detail
+
+
+def test_degradations_is_unknown_rather_than_clean_when_codes_are_unread():
+    f = _only(evaluate(_snap(alert_codes=None)), "degradations")
+    assert f.severity == "warn"
+    assert "unknown" in f.detail
+
+
+def test_degradations_fires_on_the_codes_the_fund_actually_emits():
+    """The 2026-09-02 defect: this field was fed event `kind`s (alert/digest/
+    pnl), which can never equal a degradation code, so `degradations` was green
+    on every day the fund had ever run. These are real codes from that day."""
+    real = ["seat_turn_failed"] * 12 + ["pm_timeout"] * 3 + ["audit_failed",
+                                                            "reflect_turn_wrote_nothing"]
+    f = _only(evaluate(_snap(alert_codes=real)), "degradations")
+    assert f.severity == "warn", "pm_timeout fired 3x that day; this must not read clean"
+    assert "pm_timeout" in f.detail
+
+    kinds = ["alert", "digest", "pnl", "scorecard"]        # what it used to receive
+    stale = _only(evaluate(_snap(alert_codes=kinds)), "degradations")
+    assert stale.severity == "ok", "event kinds must not look like degradations either"
