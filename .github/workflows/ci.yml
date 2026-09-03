@@ -24,3 +24,31 @@ jobs:
         run: python3 scripts/check_purity.py
       - name: Full test suite (no network, no keys; includes frozen golden numbers)
         run: python3 -m pytest tests/
+
+  # SEPARATE JOB ON PURPOSE. This one needs the network; `test` above must not.
+  # `make test` being offline is a property other things rest on, and a network
+  # step inside it would void that silently rather than loudly.
+  #
+  # It needs NO secrets. The probe imports the server module directly rather
+  # than starting the server, because the CLI validates credentials before
+  # importing and so exits identically on a working and a broken build — see
+  # scripts/mcp_import_probe.py, which documents that with the measurements.
+  #
+  # What it buys: on 2026-08-31 an unpinned transitive dep (fastmcp 4) broke
+  # alpaca-mcp-server at import and the fund placed no order for three days
+  # while `test` above stayed green the whole time. This is the job that goes
+  # red for that.
+  mcp-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      # The probe reads ALPACA_MCP_SPEC out of agents/seats.py, which imports
+      # claude_agent_sdk — so the lock is needed here too, for the read alone.
+      - name: Install deps (from requirements.lock)
+        run: pip install -r requirements.lock
+      - name: Alpaca MCP server still imports at the pinned spec
+        run: python3 scripts/mcp_import_probe.py

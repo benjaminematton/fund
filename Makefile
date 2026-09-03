@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status mcp-probe
 .PHONY: staging-day staging-reset eval eval-report critic-g1 critic-gate
 .PHONY: register-spec
 .PHONY: eval-critic-dev eval-critic-holdout
@@ -259,6 +259,20 @@ register-spec: deps
 critic-gate: deps
 	@test -n "$(LABEL)" || { echo "critic-gate: LABEL=<run-label> is required (see ops/README.md)" >&2; exit 2; }
 	$(PYTHON) scripts/critic_gate.py $(LABEL) --split holdout
+
+# Does the Alpaca MCP server still IMPORT at the spec the seats launch?
+#
+# NOT part of `make test`, deliberately: it needs the network, and `make test`
+# being offline is a property other things rest on. Needs no keys — the probe
+# imports the server module rather than starting the server, because the CLI
+# checks credentials before importing and so cannot tell a broken build from a
+# working one without them. scripts/mcp_import_probe.py carries the numbers.
+#
+# This is the check that was missing on 2026-08-31, when an unpinned transitive
+# dependency broke the server at import and the fund placed no order for three
+# days with `make test` green throughout.
+mcp-probe: deps
+	$(PYTHON) scripts/mcp_import_probe.py
 
 # Read-only production health check for developers: is every stated invariant
 # and Phase 2 acceptance criterion still true on the box that trades?
