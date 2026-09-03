@@ -14,49 +14,81 @@ Agents decide inside a deterministic control envelope. That is the whole idea.
 
 ## Architecture
 
-The following diagram traces one market day, from the scheduled fire to the
-Slack projection, with SQLite as the source of truth and Slack as a read-only
+### The firm's clock
+
+Nothing in the firm starts because a human or an agent asked it to. Every seat
+turn is assigned by code on a schedule (invariant 6), and there are two fires a
+day, not one — the trading day and the post-close job, which is where the seats
+that think about *yesterday* live:
+
+```
+  fund-daily.timer    09:35 ET Mon-Fri  ->  scripts/run_day.py
+    the trading day, below                  4 LLM turns: analyst, news, pm, exec
+
+  fund-pnl.timer      16:35 ET Mon-Fri  ->  five legs, in order, halting on the first failure
+    close_pnl.py  ->  resolve_day.py  ->  weights_day.py  ->  reflect_day.py  ->  critic_g1.py
+    P&L vs SPY        resolutions         scoreboard         reflect seat        critic seat
+    (deterministic)   (deterministic)     (deterministic)    2 LLM turns, budget spent last
+
+  fund-backup.timer   17:30 ET daily    ->  ops/backup.sh
+  fund-alert@.service on any unit failing ->  ops/notify_failure.sh  ->  Slack
+
+  make register-spec BRIEF=<path>       ->  scripts/register_spec.py  ->  quant seat
+    hand-run, deliberately never on a timer: no sponsorship mechanism exists in code yet
+```
+
+Seven seats are staffed — a charter in `charters/`, a config in `agents/config/`,
+and a tool cap in `SEAT_CAPS`. Six of them wake on a timer; the quant seat wakes
+only when a human runs the job. The Critic is staffed for **G1 strategy-spec
+review only**: the trading day still runs on the orchestrator's own
+`no_critic_seat` default rows (`orchestrator/daily.py`'s `run_decision`), and
+wiring the Critic into the Decision stage is deliberately out of scope.
+
+### The trading day
+
+The following diagram traces the 09:35 fire, from the timer to the Slack
+projection, with SQLite as the source of truth and Slack as a read-only
 projection of it:
 
 ```
-                       ┌──────────────── one fire per market day ─────────────┐
-                       │  launchd 09:35 ET  ->  scripts/run_day.py            │
-                       │  (the ONLY place real clock/Slack/Alpaca/LLM meet)   │
-                       └──────────────────────┬──────────────────────────────┘
-                                              │ market closed? exit 0, trade nothing
-                                              v
+                     ┌──────────────── the 09:35 fire ──────────────────────┐
+                     │  systemd fund-daily.timer  ->  scripts/run_day.py    │
+                     │  (the ONLY place real clock/Slack/Alpaca/LLM meet)   │
+                     └────────────────────┬─────────────────────────────────┘
+                                          │ market closed? exit 0, trade nothing
+                                          v
    orchestrator/  ── stages, sequential, each behind a checkpoint CAS ──────────
    pre_gate -> research -> decision -> gate -> execution -> reconciliation -> close
        │           │          │         │         │            │          │
        │           v          v         │         v            │          v
        │      ┌─────────┐ ┌───────┐     │    ┌────────┐        │      EOD digest
-       │      │ analyst │ │  pm   │     │    │  exec  │        │
-       │      │  seat   │ │ seat  │     │    │  seat  │        │
-       │      └────┬────┘ └───┬───┘     │    └───┬────┘        │
-       │           │ MCP tools│         │        │             │
-       │           v          v         │        v             │
-       │    submit_signal  submit_decision   list_open_tickets  │
-       │    (analyst-only) (pm-only)         (exec-only)        │
-       │           │          │              │                 │
-       │           └──────────┴──────┬───────┘                  │
-       │                             v                          │
-       │                  ╔══════════════════════╗              │
-       └─ allowed actions ║   gate/  (NO LLM)    ║              │
-          {buy:n, sell:n} ║  vol/corr tiers      ║              │
-                          ║  cash + sector caps  ║              │
-                          ║  8-position limit    ║              │
-                          ║  -3% circuit breaker ║              │
-                          ╚═══════════╤══════════╝              │
-                                      │ ticket (id == client_order_id, TTL 45m)
-                                      v                         │
-                       PreToolUse hook: no valid ticket -> DENY  │
-                                      │                         │
-                                      v                         v
-                        mcp__alpaca__place_* ──────────> Alpaca paper broker
-                                      │                         │
-                       PostToolUse hook: mirror the fill        │ fill poll
-                                      v                         v
-                          SQLite (source of truth)  ──outbox──> Slack (projection)
+       │      │ analyst │ │   pm  │     │    │  exec  │        │
+       │      │   news  │ │  seat │     │    │  seat  │        │
+       │      └────┬────┘ └───┬───┘     │    └────┬───┘        │
+       │           │          │         │         │            │
+       │           v          v         │         v            │
+       │     submit_signal  submit_decision  list_open_tickets │
+       │     (analyst, news)  (pm only)       (exec only)      │
+       │           │          │                   │            │
+       │           └──────────┴─────────┬─────────┘            │
+       │                                v                      │
+       │                  ╔══════════════════════════╗         │
+       └─ allowed actions ║  gate/  (NO LLM)         ║         │
+          {buy:n, sell:n} ║  vol tier x corr mult    ║         │
+                          ║  cash + 60% sector cap   ║         │
+                          ║  8-position limit        ║         │
+                          ║  -3% circuit breaker     ║         │
+                          ╚═════════════╤════════════╝         │
+                                        │ ticket (id == client_order_id, TTL 45m)
+                                        v                      │
+                     PreToolUse hook: no valid ticket -> DENY  │
+                                        │                      │
+                                        v                      v
+                          mcp__alpaca__place_* ──────> Alpaca paper broker
+                                        │                      │
+                        PostToolUse hook: mirror the fill      │ fill poll
+                                        v                      v
+                        SQLite (source of truth) ──outbox──> Slack (projection)
 ```
 
 Reading it in one line: **agents → MCP tools → deterministic gate → hook → broker**,
