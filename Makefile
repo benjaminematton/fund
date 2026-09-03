@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status mcp-probe
+.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status mcp-probe record-status status-faithful
 .PHONY: staging-day staging-reset eval eval-report critic-g1 critic-gate
 .PHONY: register-spec
 .PHONY: eval-critic-dev eval-critic-holdout
@@ -259,6 +259,23 @@ register-spec: deps
 critic-gate: deps
 	@test -n "$(LABEL)" || { echo "critic-gate: LABEL=<run-label> is required (see ops/README.md)" >&2; exit 2; }
 	$(PYTHON) scripts/critic_gate.py $(LABEL) --split holdout
+
+# Capture one real droplet read into tests/recordings/dev-status.json, so
+# build_snapshot() can be tested against production BYTES instead of rows
+# someone typed. Read-only; writes nothing to the droplet.
+#
+# Re-record when `make status-faithful` says the shapes moved. Then READ the new
+# fixture and update tests/test_status_replay.py to match reality — the reading
+# is the control, not the file.
+record-status: deps
+	$(PYTHON) scripts/record_status.py
+
+# Is the recording still a faithful double of the droplet? Live and human-run,
+# beside schema-pin/surface-pin, and for the same reason: a double nobody
+# re-checks drifts into being confidently wrong. Compares SHAPES (above all SQL
+# column sets), never daily values.
+status-faithful: deps
+	$(PYTHON) -m pytest -m live tests/test_status_faithful.py -v
 
 # Does the Alpaca MCP server still IMPORT at the spec the seats launch?
 #

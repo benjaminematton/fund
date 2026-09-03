@@ -25,7 +25,9 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -83,7 +85,7 @@ def read_suppressed(path: Path) -> frozenset[str]:
     return frozenset(out)
 
 
-def _ssh(cmd: str, timeout: int = 15) -> str | None:
+def _real_ssh(cmd: str, timeout: int = 15) -> str | None:
     """Run one read-only command on the droplet. None on any failure.
 
     None means "could not read", never "read an empty result" — the callers
@@ -98,6 +100,44 @@ def _ssh(cmd: str, timeout: int = 15) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout if out.returncode == 0 else None
+
+
+# THE ONE SEAM. Every droplet read in this file goes through _ssh, so swapping
+# this swaps the whole external world — which is what lets build_snapshot() be
+# tested against RECORDED production bytes instead of hand-written rows.
+#
+# That gap is why this exists. devcheck/'s checks are thoroughly tested against
+# Snapshots built by hand in tests/test_devcheck_checks.py, and until 2026-09-02
+# nothing tested what build_snapshot() actually put in them. `check_degradations`
+# had a passing test feeding it ["pm_timeout"] while the builder fed it event
+# `kind`s, so it was green on every day the fund had ever run. The function was
+# never wrong; its input was, and only the composition root could see that.
+#
+# A module-level swap rather than a `transport` parameter threaded through nine
+# private helpers: the helpers exist to be read, and nine extra plumbing
+# arguments would obscure them to serve the tests. Tests use using_transport()
+# rather than reaching in and rebinding, so the seam is intentional API.
+_TRANSPORT: Callable[[str, int], str | None] = _real_ssh
+
+
+@contextmanager
+def using_transport(fn: Callable[[str, int], str | None]):
+    """Swap the droplet transport for the duration of the block. Tests only.
+
+    Restores on the way out even if the body raises, so one failing test cannot
+    leave a fake transport installed for the rest of the session — which would
+    be a green suite reading a world that does not exist.
+    """
+    global _TRANSPORT
+    previous, _TRANSPORT = _TRANSPORT, fn
+    try:
+        yield
+    finally:
+        _TRANSPORT = previous
+
+
+def _ssh(cmd: str, timeout: int = 15) -> str | None:
+    return _TRANSPORT(cmd, timeout)
 
 
 def _droplet_var(name: str) -> str | None:
