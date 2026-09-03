@@ -28,6 +28,7 @@ after 2026-08-31, lost the 09-01 and 09-02 sessions, and failed all 9 reflection
 | `uvx <spec> --help` (ops/README pre-warm) | the server works | click can parse argv; it exits before importing `.server` |
 | `services` 🔴 | the day's health | one exit code — a new failure under an old red is invisible |
 | `ALPACA_MCP_SPEC` exact pin | the launch is reproducible | the *app* is pinned; its dependencies resolve fresh at 09:35 |
+| `uvx <spec> --transport stdio` with no credentials (3a, first draft) | the server starts | the credential check ran — it exits identically on a broken build |
 
 Two changes, each making one guard cover its actual claim. The `--help` row was already fixed in
 #222.
@@ -182,12 +183,37 @@ more confidence: bot bumps, CI green, merge, fund silently stops trading.
 
 ### 3a. The CI probe that makes green mean something
 
-The failure was `ModuleNotFoundError` at **import**. It needed the network to fetch the package but
-**no credentials at all** — which is what makes it catchable in CI:
+**First draft of this section was wrong, and the correction is the whole lesson repeating.** It
+proposed starting the server and claimed that needed no credentials. Tested:
 
 ```
-uvx <ALPACA_MCP_ARGS> --transport stdio < /dev/null
+$ uvx alpaca-mcp-server@2.2.1 --transport stdio        # the BROKEN build, no creds
+Error: ALPACA_API_KEY and ALPACA_SECRET_KEY must be set.   exit=1
+$ uvx alpaca-mcp-server@2.3.1 --transport stdio        # the WORKING build, no creds
+Error: ALPACA_API_KEY and ALPACA_SECRET_KEY must be set.   exit=1
 ```
+
+The credential check runs **before** the `.server` import, so broken and working are byte-identical
+without credentials. That probe would have been green through the entire outage — a fourth row for
+the table above, nearly written into the fix for the first three.
+
+**What actually discriminates** is importing the broken module directly, which bypasses the CLI's
+credential gate and reaches the import that failed:
+
+```
+uvx --exclude-newer <MCP_RESOLUTION_DATE> --from <ALPACA_MCP_SPEC> \
+    python -c "import alpaca_mcp_server.server"
+```
+
+Demonstrated against both configurations, credential-free:
+
+| config | result |
+|---|---|
+| `alpaca-mcp-server@2.2.1`, unpinned — the real broken combination | `ModuleNotFoundError: No module named 'fastmcp.tools.tool'` → **red** |
+| `alpaca-mcp-server@2.3.1`, date-pinned — what shipped in #222 | `IMPORT OK` → **green** |
+
+This is the probe's manufactured red, run before the probe was written into the design rather than
+after.
 
 **It must be a separate CI job, never part of `make test`.** The offline guarantee is a stated
 property of that suite and several other guarantees rest on it; a network-dependent step inside it
@@ -207,6 +233,24 @@ It bumps `ALPACA_MCP_SPEC` and `MCP_RESOLUTION_DATE` **together**. If it ever bu
 Part 1's self-enforcing coupling catches it: uv refuses to resolve when the date excludes the pinned
 version, so the CI probe goes red and the PR cannot merge. The failure mode is a stuck PR, never a
 bad merge.
+
+### 3b-bis. What the credential-free probe cannot see, and what it would cost to see it
+
+The import probe proves the server *loads*. It cannot enumerate the tool surface, because
+`tools/list` requires a running server and the server refuses to start without credentials (shown
+above). So CI cannot answer "did a mutating verb appear?" — which is exactly the question 3c keeps a
+human for.
+
+**The version that would remove that human** is Alpaca **paper** credentials as GitHub Actions
+secrets. CI could then enumerate the surface, diff it, and fail *only* when a mutating verb appears
+or changes — auto-accepting read-only additions like 2.3.1's optional `order_id` on the two
+`get_account_activities*` reads. Most bumps would merge themselves.
+
+**It is deliberately not proposed here.** It makes broker credentials reachable by any workflow in
+this repo, and while paper-only bounds the money to zero, the `orders`/`decisions` record is what
+`calibration/` learns from — polluting it is a real cost with no dollar sign on it. That is a
+posture decision of the same family as invariant 2 and the exec seat's locked `tools` array, and it
+deserves its own deliberate call rather than riding in as a sub-clause of a dependency spec.
 
 ### 3c. It proposes; it does not auto-merge — deliberately
 
@@ -256,10 +300,9 @@ Offline, no network, no keys — consistent with `make test`.
 **Part 3** — the probe is itself a test and needs its own proof, or it joins the list of guards in
 the table above:
 
-- The CI probe must be shown to **fail on a broken server**, not merely pass on a working one. Run
-  it against `alpaca-mcp-server@2.2.1` with no date pin (the exact broken combination) and confirm
-  it goes red. Without that demonstration there is no evidence the probe can detect anything, and
-  it becomes a fourth green that means nothing.
+- The CI probe must be shown to **fail on a broken server**, not merely pass on a working one.
+  Already done in 3a against `alpaca-mcp-server@2.2.1` unpinned — and the first version of the
+  probe failed that check, which is why the design changed. Re-run it if the probe is ever edited.
 - The probe must derive its argv from `ALPACA_MCP_ARGS`, never restate it. A probe testing a launch
   nobody makes is the `--help` failure again in a new place.
 - Renovate's regex manager must be shown to actually match — a `customManagers` block that silently
