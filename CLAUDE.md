@@ -33,6 +33,7 @@ Multi-agent paper-trading firm on the Claude Agent SDK (Python). Agents communic
 - All hooks (`PreToolUse` order gate, cost recording) are defined in `agents/runtime.py` only.
 - Set `setting_sources=["project"]` in `ClaudeAgentOptions` so this file is loaded for coding/dev seats. **EXCEPTION — order-placing seats (the Execution Trader, and any future seat with `mcp__alpaca__place_*` in its `tools`): `setting_sources=[]` and an explicit `tools=[...]` allow-array (MCP globs only), never the default preset.** A headless trading seat with `.env` + network in scope must not inherit `Bash`/`Write`/`Task` (it can `Read(.env)` + shell around the gate) nor a settings file whose allow-list accumulates dev approvals. `tools` governs availability (the real lock); `allowed_tools`/`disallowed_tools` only govern approval and fail open. Pinned by `tests/test_exec_seat_tool_surface.py` — do not relax.
 - `ResultMessage.total_cost_usd` is a client-side estimate — label it "est." in digests.
+- **Documentation never needs a PR.** A docs-only change — `README.md`, `docs/`, `research/`, `specs/` prose, a field brief, a design snapshot — is committed and pushed straight to `master`. No branch, no review round, no waiting. Run `make test` first (docs are load-bearing here: prose claims are pinned by tests), and if you rebased, run it again on the rebased state — the pre-rebase green covers a different base. Reserve PRs for changes that alter behaviour.
 
 ## Specs — read before implementing; schemas there are canonical
 
