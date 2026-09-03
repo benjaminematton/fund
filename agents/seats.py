@@ -28,7 +28,23 @@ CHARTERS_DIR = Path(__file__).resolve().parents[1] / "charters"
 # derive THIS spec: the guard, the warm cache, and the thing guarded cannot
 # drift apart. An upgrade is a deliberate commit with a green
 # `make schema-pin`.
-ALPACA_MCP_SPEC = "alpaca-mcp-server@2.2.1"
+#
+# 2.2.1 -> 2.3.1, 2026-09-02, and the reason is that pinning the APP does not
+# pin the RESOLUTION. 2.2.1 declares `fastmcp>=3.1.0` with no upper bound, so
+# uvx resolved fastmcp 4.0.2, which moved `fastmcp.tools.tool` —
+# `alpaca_mcp_server/security.py:14` imports it, so the server raised at
+# STARTUP. Every seat turn hit `required MCP server(s) not connected after
+# 30.0s: {'alpaca': 'failed'}` and defaulted to HOLD (invariant 4 working).
+# The fund stopped trading after 2026-08-31 and lost 09-01, 09-02 and 9
+# reflections. Upstream shipped 2.3.1 on 09-01 declaring `fastmcp<4,>=3.1.0`:
+# this bump takes THEIR bound rather than carrying a local `--with` override,
+# so there is one constraint to maintain instead of two that can disagree.
+#
+# WHY THREE DAYS PASSED. `uvx <spec> --version|--help` exits inside click
+# before importing `.server`, so every cache-warm check in ops/README.md stayed
+# green while the server could not start at all. Those checks now start the
+# transport instead — that is the probe that would have caught this on day one.
+ALPACA_MCP_SPEC = "alpaca-mcp-server@2.3.1"
 
 
 def load_seat_config(path: str | Path) -> dict:

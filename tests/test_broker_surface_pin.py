@@ -44,8 +44,22 @@ def _qualified(name: str) -> str:
 def test_the_pin_records_what_the_surface_is_a_function_of(pin):
     """A tool list alone is not reproducible. The same package at a different
     toolset selection exposes a different surface, so a reader who cannot see
-    both cannot tell whether the list is still true."""
-    assert pin["spec"] == "alpaca-mcp-server@2.2.1"
+    both cannot tell whether the list is still true.
+
+    Deliberately a LITERAL and not `ALPACA_MCP_SPEC`: deriving it would make
+    this test agree with every future bump silently, which is the opposite of
+    what a pin is for. Changing this line is meant to cost a human a look.
+
+    2.2.1 -> 2.3.1 on 2026-09-02, and what that look found: both versions were
+    enumerated over this same toolset selection and listed the SAME 38 tools —
+    nothing appeared, nothing disappeared, so the three buckets below are
+    untouched. Schema movement was additive only (an optional `order_id` on the
+    two `get_account_activities*` reads; `IEX`/`MEMX` added to
+    `replace_order_by_id`'s routing enum). `place_stock_order`, the one
+    `gate/tickets.py` validates, did not move. The bump itself was forced: 2.2.1
+    declares `fastmcp>=3.1.0` unbounded, fastmcp 4 broke its import, and every
+    seat defaulted to HOLD from 2026-08-31 — see agents/seats.py."""
+    assert pin["spec"] == "alpaca-mcp-server@2.3.1"
     assert pin["toolsets"] == "account,trading,stock-data"
 
 
