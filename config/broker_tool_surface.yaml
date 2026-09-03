@@ -14,7 +14,14 @@
 #
 # The surface is a function of BOTH lines below. A toolset change moves it as
 # surely as a version bump, so neither is inferable from the other.
-spec: alpaca-mcp-server@2.2.1
+# 2.2.1 -> 2.3.1 on 2026-09-02. The tool NAMES below are unchanged and were
+# re-enumerated, not re-recorded: both versions list the same 38 tools, with
+# nothing appeared and nothing disappeared against this file. The only schema
+# movement was additive — `get_account_activities` and
+# `get_account_activities_by_type` gained an optional `order_id`, and
+# `replace_order_by_id` gained the `IEX`/`MEMX` routing enum values.
+# `place_stock_order`, the one gate/tickets.py validates, did not move.
+spec: alpaca-mcp-server@2.3.1
 toolsets: account,trading,stock-data
 
 # Mutations authorised by a gate ticket. Adding one here is not enough: see
