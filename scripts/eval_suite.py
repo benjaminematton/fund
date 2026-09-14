@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from evals.verdict import INCONCLUSIVE  # noqa: E402
-from scripts.eval_one import ENV, load_env  # noqa: E402
+from scripts.eval_one import ENV, load_env, missing_env_message  # noqa: E402
 
 TRIALS = 3
 
@@ -43,7 +43,7 @@ def main(argv: list[str]) -> int:
     only = argv
     traces_root = (ROOT / "evals/traces" / label) if label else None
     if not ENV.exists():
-        print(f"no .env at {ENV}", file=sys.stderr)
+        print(missing_env_message(), file=sys.stderr)
         return 2
     load_env(ENV)
 
