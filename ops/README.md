@@ -632,6 +632,42 @@ journalctl -u fund-pnl -n 200 --no-pager       # what the five nightly legs did
 ls -la /var/lib/fund/backups/                  # snapshots
 ```
 
+### Stopping a day
+
+**`systemctl stop fund-daily.service` is not an operator action.** It is a
+bare SIGTERM to the whole cgroup — python, the Claude CLI subprocess and the
+`uvx alpaca-mcp-server` child. The unit sets no `KillMode`, `TimeoutStopSec`
+or `ExecStop`; nothing in the repo handles the signal, and `guarded()` in
+`scripts/run_day.py` catches `(Exception, SystemExit)` only. The checkpoint is
+left at `running` (`specs/contracts.md` declares a `running → failed` edge and
+no code writes it), `ExecStopPost` reports `TERM`, which Healthchecks rejects,
+so the watchdog reads the day as silence (`ops/fund-daily.service:47-50`),
+and the signal can land between the broker accepting a `place_stock_order` and
+the recorder committing the row (`scripts/run_day.py:106-127`). Let the day
+finish; fix forward.
+
+That rule is cheap because a day is bounded: a `oneshot` under
+`TimeoutStartSec=30min`, placing at most three gate-sized buys — one decision
+per ticker per day, one ticket per decision, one order per ticket, three
+tickers in `config/watchlist.yaml`.
+
+**If a day was stopped anyway:** `systemctl start fund-daily.service` again,
+within 45 minutes of the gate stage minting the ticket (`TICKET_TTL_MIN`,
+`orchestrator/daily.py`) — the clock starts at the ticket, not at the stop. A
+same-day start silently resumes mid-stage — `run_stage` treats a `running`
+checkpoint as crash-resume — the re-placement 422s as a duplicate and writes
+nothing, and the reconciliation stage's `recover_lost_orders`
+(`orchestrator/reconcile.py`) records what landed. That is a pause, not a
+stop. Past the TTL, `expire_open_tickets` sweeps the ticket first and the fill
+is permanently invisible (#55).
+
+`systemctl disable --now fund-daily.timer` (the Rollback command) stops the
+timer unit only; it does nothing to a day already running.
+
+**Condition:** this holds because the unit is 30 minutes. When the timed cycle
+in `specs/design.md` §3 (08:30→16:15 ET stages) is implemented, reopen #127
+and build the stage-boundary stop (option O1 in the #127 package).
+
 ## Deliberately not scheduled
 
 `make eval` runs real LLM turns against the real charters — measured **$0.81
