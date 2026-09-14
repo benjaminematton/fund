@@ -259,12 +259,34 @@ costs a human a look**, because the broker's mutating-verb surface is a thing a 
 about rather than discover. Auto-merge would defeat a friction point the repo built on purpose.
 
 So an `alpaca-mcp-server` bump lands as: **bot opens the PR, CI proves the server still starts, the
-surface-pin test stays red until a human re-enumerates and confirms.** That is precisely this
-repo's existing doctrine — *the firm proposes, a human merges* (`specs/improvement.md`) — applied to
-dependencies instead of to trading behaviour.
+surface-pin test stays red — with the assertion below — until a human re-enumerates and confirms.**
+That is precisely this repo's existing doctrine — *the firm proposes, a human merges*
+(`specs/improvement.md`) — applied to dependencies instead of to trading behaviour.
+
+**As the code stands, that red does not happen, and 3b is what makes the gap reachable.**
+`tests/test_broker_surface_pin.py:62` compares `config/broker_tool_surface.yaml` to the literal
+`"alpaca-mcp-server@2.3.1"`, and nothing offline compares the YAML to `ALPACA_MCP_SPEC`. The one
+assertion that does — `tests/test_live_smoke.py:243` — sits under `pytest.mark.live`, which
+`pyproject.toml` excludes from `make test` (`addopts = "-m 'not live and not eval'"`). 3b's regex
+manager edits `agents/seats.py`, not the YAML, so a bot bump leaves the YAML at 2.3.1: the pin test
+is green, `make test` is green, the 3a probe is green (any 2.3.x imports), and the friction point
+exists only for a human editing the literal by hand — one more row for the table above. So Part 3b
+ships **with** one offline assertion added to `tests/test_broker_surface_pin.py`, kept alongside
+the existing literal: `pin["spec"] == ALPACA_MCP_SPEC`. The literal still costs a human a look at
+the YAML; the new assertion is what makes a `seats.py` bump red until that human re-enumerates with
+`make surface-pin`, updates the YAML, and moves the literal.
 
 Ordinary `requirements.lock` dependencies carry no such surface, and auto-merge on green is
-appropriate for those.
+appropriate for those — with two exceptions, **`claude-agent-sdk` and `mcp`**
+(`requirements.lock:25,36`). Those are the SDK that places orders; Part 1 kept the `uvx` boundary
+precisely so the broker server's tree could not move them, and a bot moving them on offline green
+is the same thing by a different door. The offline suite says nothing about them: every hook test
+drives `make_order_gate` through `replay_turn` (`tests/test_hook_acceptance.py:20-25`), never
+through SDK dispatch, and everywhere else the SDK appears offline its client is a monkeypatched
+fake. `pyproject.toml:10` pins `claude-agent-sdk~=0.2.116`, so a bot could move it anywhere within
+0.2.x on that green — the pattern the preamble above forbids, with a bot doing it. Those two land
+like the Alpaca bump: proposed by the bot, merged by a human. The table below already puts them in
+the right-hand column — "anything reaching `orders`" — this paragraph just names them.
 
 ### Where the line sits
 
@@ -309,6 +331,9 @@ the table above:
   matches nothing produces no PRs and looks identical to "no updates available". This is the dead
   healer that Open Question 1's staleness check exists to catch, and it should be verified once at
   setup rather than discovered in 90 days.
+- `tests/test_broker_surface_pin.py` asserts `pin["spec"] == ALPACA_MCP_SPEC` alongside the
+  existing literal (3c). Its red: bump `ALPACA_MCP_SPEC` in `agents/seats.py` alone and `make test`
+  must fail — today it stays green.
 
 **Every test is manufactured red first.** Drop the `--exclude-newer` flag, reorder the argv so the
 spec is not last, set a future date, blank the events table, fail the read, point the probe at the
