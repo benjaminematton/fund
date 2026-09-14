@@ -24,6 +24,10 @@ from state.transition import try_transition
 DEFAULT_LEASE_S = 300      # a wake that outlives this is reaped by the sweep
 DEFAULT_POLL_S = 5.0       # idle nap between cycles
 
+# Called with the claimed row as a dict. Precondition: the wake must NOT
+# transition its own row — dispatch_once owns the claimed -> done | failed
+# edge, and a wake that flips it first makes that finalization raise
+# StaleTransition and kill the loop (fail fast, by design).
 RunWake = Callable[[dict], None]
 
 
@@ -113,21 +117,33 @@ def dispatch_once(conn: sqlite3.Connection, clock: Clock, run_wake: RunWake, *,
     return DispatchResult(wid, swept)
 
 
+def _unposted(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"]
+
+
 def run_dispatcher(conn: sqlite3.Connection, slack, clock: Clock,
                    run_wake: RunWake, *, sleep: Callable[[float], None],
                    poll_s: float = DEFAULT_POLL_S,
                    lease_s: int = DEFAULT_LEASE_S,
                    max_cycles: int | None = None) -> int:
-    """The resident loop. Each cycle: dispatch_once; drain the outbox only if
-    this cycle wrote something (run_day drains its own rows — an unconditional
-    drain here would race it into duplicate posts); nap poll_s when idle.
-    max_cycles=None runs until the process is killed. Returns cycles run."""
+    """The resident loop. Each cycle: dispatch_once; then drain the outbox if
+    this cycle wrote something OR an earlier drain left rows unposted (a
+    transient Slack failure must retry on the next cycle, idle or not —
+    drain()'s contract is "left unposted, retried on the next drain"); nap
+    poll_s when idle. drain() is global, so any drain here also posts rows
+    run_day queued — the outbox tolerates that. max_cycles=None runs until the
+    process is killed. Returns cycles run."""
     cycles = 0
+    pending = False
     while max_cycles is None or cycles < max_cycles:
         res = dispatch_once(conn, clock, run_wake, lease_s=lease_s)
         cycles += 1
         if res.handled is not None or res.swept.reaped or res.swept.expired:
+            pending = True
+        if pending:
             drain(conn, slack, iso(clock.now()))
+            pending = _unposted(conn) > 0
         if res.handled is None:
             sleep(poll_s)
     return cycles
