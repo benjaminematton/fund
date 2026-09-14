@@ -33,6 +33,7 @@ journal: `journalctl -u fund-daily`.
 | `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py`, then `scripts/weights_day.py`, then `scripts/reflect_day.py`, then `scripts/critic_g1.py` |
 | `fund-backup.timer` | 17:30 ET daily | `ops/backup.sh` |
 | `fund-alert@.service` | on any of the above failing | `ops/notify_failure.sh` |
+| `fund-dispatcher.service` | **not installed** — committed by #228 (Phase 6 R1); install is a human act at R2, when a consumer exists | `scripts/run_dispatcher.py` (resident; `Type=simple`, no `Restart=`) |
 
 Four things about these are deliberate and should not be "tidied":
 
