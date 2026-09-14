@@ -16,6 +16,8 @@ EDGES: dict[str, set[tuple[str, str]]] = {
                ("partially_filled", "filled"), ("partially_filled", "canceled")},
     "checkpoints": {("pending", "running"), ("running", "done"),
                     ("running", "failed")},
+    "worklist": {("open", "claimed"), ("open", "expired"),
+                 ("claimed", "done"), ("claimed", "failed")},
 }
 
 KEYS: dict[str, tuple[str, ...]] = {
@@ -23,6 +25,7 @@ KEYS: dict[str, tuple[str, ...]] = {
     "tickets": ("id",),
     "orders": ("client_order_id",),
     "checkpoints": ("run_date", "stage", "ticker"),
+    "worklist": ("work_id",),
 }
 
 
