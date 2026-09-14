@@ -8,13 +8,15 @@ from state.transition import (EDGES, IllegalTransition, StaleTransition,
 NOW = "2026-07-06T15:30:00+00:00"
 
 TABLES = {"signals", "critiques", "decisions", "tickets", "orders",
-          "resolutions", "checkpoints", "events", "costs", "offered", "weights"}
+          "resolutions", "checkpoints", "events", "costs", "offered", "weights",
+          "worklist"}
 
 STATUSES = {
     "decisions": ["submitted", "approved", "rejected", "held", "executed", "failed", "expired"],
     "tickets": ["open", "consumed", "expired"],
     "orders": ["submitted", "filled", "partially_filled", "canceled", "rejected"],
     "checkpoints": ["pending", "running", "done", "failed"],
+    "worklist": ["open", "claimed", "done", "failed", "expired"],
 }
 
 NON_EDGES = [(t, a, b) for t, ss in STATUSES.items()
@@ -62,6 +64,8 @@ def test_every_non_edge_raises(fund_db, table, frm, to):
         "run_date": "2026-07-06", "stage": "execution", "ticker": "*"}
     if table == "orders":
         key = {"client_order_id": "x"}
+    if table == "worklist":
+        key = {"work_id": "wk_x"}
     with pytest.raises(IllegalTransition):
         transition(fund_db, table, key, frm, to, NOW)
 
@@ -211,3 +215,47 @@ def test_a_database_without_the_log_gains_it_on_reconnect(tmp_path):
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='protection'"
     ).fetchone() is not None
+
+
+def _seed_work(conn, wid="wk_0000000000000001", status="open"):
+    conn.execute(
+        "INSERT INTO worklist (work_id, kind, producer, seat, subject, status,"
+        " expires_at, created_at) VALUES (?, 'spec_review', 'orchestrator',"
+        " 'critic', 'spec_abc', ?, '2026-07-06T20:00:00+00:00', ?)",
+        (wid, status, NOW))
+    conn.commit()
+    return wid
+
+
+def test_transition_extra_columns_ride_in_the_same_cas_update(fund_db):
+    """A claim that wins the CAS must carry its lease atomically — a second
+    UPDATE could be lost to a crash and leave a claimed row with no lease."""
+    wid = _seed_work(fund_db)
+    ok = try_transition(fund_db, "worklist", {"work_id": wid}, "open", "claimed",
+                        NOW, extra={"claimed_at": NOW,
+                                    "claim_expires_at": "2026-07-06T15:35:00+00:00"})
+    assert ok is True
+    row = fund_db.execute("SELECT * FROM worklist WHERE work_id=?", (wid,)).fetchone()
+    assert (row["status"], row["claimed_at"], row["claim_expires_at"]) == (
+        "claimed", NOW, "2026-07-06T15:35:00+00:00")
+
+
+def test_transition_extra_is_not_applied_when_the_cas_misses(fund_db):
+    wid = _seed_work(fund_db, status="claimed")
+    ok = try_transition(fund_db, "worklist", {"work_id": wid}, "open", "claimed",
+                        NOW, extra={"claimed_at": "should-not-land"})
+    assert ok is False
+    row = fund_db.execute("SELECT claimed_at FROM worklist WHERE work_id=?", (wid,)).fetchone()
+    assert row["claimed_at"] is None
+
+
+def test_transition_extra_rejects_a_non_identifier_column(fund_db):
+    """The f-string interpolation of `extra` keys is safe only because every
+    caller passes literal column names; this makes the docstring's claim true
+    by construction rather than by discipline."""
+    wid = _seed_work(fund_db)
+    with pytest.raises(ValueError, match="not an identifier"):
+        try_transition(fund_db, "worklist", {"work_id": wid}, "open", "claimed",
+                       NOW, extra={"claimed_at = ?, status": NOW})
+    assert fund_db.execute("SELECT status FROM worklist WHERE work_id=?",
+                           (wid,)).fetchone()["status"] == "open"
