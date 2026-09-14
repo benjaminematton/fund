@@ -343,3 +343,29 @@ CREATE TABLE IF NOT EXISTS weights (
   created_at    TEXT NOT NULL,
   UNIQUE (as_of_date, agent)
 );
+
+-- worklist: Lane B scheduling intent, verbatim from specs/contracts.md §2 —
+-- canonical, do not add fields here. Never truth: a wake re-reads the subject
+-- from its own table. Column is `status` (not the design doc's `state`) so
+-- state/transition.py's CAS applies unchanged; see the contracts.md comment.
+--
+-- IF NOT EXISTS is load-bearing on BOTH statements: state/db.py:12 matches the
+-- table string to build _TABLES, and connect() re-runs this whole file when
+-- any table is missing, so a bare CREATE INDEX would raise on that pass.
+CREATE TABLE IF NOT EXISTS worklist (
+  work_id          TEXT PRIMARY KEY,          -- fundbt.hashing.work_id(kind, subject, dedupe_key)
+  kind             TEXT NOT NULL,             -- 'spec_review' | 'alert_triage' | ... (allow-list in code)
+  producer         TEXT NOT NULL,             -- the code path that wrote it: 'orchestrator' | 'alert_filer'
+  seat             TEXT NOT NULL,             -- the one seat that may consume it
+  subject          TEXT NOT NULL,             -- id of the thing (spec_id, alert code, ...)
+  payload          TEXT NOT NULL DEFAULT '{}', -- JSON, small; the wake re-reads truth from the DB
+  status           TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','claimed','done','failed','expired')),
+  attempts         INTEGER NOT NULL DEFAULT 0, -- human re-enqueue increments; part of the dedupe key
+  not_before       TEXT,                      -- ISO8601 UTC; debounce/backoff; NULL = claimable now
+  expires_at       TEXT NOT NULL,             -- ISO8601 UTC; sweep: open past this -> expired (+ alert)
+  claim_expires_at TEXT,                      -- lease, set at claim; sweep: claimed past this -> failed (+ alert)
+  created_at       TEXT NOT NULL,
+  claimed_at       TEXT,
+  finished_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_worklist_dispatch ON worklist(seat, status, not_before);

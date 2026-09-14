@@ -141,7 +141,7 @@ def test_a_current_db_is_green(tmp_path):
 
 
 def test_the_expected_table_count_is_pinned(tmp_path):
-    """17 tables today. expected_schema() reads state/schema.sql, so a table
+    """18 tables today. expected_schema() reads state/schema.sql, so a table
     added there is checked with no edit to the script — this assertion is the
     tripwire that makes such an addition deliberate. It IS a second edit, on
     purpose: bump it in the same commit that adds the table.
@@ -162,8 +162,13 @@ def test_the_expected_table_count_is_pinned(tmp_path):
     pre-gate's persisted active set) and `weights` (the nightly scoreboard)
     landed, character-exact to improvement.md §4, which
     tests/test_schema_contract.py now parses.
+
+    17 -> 18 on 2026-09-13 — issue #228 (Phase 6 R1)
+    (https://github.com/benjaminematton/fund/issues/228) — `worklist`, the
+    Lane B work queue, character-exact to contracts.md §2. Column is `status`
+    (not the design doc's `state`) so state/transition.py's CAS applies.
     """
-    assert len(preflight.expected_schema()) == 17
+    assert len(preflight.expected_schema()) == 18
 
 
 def test_only_column_names_are_compared(tmp_path):
@@ -311,7 +316,7 @@ def test_an_uninitialized_or_wrong_db_cannot_determine(tmp_path):
     proc = _run(db)
 
     assert proc.returncode == preflight.CANNOT_DETERMINE
-    assert "none of the 17 tables" in proc.stderr
+    assert "none of the 18 tables" in proc.stderr
 
 
 def test_a_database_that_is_not_the_fund_db_cannot_determine(tmp_path):
