@@ -1,0 +1,22 @@
+[Unit]
+Description=fund — Lane B dispatcher (resident-seats R1; no consumer registered until R2)
+Documentation=file:///opt/fund/ops/README.md
+# A dispatcher that dies must say so. OnFailure reaches Slack by curl from
+# /etc/fund/alert-env — no DB, no python, no fund imports — so it shares no
+# failure mode with the process it reports on.
+OnFailure=fund-alert@%n.service
+
+[Service]
+Type=simple
+User=fund
+Group=fund
+WorkingDirectory=/opt/fund
+EnvironmentFile=/etc/fund/env
+ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/run_dispatcher.py
+# NO Restart=. Invariant 4: the default is HOLD. A dead dispatcher alerts (above)
+# and waits for a human; open rows expire on their own schedule, each with an
+# alert, so nothing is lost and nothing retries itself. No WatchdogSec either:
+# there is nothing to watch until R2 registers a consumer.
+
+[Install]
+WantedBy=multi-user.target

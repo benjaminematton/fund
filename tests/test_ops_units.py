@@ -133,3 +133,24 @@ def test_the_g1_leg_has_a_by_hand_target_like_every_other_nightly_leg():
     missed night by hand must not have to remember a path."""
     assert "critic-g1:" in MAKEFILE
     assert "scripts/critic_g1.py" in MAKEFILE
+
+
+DISPATCHER = (ROOT / "ops" / "fund-dispatcher.service").read_text()
+
+
+def test_dispatcher_unit_is_resident_but_never_restarts_itself():
+    """Phase 6 R1 (#228). The fund's first long-lived unit keeps the firm-wide
+    rule: no Restart= (invariant 4 — a dead dispatcher alerts and waits for a
+    human; queued rows expire on schedule, each with its own alert)."""
+    directives = [l for l in DISPATCHER.splitlines() if l and not l.startswith("#")]
+    assert "Type=simple" in directives
+    assert not any(l.startswith("Restart=") for l in directives), directives
+    assert not any(l.startswith("WatchdogSec=") for l in directives), directives
+    assert "OnFailure=fund-alert@%n.service" in directives
+    assert _exec_starts(DISPATCHER) == [
+        "/opt/fund/.venv/bin/python3 /opt/fund/scripts/run_dispatcher.py"]
+
+
+def test_dispatcher_unit_is_documented_as_not_installed():
+    assert "fund-dispatcher.service" in OPS_README
+    assert "not installed" in OPS_README.split("fund-dispatcher.service", 1)[1][:400]
