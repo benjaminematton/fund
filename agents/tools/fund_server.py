@@ -445,26 +445,25 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
     write) and the lifecycle row still in SPEC, so a re-run returns the
     cached result and re-attempts the edge.
 
-    THE fundbt IMPORTS ARE INSIDE THE BODY, deliberately. `import
-    fundbt.rules` is what populates RULES (fundbt/rules.py:17) — without it
-    every spec is unknown_rule — and it drags pandas/numpy in with it;
-    agents/seats.py:263 imports this module to build EVERY seat's server,
-    and seats that never backtest must not pay that import.
-
-    NOT REGISTERED AND GRANTED TO NO SEAT (#171 half two, G-2(iii) again):
-    the `_can` check below is what a future SEAT_CAPS line switches on. The
-    §4 row is `not served`.
+    THE fundbt IMPORTS ARE INSIDE THE BODY, deliberately, and AFTER the
+    `_can` guard below. `import fundbt.rules` is what populates RULES
+    (fundbt/rules.py:17) — without it every spec is unknown_rule — and it
+    drags pandas/numpy in with it; agents/seats.py:263 imports this module
+    to build EVERY seat's server, and no seat holds the cap (§4 row `not
+    served`), so a capless caller — every caller, today — must not pay that
+    import either. The `_can` check is what a future SEAT_CAPS line
+    switches on.
 
     `seat` is the calling seat, bound here; §5 of strategy-contracts.md
     allows a seat to run another seat's spec, logged under the caller.
     """
+    if not _can(seat, "run_backtest"):
+        return {"ok": False,
+                "error": f"run_backtest is not granted to seat {seat!r}"}
     import fundbt.rules  # noqa: F401 — populates RULES; see the docstring
     from fundbt.registry import TrialRegistry
     from fundbt.run_backtest import RULES, BacktestError, run_backtest
 
-    if not _can(seat, "run_backtest"):
-        return {"ok": False,
-                "error": f"run_backtest is not granted to seat {seat!r}"}
     try:
         req = BacktestRequest(**args)
     except (ValidationError, TypeError) as e:
@@ -519,6 +518,20 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
                           "family": spec["family"],
                           "search_budget": spec["search_budget"]}, now_iso)
         return {"ok": False, "error": f"run_backtest refused: {reason}"}
+    # A retry of the identical (spec_id, params, seed) that already drew
+    # budget_exhausted does NOT raise BacktestError: registry.get(rkey)
+    # (fundbt/run_backtest.py:154, checked BEFORE the budget test at
+    # :158-165) hits the logged rejection row first and the engine returns
+    # it as a normal cache hit — {**cached, "cached": True} at :156, where
+    # `cached` is json.loads(stats) == {"rejected": "budget_exhausted"}
+    # (fundbt/registry.py:55-59). Nothing gets written below for this: the
+    # rejection was already logged and evented on the FIRST refusal, so a
+    # second budget_exhausted event here would be a duplicate #research post
+    # for a run that did not happen.
+    if "run_key" not in result:
+        return {"ok": False,
+                "error": "run_backtest refused: budget_exhausted (cached"
+                         f" rejection for this spec/params/seed: {result!r})"}
     try:
         advance_to_backtest(conn, spec["spec_id"],
                             expected_state_version=row["state_version"],

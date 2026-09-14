@@ -408,6 +408,33 @@ def test_budget_exhaustion_logs_the_rejection_and_appends_one_event(granted,
     assert tuple(_lifecycle(fund_db, sid)) == ("BACKTEST", 1)
 
 
+def test_a_retry_after_budget_exhaustion_is_refused_not_replayed(granted,
+                                                                  fund_db):
+    """fundbt/run_backtest.py:153-156 checks registry.get(rkey) BEFORE the
+    budget check at :158-165. registry.get() (fundbt/registry.py:55-59)
+    returns json.loads(stats), and for a logged budget rejection stats IS
+    {"rejected": "budget_exhausted"} — so a retry of the identical
+    (spec_id, params, seed) that already drew budget_exhausted hits the cache
+    branch, not the budget branch: the engine returns
+    {"rejected": "budget_exhausted", "cached": True} with no exception. The
+    handler must not treat that as a success — no new trial row, no second
+    #research post (the first refusal already posted one)."""
+    sid = _golden(fund_db, search_budget=1)
+    _run(fund_db, {"spec_id": sid, "params": GOLDEN_PARAMS})
+    retry_args = {"spec_id": sid, "params": {**GOLDEN_PARAMS, "dip_days": 6}}
+    first = _run(fund_db, retry_args, now_iso=LATER)
+    assert first["ok"] is False and "budget_exhausted" in first["error"]
+    trials = _count(fund_db, "trial_registry")
+    events = _count(fund_db, "events")
+    lifecycle = tuple(_lifecycle(fund_db, sid))
+
+    retry = _run(fund_db, retry_args, now_iso=LATER)
+    assert retry["ok"] is False and "budget_exhausted" in retry["error"]
+    assert _count(fund_db, "trial_registry") == trials
+    assert _count(fund_db, "events") == events == 1
+    assert tuple(_lifecycle(fund_db, sid)) == lifecycle
+
+
 def test_a_refused_run_before_the_engine_appends_no_event(granted, fund_db):
     """Only the budget rejection projects. Every other refusal is default
     HOLD: no row, no event."""
