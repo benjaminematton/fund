@@ -1507,6 +1507,8 @@ git commit -m "feat(ops): fund-dispatcher.service, committed not installed (#228
 
 ### Task 9: Region journal entries
 
+**Superseded 2026-09-14:** writes under `.claude/` are denied for background sessions, so the entries were posted verbatim as `region-journal:` comments on #228 (https://github.com/benjaminematton/fund/issues/228#issuecomment-5670604811 and #issuecomment-5670605011) for a person to land; their content also folds in the task reviews (drain-retry defect, wake precondition, sequential-CAS-test lesson). The drafts below are the pre-review versions and are retained only as the plan's record.
+
 **Files:**
 - Modify: `.claude/regions/state.md` (append under `# Journal`)
 - Modify: `.claude/regions/orchestrator.md` (append under `# Journal`)
