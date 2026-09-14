@@ -76,8 +76,8 @@ def test_handler_reason_vocabulary_matches_the_engine_verbatim():
     close, spec, reg = setup()
 
     for params in (
-        {**GOLDEN_PARAMS, "dip_pct": 0.20},         # param_out_of_range
-        {**GOLDEN_PARAMS, "lookback": 10},          # undeclared_param
+         {**GOLDEN_PARAMS, "dip_pct": 0.20},         # param_out_of_range
+         {**GOLDEN_PARAMS, "lookback": 10},          # undeclared_param
     ):
         try:
             run_backtest(spec=spec, params=params, close=close, registry=reg,

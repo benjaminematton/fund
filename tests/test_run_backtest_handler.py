@@ -144,20 +144,27 @@ def test_a_provider_that_fails_for_another_reason_is_not_swallowed(granted,
 
 # --- input schema (§3.2 BacktestRequest) -------------------------------------
 
-@pytest.mark.parametrize("args", [
-    {"params": GOLDEN_PARAMS},                                   # no spec_id
-    {"spec_id": "spec_golden000000f1"},                          # no params
-    {"spec_id": "spec_golden000000f1", "params": GOLDEN_PARAMS,
-     "seed": "zero"},                                            # bad seed
-    {"spec_id": "spec_golden000000f1", "params": GOLDEN_PARAMS,
-     "holdout_months": 0},                                       # extra=forbid
-    {"spec_id": "spec_golden000000f1", "params": "dip_days=5"},  # not a dict
+@pytest.mark.parametrize("args,field", [
+    # pydantic's message names the offending field; quoted, not guessed:
+    # "spec_id\n  Field required", "params\n  Field required",
+    # "seed\n  Input should be a valid integer", "holdout_months\n  Extra
+    # inputs are not permitted", "params\n  Input should be a valid
+    # dictionary".
+    ({"params": GOLDEN_PARAMS}, "spec_id"),                      # no spec_id
+    ({"spec_id": "spec_golden000000f1"}, "params"),               # no params
+    ({"spec_id": "spec_golden000000f1", "params": GOLDEN_PARAMS,
+      "seed": "zero"}, "seed"),                                  # bad seed
+    ({"spec_id": "spec_golden000000f1", "params": GOLDEN_PARAMS,
+      "holdout_months": 0}, "holdout_months"),                   # extra=forbid
+    ({"spec_id": "spec_golden000000f1", "params": "dip_days=5"},
+     "params"),                                                  # not a dict
 ])
 def test_a_malformed_request_is_refused_and_writes_nothing(granted, fund_db,
-                                                           args):
+                                                           args, field):
     sid = _golden(fund_db)
     r = _run(fund_db, args)
     assert r["ok"] is False
+    assert field in r["error"]
     _assert_nothing_written(fund_db, sid)
 
 
@@ -254,21 +261,34 @@ def test_a_bad_param_is_refused_by_the_handler_and_writes_nothing(
     _assert_nothing_written(fund_db, sid)
 
 
+@pytest.mark.parametrize("bad_range", [
+    "wide",              # not iterable into 3 — ValueError on unpack
+    [3, 8, "a"],         # unpacks fine; step is not numeric, must still refuse
+    ["1", "10", 1],      # lo/hi are numeric-looking strings, not numbers
+    "abc",               # a 3-char string unpacks into 3 chars, none numeric
+])
 def test_a_spec_with_a_malformed_range_is_refused_not_a_stack_trace(granted,
-                                                                    fund_db):
+                                                                    fund_db,
+                                                                    bad_range):
     """StrategySpec.param_ranges is an unvalidated dict (state/models.py:142),
-    so a range that is not [lo, hi, step] is registrable TODAY through the
-    served submit_strategy_spec. Unpacking it is a ValueError/TypeError; the
-    handler names it `bad_range:<p>` and writes nothing."""
+    so a range that is not [lo, hi, step] of numeric elements is registrable
+    TODAY through the served submit_strategy_spec. Unpacking it can be a
+    ValueError/TypeError, or can succeed with non-numeric elements ([3, 8,
+    "a"], ["1", "10", 1], a 3-char string) that would otherwise escape this
+    check silently — GOLDEN_PARAMS' dip_days=5 sits inside [3, 8] — and hit
+    the engine's own unpack (run_backtest.py:145/_neighbor_params) as a raw
+    TypeError instead of a refusal. The handler names every one of these
+    `bad_range:<p>` and writes nothing."""
+    ranges = make_spec()["param_ranges"] | {"dip_days": bad_range}
     sid = handle_submit_strategy_spec(
         fund_db, seat="quant",
         args=spec_payload(signal_rule={"name": "dip_buyer"},
-                          param_ranges={"sigma": "wide"}),
+                          param_ranges=ranges),
         now_iso=NOW)["spec_id"]
     fund_db.execute("DELETE FROM events")
     fund_db.commit()
-    r = _run(fund_db, {"spec_id": sid, "params": {"sigma": 1.5}})
-    assert r["ok"] is False and "bad_range:sigma" in r["error"]
+    r = _run(fund_db, {"spec_id": sid, "params": GOLDEN_PARAMS})
+    assert r["ok"] is False and "bad_range:dip_days" in r["error"]
     _assert_nothing_written(fund_db, sid)
 
 
@@ -439,7 +459,11 @@ def test_a_refused_run_before_the_engine_appends_no_event(granted, fund_db):
     """Only the budget rejection projects. Every other refusal is default
     HOLD: no row, no event."""
     sid = _golden(fund_db)
-    _run(fund_db, {"spec_id": sid, "params": {**GOLDEN_PARAMS, "dip_pct": 9}})
-    _run(fund_db, {"spec_id": "spec_nope", "params": GOLDEN_PARAMS})
-    _run(fund_db, {"spec_id": sid}, seat="exec")
+    r1 = _run(fund_db,
+             {"spec_id": sid, "params": {**GOLDEN_PARAMS, "dip_pct": 9}})
+    r2 = _run(fund_db, {"spec_id": "spec_nope", "params": GOLDEN_PARAMS})
+    r3 = _run(fund_db, {"spec_id": sid}, seat="exec")
+    assert r1["ok"] is False
+    assert r2["ok"] is False
+    assert r3["ok"] is False
     assert _count(fund_db, "events") == 0

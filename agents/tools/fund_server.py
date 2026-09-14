@@ -387,6 +387,9 @@ def _check_params(params: dict, ranges: dict) -> str | None:
             lo, hi, _step = ranges[p]
         except (TypeError, ValueError):
             return f"bad_range:{p}"
+        if any(isinstance(x, bool) or not isinstance(x, (int, float))
+               for x in (lo, hi, _step)):
+            return f"bad_range:{p}"
         try:
             inside = lo <= v <= hi
         except TypeError:
@@ -448,11 +451,11 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
     THE fundbt IMPORTS ARE INSIDE THE BODY, deliberately, and AFTER the
     `_can` guard below. `import fundbt.rules` is what populates RULES
     (fundbt/rules.py:17) — without it every spec is unknown_rule — and it
-    drags pandas/numpy in with it; agents/seats.py:263 imports this module
-    to build EVERY seat's server, and no seat holds the cap (§4 row `not
-    served`), so a capless caller — every caller, today — must not pay that
-    import either. The `_can` check is what a future SEAT_CAPS line
-    switches on.
+    drags pandas/numpy in with it; agents/seats.py:15 imports this module
+    (agents/seats.py:263 calls build_fund_server) to build EVERY seat's
+    server, and no seat holds the cap (§4 row `not served`), so a capless
+    caller — every caller, today — must not pay that import either. The
+    `_can` check is what a future SEAT_CAPS line switches on.
 
     `seat` is the calling seat, bound here; §5 of strategy-contracts.md
     allows a seat to run another seat's spec, logged under the caller.
@@ -529,8 +532,9 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
     # second budget_exhausted event here would be a duplicate #research post
     # for a run that did not happen.
     if "run_key" not in result:
+        reason = result.get("rejected", "unknown")
         return {"ok": False,
-                "error": "run_backtest refused: budget_exhausted (cached"
+                "error": f"run_backtest refused: {reason} (cached"
                          f" rejection for this spec/params/seed: {result!r})"}
     try:
         advance_to_backtest(conn, spec["spec_id"],
