@@ -95,12 +95,7 @@ CREATE INDEX idx_worklist_dispatch ON worklist(seat, status, not_before);
 Run: `.venv/bin/python3 -m pytest tests/test_schema_contract.py -q 2>&1 | tail -15`
 Expected: FAIL — a message naming `worklist` as declared in the spec but absent from `state/schema.sql` (the test that fails is the spec→schema direction; `test_spec_ddl_executes` must still PASS, proving the DDL is valid SQLite). If `test_spec_ddl_executes` fails, fix the SQL before continuing.
 
-- [ ] **Step 5: Commit (spec only — this is the "canonical file first" commit the PR body will name)**
-
-```bash
-git add specs/contracts.md
-git commit -m "docs(contracts): worklist table + state machine (Phase 6 R1, #228)"
-```
+- [ ] **Step 5: Do NOT commit yet.** The suite is red until Task 2 mirrors the DDL; Task 2 Step 7 commits both together. The PR body names the `specs/contracts.md` hunk as the canonical edit.
 
 ---
 
@@ -200,13 +195,22 @@ Line 61-64 (`test_every_non_edge_raises`), add the key branch after the `orders`
 Run: `.venv/bin/python3 -m pytest tests/test_state.py -q`
 Expected: all PASS (the parametrized non-edge count grows by 5×5−4 = 21 cases, all raising `IllegalTransition`).
 
-- [ ] **Step 6: Full suite, then commit**
+- [ ] **Step 6: Bump the table-count tripwire.** `tests/test_preflight_schema.py::test_the_expected_table_count_is_pinned` pins the number of tables in `state/schema.sql` and its own docstring says: "It IS a second edit, on purpose: bump it in the same commit that adds the table." Change `17` → `18` at both `assert len(preflight.expected_schema()) == 17` and `assert "none of the 17 tables" in proc.stderr`, and append a changelog paragraph to that docstring after the `15 -> 17` entry:
+
+```
+    17 -> 18 on 2026-09-13 — issue #228 (Phase 6 R1)
+    (https://github.com/benjaminematton/fund/issues/228) — `worklist`, the
+    Lane B work queue, character-exact to contracts.md §2. Column is `status`
+    (not the design doc's `state`) so state/transition.py's CAS applies.
+```
+
+- [ ] **Step 7: Full suite, then commit (ONE commit for Tasks 1+2 — a spec-only commit leaves `test_schema_contract` red, and `make test` must pass before every commit)**
 
 Run: `make test 2>&1 | tail -3`
 Expected: `PURITY LINT: clean`, all tests pass.
 
 ```bash
-git add state/schema.sql state/transition.py tests/test_state.py
+git add specs/contracts.md state/schema.sql state/transition.py tests/test_state.py tests/test_preflight_schema.py
 git commit -m "feat(state): worklist table + open/claimed/done/failed/expired machine (#228)"
 ```
 
