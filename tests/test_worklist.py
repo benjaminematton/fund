@@ -92,18 +92,29 @@ def test_claim_next_filters_by_seat(fund_db):
     assert worklist.claim_next(fund_db, now_iso=NOW, lease_until_iso=LATER, seat="critic") is not None
 
 
-def test_concurrent_claimers_on_one_row_yield_exactly_one_claim(tmp_path):
+def test_concurrent_claimers_on_one_row_yield_exactly_one_claim(tmp_path, monkeypatch):
     """CAS under concurrent claim (design R1 acceptance). Two connections to one
-    file: both see the row open; the UPDATE ... WHERE status='open' is what
-    makes only the first flip land."""
+    file. Claimer `a` SELECTs the row as open; before its CAS runs, claimer `b`
+    claims the same row to completion. `a`'s UPDATE ... WHERE status='open' then
+    matches nothing, so `a` gets no row — exactly one claim. Without that WHERE
+    guard `a` would overwrite `b`'s claim and both would return the row."""
     path = tmp_path / "fund.sqlite"
     a, b = connect(path), connect(path)
     wid = _enqueue(a)
+    real = worklist.try_transition
+    raced: list = []
+
+    def interleave(conn, *args, **kw):
+        if conn is a and not raced:          # a has SELECTed; b races ahead
+            raced.append(worklist.claim_next(b, now_iso=NOW, lease_until_iso=LATER))
+        return real(conn, *args, **kw)
+
+    monkeypatch.setattr(worklist, "try_transition", interleave)
     ra = worklist.claim_next(a, now_iso=NOW, lease_until_iso=LATER)
-    rb = worklist.claim_next(b, now_iso=NOW, lease_until_iso=LATER)
-    assert ra is not None and ra["work_id"] == wid
-    assert rb is None
+    assert raced[0] is not None and raced[0]["work_id"] == wid   # b won
+    assert ra is None                                            # a's CAS lost
     assert b.execute("SELECT COUNT(*) c FROM worklist WHERE status='claimed'").fetchone()["c"] == 1
+    assert _row(b, wid)["claim_expires_at"] == LATER
     a.close(); b.close()
 
 
