@@ -8,13 +8,15 @@ from state.transition import (EDGES, IllegalTransition, StaleTransition,
 NOW = "2026-07-06T15:30:00+00:00"
 
 TABLES = {"signals", "critiques", "decisions", "tickets", "orders",
-          "resolutions", "checkpoints", "events", "costs", "offered", "weights"}
+          "resolutions", "checkpoints", "events", "costs", "offered", "weights",
+          "worklist"}
 
 STATUSES = {
     "decisions": ["submitted", "approved", "rejected", "held", "executed", "failed", "expired"],
     "tickets": ["open", "consumed", "expired"],
     "orders": ["submitted", "filled", "partially_filled", "canceled", "rejected"],
     "checkpoints": ["pending", "running", "done", "failed"],
+    "worklist": ["open", "claimed", "done", "failed", "expired"],
 }
 
 NON_EDGES = [(t, a, b) for t, ss in STATUSES.items()
@@ -62,6 +64,8 @@ def test_every_non_edge_raises(fund_db, table, frm, to):
         "run_date": "2026-07-06", "stage": "execution", "ticker": "*"}
     if table == "orders":
         key = {"client_order_id": "x"}
+    if table == "worklist":
+        key = {"work_id": "wk_x"}
     with pytest.raises(IllegalTransition):
         transition(fund_db, table, key, frm, to, NOW)
 

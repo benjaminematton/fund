@@ -10,6 +10,7 @@ Apply transitions only via `state.transition(table, id, from_status, to_status)`
 **ticket**: `open → consumed | expired`
 **order**: `submitted → filled | partially_filled | canceled | rejected`; `partially_filled → filled | canceled`
 **checkpoint stage**: `pending → running → done | failed`
+**worklist**: `open → claimed | expired` · `claimed → done | failed` (done/failed/expired terminal; nothing auto-requeues — a human re-enqueue is a NEW row with `attempts`+1, so its `work_id` differs)
 
 ## 2. SQLite DDL
 
@@ -173,6 +174,36 @@ CREATE TABLE protection (
   created_at        TEXT NOT NULL,
   UNIQUE (alpaca_order_id, observed_at)
 );
+
+-- worklist: Lane B scheduling intent (docs/superpowers/specs/2026-08-28-
+-- resident-seats.md, R1). NEVER truth — the thing a row points at lives in its
+-- own table (strategy_critiques, events, ...), and a wake re-reads it from
+-- there. Only deterministic code writes rows: state/worklist.py enforces a
+-- kind-by-producer allow-list; an agent never enqueues work (invariant 6).
+--
+-- The column is `status`, not the design doc's `state`: state/transition.py's
+-- CAS is written against `status`, and tests/test_state.py pins that every
+-- table with a `status` column has a §1 machine. `strategies` keeps its own
+-- `state`/`state_version` shape per strategy-contracts.md §4 — do not "fix"
+-- either to match the other. There is no state_version here: the CAS is on
+-- the status value itself, and nothing reads a version token.
+CREATE TABLE worklist (
+  work_id          TEXT PRIMARY KEY,          -- fundbt.hashing.work_id(kind, subject, dedupe_key)
+  kind             TEXT NOT NULL,             -- 'spec_review' | 'alert_triage' | ... (allow-list in code)
+  producer         TEXT NOT NULL,             -- the code path that wrote it: 'orchestrator' | 'alert_filer'
+  seat             TEXT NOT NULL,             -- the one seat that may consume it
+  subject          TEXT NOT NULL,             -- id of the thing (spec_id, alert code, ...)
+  payload          TEXT NOT NULL DEFAULT '{}', -- JSON, small; the wake re-reads truth from the DB
+  status           TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','claimed','done','failed','expired')),
+  attempts         INTEGER NOT NULL DEFAULT 0, -- human re-enqueue increments; part of the dedupe key
+  not_before       TEXT,                      -- ISO8601 UTC; debounce/backoff; NULL = claimable now
+  expires_at       TEXT NOT NULL,             -- ISO8601 UTC; sweep: open past this -> expired (+ alert)
+  claim_expires_at TEXT,                      -- lease, set at claim; sweep: claimed past this -> failed (+ alert)
+  created_at       TEXT NOT NULL,
+  claimed_at       TEXT,
+  finished_at      TEXT
+);
+CREATE INDEX idx_worklist_dispatch ON worklist(seat, status, not_before);
 ```
 
 ### Attribution — `charter_version` and `model_id`
