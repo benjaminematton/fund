@@ -169,3 +169,17 @@ class SpecCritique(BaseModel):
         assert (self.verdict == "objections") == bool(self.objections)
         assert all(len(o) <= 200 for o in self.objections)
         return self
+
+
+class BacktestRequest(BaseModel):
+    """strategy-contracts.md §3.2 `BacktestRequest`, verbatim. The agent-facing
+    payload of run_backtest: which registered spec, which point inside its
+    declared param_ranges, and the seed the result is keyed by. Range
+    membership and per-param typing are the handler's check
+    (fund_server.py:_check_params), not this model's — they need the spec
+    row, which the handler loads."""
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str
+    params: dict[str, float | int | str]
+    seed: int = 0

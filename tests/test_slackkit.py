@@ -180,13 +180,17 @@ STRATEGY_SPEC = {"seat": "analyst", "spec_id": "spec_0f1e2d3c4b5a6978",
                  "family": "F1", "mechanism_class": "liquidity_provision",
                  "hypothesis": "Reversal pays for absorbing forced selling."}
 
+BUDGET_EXHAUSTED = {"seat": "quant", "spec_id": "spec_0f1e2d3c4b5a6978",
+                    "family": "F1", "search_budget": 20}
+
 BLOCK_KINDS = [("signal", SIGNAL), ("decision", DECISION),
                ("gate_approved", GATE_OK), ("gate_rejected", GATE_NO),
                ("fill", FILL), ("alert", {"text": "boom"}),
                ("digest", DIGEST), ("pnl", PNL),
                ("model_fallback_used", FALLBACK), ("scorecard", SCORECARD),
                ("spec_critique", SPEC_CRITIQUE),
-               ("strategy_spec", STRATEGY_SPEC)]
+               ("strategy_spec", STRATEGY_SPEC),
+               ("budget_exhausted", BUDGET_EXHAUSTED)]
 
 
 @pytest.mark.parametrize("kind,payload", BLOCK_KINDS)
@@ -562,6 +566,16 @@ def test_new_event_kinds_render():
     # already gone out.
     assert render("pnl", {"text": "x"})[0] == "#pnl"
     assert render("projection_error", {"event_id": 3, "kind": "bogus"})[0] == "#risk"
+
+
+def test_budget_exhaustion_lands_in_research_as_machinery():
+    """strategy-contracts.md §3.2 step 3's event. #research, beside the
+    spec's registration post; no face, because the count is the engine's."""
+    post = render("budget_exhausted", BUDGET_EXHAUSTED)
+    assert post.channel == "#research"
+    assert "spec_0f1e2d3c4b5a6978" in post.text and "20" in post.text
+    assert post.username is None and post.icon_emoji is None
+
 
 def test_drain_dead_letters_bad_event_and_continues(fund_db, sim_clock):
     from orchestrator.clock import iso

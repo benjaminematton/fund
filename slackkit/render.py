@@ -333,6 +333,21 @@ def _render_strategy_spec(payload: dict) -> Post:
                 blocks, username, icon)
 
 
+def _render_budget_exhausted(payload: dict) -> Post:
+    """A run_backtest refused because the spec's search budget is spent
+    (strategy-contracts.md §3.2 step 3). Machinery, no face: the refusal is
+    the registry's count, not a seat's words. The rejected attempt is itself
+    a logged trial, so the family's N moved even though nothing ran — which
+    is why it is worth a post and not just a tool error."""
+    seat = _seat(payload["seat"])
+    headline = (f"search budget exhausted · `{payload['spec_id']}`"
+                f" · {payload['family']} · {payload['search_budget']} trials")
+    return Post("#research", f"{headline} · refused for {seat}",
+                [_section(headline),
+                 _context(f"refused for {seat}",
+                          "the rejection is logged as a trial")])
+
+
 def _render_projection_error(payload: dict) -> Post:
     return Post("#risk",
                 f"⚠️ projection error: event {payload['event_id']} "
@@ -352,6 +367,7 @@ RENDERERS: dict[str, Callable[[dict], Post]] = {
     "scorecard": _render_scorecard,
     "strategy_spec": _render_strategy_spec,
     "spec_critique": _render_spec_critique,
+    "budget_exhausted": _render_budget_exhausted,
     "projection_error": _render_projection_error,
 }
 
