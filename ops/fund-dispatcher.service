@@ -14,9 +14,10 @@ WorkingDirectory=/opt/fund
 EnvironmentFile=/etc/fund/env
 ExecStart=/opt/fund/.venv/bin/python3 /opt/fund/scripts/run_dispatcher.py
 # NO Restart=. Invariant 4: the default is HOLD. A dead dispatcher alerts (above)
-# and waits for a human; open rows expire on their own schedule, each with an
-# alert, so nothing is lost and nothing retries itself. No WatchdogSec either:
-# there is nothing to watch until R2 registers a consumer.
+# and waits for a human; rows past expires_at stop being claimable at once, and
+# their expired transition + alert land on the next dispatcher start; nothing
+# is lost and nothing retries itself. No WatchdogSec either: there is nothing
+# to watch until R2 registers a consumer.
 
 [Install]
 WantedBy=multi-user.target

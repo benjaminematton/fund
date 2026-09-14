@@ -69,8 +69,9 @@ def _guarded(conn, slack, clock, body) -> int:
         return body()
     except (Exception, SystemExit) as exc:
         text = (f"dispatcher_failed — {type(exc).__name__}: {exc}. The"
-                " dispatcher stopped; open rows expire on schedule (each with"
-                " its own alert), nothing retries itself (invariant 4).")
+                " dispatcher stopped; rows past expires_at stop being claimable"
+                " at once and their expired transition + alert land on the next"
+                " start; nothing retries itself (invariant 4).")
         log(f"ALERT {text}")
         try:
             run_day._alert(conn, clock, "dispatcher_failed", text)

@@ -135,7 +135,10 @@ def test_dispatch_once_refuses_a_disallowed_pair_without_running_the_wake(fund_d
     assert [a["code"] for a in _alerts(fund_db)] == ["work_disallowed"]
 
 
-def test_dispatch_once_sweeps_before_claiming(fund_db, clock):
+def test_dispatch_once_sweeps_and_claims_in_one_call(fund_db, clock):
+    # Sweep and claim act on disjoint row sets (claimed vs open; expires_at <=
+    # now vs > now), so their ORDER is unobservable and cannot be pinned — this
+    # pins only that one call does both.
     stale = _enqueue(fund_db, clock, subject="stale", expires_at="2026-07-06T15:31:00+00:00")
     clock.advance(minutes=5)
     fresh = _enqueue(fund_db, clock, subject="fresh")

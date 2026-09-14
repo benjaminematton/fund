@@ -57,6 +57,8 @@ def try_transition(conn: sqlite3.Connection, table: str, key: dict,
     sets = "status = ?" + (", updated_at = ?" if table == "checkpoints" else "")
     params: list = [to_status] + ([now_iso] if table == "checkpoints" else [])
     for col, val in (extra or {}).items():
+        if not col.isidentifier():
+            raise ValueError(f"{table}: extra column {col!r} is not an identifier")
         sets += f", {col} = ?"
         params.append(val)
     where = " AND ".join(f"{col} = ?" for col in KEYS[table]) + " AND status = ?"

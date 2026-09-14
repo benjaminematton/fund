@@ -69,8 +69,10 @@ def test_enqueue_refuses_a_pair_outside_the_allow_list(fund_db, producer, kind):
 
 
 def test_claim_next_takes_the_oldest_claimable_row_and_sets_the_lease(fund_db):
-    old = _enqueue(fund_db, subject="s1", now_iso="2026-07-06T15:00:00+00:00")
+    # Newer row inserted FIRST: rowid order would return it, only ORDER BY
+    # created_at returns the older one.
     _enqueue(fund_db, subject="s2", now_iso="2026-07-06T15:10:00+00:00")
+    old = _enqueue(fund_db, subject="s1", now_iso="2026-07-06T15:00:00+00:00")
     row = worklist.claim_next(fund_db, now_iso=NOW,
                               lease_until_iso="2026-07-06T15:35:00+00:00")
     assert row["work_id"] == old

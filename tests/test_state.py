@@ -247,3 +247,15 @@ def test_transition_extra_is_not_applied_when_the_cas_misses(fund_db):
     assert ok is False
     row = fund_db.execute("SELECT claimed_at FROM worklist WHERE work_id=?", (wid,)).fetchone()
     assert row["claimed_at"] is None
+
+
+def test_transition_extra_rejects_a_non_identifier_column(fund_db):
+    """The f-string interpolation of `extra` keys is safe only because every
+    caller passes literal column names; this makes the docstring's claim true
+    by construction rather than by discipline."""
+    wid = _seed_work(fund_db)
+    with pytest.raises(ValueError, match="not an identifier"):
+        try_transition(fund_db, "worklist", {"work_id": wid}, "open", "claimed",
+                       NOW, extra={"claimed_at = ?, status": NOW})
+    assert fund_db.execute("SELECT status FROM worklist WHERE work_id=?",
+                           (wid,)).fetchone()["status"] == "open"

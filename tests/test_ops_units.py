@@ -151,6 +151,6 @@ def test_dispatcher_unit_is_resident_but_never_restarts_itself():
         "/opt/fund/.venv/bin/python3 /opt/fund/scripts/run_dispatcher.py"]
 
 
-def test_dispatcher_unit_is_documented_as_not_installed():
+def test_dispatcher_unit_is_documented_as_not_enabled():
     assert "fund-dispatcher.service" in OPS_README
-    assert "not installed" in OPS_README.split("fund-dispatcher.service", 1)[1][:400]
+    assert "not enabled" in OPS_README.split("fund-dispatcher.service", 1)[1][:400]
