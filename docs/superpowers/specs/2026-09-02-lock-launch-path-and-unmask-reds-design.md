@@ -231,8 +231,11 @@ manifest entry. Verified as supported: `customType: "regex"` with `managerFilePa
 
 It bumps `ALPACA_MCP_SPEC` and `MCP_RESOLUTION_DATE` **together**. If it ever bumps only the spec,
 Part 1's self-enforcing coupling catches it: uv refuses to resolve when the date excludes the pinned
-version, so the CI probe goes red and the PR cannot merge. The failure mode is a stuck PR, never a
-bad merge.
+version, so the CI probe goes red. That red is for the human who merges (3c), and today nothing
+enforces it — `master` has no branch protection and no required status checks, so a red check stops
+nobody from clicking merge. Making "cannot merge" structural is a repo-settings change (required
+checks for the `test` and `mcp-import` jobs on `master`) that this doc does not propose; it is
+Benjamin's call in his own window.
 
 ### 3b-bis. What the credential-free probe cannot see, and what it would cost to see it
 
@@ -273,20 +276,26 @@ is green, `make test` is green, the 3a probe is green (any 2.3.x imports), and t
 exists only for a human editing the literal by hand — one more row for the table above. So Part 3b
 ships **with** one offline assertion added to `tests/test_broker_surface_pin.py`, kept alongside
 the existing literal: `pin["spec"] == ALPACA_MCP_SPEC`. The literal still costs a human a look at
-the YAML; the new assertion is what makes a `seats.py` bump red until that human re-enumerates with
-`make surface-pin`, updates the YAML, and moves the literal.
+the YAML; the new assertion is what makes a `seats.py` bump red until that human updates the YAML's
+`spec`, runs `make surface-pin` (whose own first assertion, `tests/test_live_smoke.py:243`, refuses
+to enumerate against a stale YAML — so the YAML moves first), classifies what moved, and moves the
+literal in `test_broker_surface_pin.py`.
 
 Ordinary `requirements.lock` dependencies carry no such surface, and auto-merge on green is
 appropriate for those — with two exceptions, **`claude-agent-sdk` and `mcp`**
 (`requirements.lock:25,36`). Those are the SDK that places orders; Part 1 kept the `uvx` boundary
 precisely so the broker server's tree could not move them, and a bot moving them on offline green
-is the same thing by a different door. The offline suite says nothing about them: every hook test
-drives `make_order_gate` through `replay_turn` (`tests/test_hook_acceptance.py:20-25`), never
-through SDK dispatch, and everywhere else the SDK appears offline its client is a monkeypatched
-fake. `pyproject.toml:10` pins `claude-agent-sdk~=0.2.116`, so a bot could move it anywhere within
-0.2.x on that green — the pattern the preamble above forbids, with a bot doing it. Those two land
-like the Alpaca bump: proposed by the bot, merged by a human. The table below already puts them in
-the right-hand column — "anything reaching `orders`" — this paragraph just names them.
+is the same thing by a different door. Offline green never exercises order dispatch through the SDK
+client: the hook acceptance tests drive `make_order_gate` through `replay_turn`
+(`tests/test_hook_acceptance.py:20-25`), `tests/test_runtime_hooks.py` calls the gate directly, and
+wherever the client itself appears offline it is a fake (`tests/test_run_day.py:527,612,698`,
+`tests/test_exec_turn_runner.py`). Real SDK code does run offline — `agents/tools/fund_server.py:21`
+registers tools, `agents/seats.py:12` builds `ClaudeAgentOptions` — but none of it is the path that
+places an order. `pyproject.toml:10` pins `claude-agent-sdk~=0.2.116`, so a bot could move it
+anywhere within 0.2.x on that green — the pattern the preamble above forbids, with a bot doing it.
+So 3b's Renovate config carries a `packageRules` entry — `matchPackageNames: ["claude-agent-sdk",
+"mcp"]`, `automerge: false` — and those two land like the Alpaca bump: proposed by the bot, merged
+by a human. The table below carries the same exception.
 
 ### Where the line sits
 
@@ -294,7 +303,7 @@ Self-healing stops at the invariants, and that boundary is load-bearing rather t
 
 | Self-heals | Never self-heals |
 |---|---|
-| dependency versions, resolution dates, lockfiles | gate thresholds (invariant 3) |
+| dependency versions, resolution dates, lockfiles (except `claude-agent-sdk` and `mcp` — 3c) | gate thresholds (invariant 3) |
 | CI and probe wiring | charters, desk config (`specs/design.md` non-goals) |
 | | anything reaching `orders` or the broker |
 
@@ -334,6 +343,8 @@ the table above:
 - `tests/test_broker_surface_pin.py` asserts `pin["spec"] == ALPACA_MCP_SPEC` alongside the
   existing literal (3c). Its red: bump `ALPACA_MCP_SPEC` in `agents/seats.py` alone and `make test`
   must fail — today it stays green.
+- An offline test reads the Renovate config and fails if `claude-agent-sdk` or `mcp` is
+  automerge-eligible (3c). Its red: delete the `packageRules` entry.
 
 **Every test is manufactured red first.** Drop the `--exclude-newer` flag, reorder the argv so the
 spec is not last, set a future date, blank the events table, fail the read, point the probe at the
