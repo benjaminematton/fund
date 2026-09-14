@@ -1039,6 +1039,127 @@ git add orchestrator/dispatch.py tests/test_dispatch.py
 git commit -m "feat(orchestrator): Lane B dispatcher + sweep, no LLM (#228)"
 ```
 
+- [ ] **Step 6 (post-review amendment, 2026-09-14): drain until the outbox is empty; write down the wake precondition.** The task reviewer demonstrated two defects in the Step 3 code as written: (a) "drain only after a cycle that wrote" strands an alert when Slack fails transiently — `drain()`'s own contract is "left unposted, retried on the next drain", and there is no next drain while the queue is idle; (b) the headline loop test passed unchanged under "drain every cycle", so the rule was pinned nowhere. Also: a wake that transitions its own row makes `worklist.finish` at the end of `dispatch_once` raise `StaleTransition`, and nothing said it must not.
+
+Replace `run_dispatcher` with:
+
+```python
+def _unposted(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"]
+
+
+def run_dispatcher(conn: sqlite3.Connection, slack, clock: Clock,
+                   run_wake: RunWake, *, sleep: Callable[[float], None],
+                   poll_s: float = DEFAULT_POLL_S,
+                   lease_s: int = DEFAULT_LEASE_S,
+                   max_cycles: int | None = None) -> int:
+    """The resident loop. Each cycle: dispatch_once; then drain the outbox if
+    this cycle wrote something OR an earlier drain left rows unposted (a
+    transient Slack failure must retry on the next cycle, idle or not —
+    drain()'s contract is "left unposted, retried on the next drain"); nap
+    poll_s when idle. drain() is global, so any drain here also posts rows
+    run_day queued — the outbox tolerates that. max_cycles=None runs until the
+    process is killed. Returns cycles run."""
+    cycles = 0
+    pending = False
+    while max_cycles is None or cycles < max_cycles:
+        res = dispatch_once(conn, clock, run_wake, lease_s=lease_s)
+        cycles += 1
+        if res.handled is not None or res.swept.reaped or res.swept.expired:
+            pending = True
+        if pending:
+            drain(conn, slack, iso(clock.now()))
+            pending = _unposted(conn) > 0
+        if res.handled is None:
+            sleep(poll_s)
+    return cycles
+```
+
+Change the `RunWake` alias line to:
+
+```python
+# Called with the claimed row as a dict. Precondition: the wake must NOT
+# transition its own row — dispatch_once owns the claimed -> done | failed
+# edge, and a wake that flips it first makes that finalization raise
+# StaleTransition and kill the loop (fail fast, by design).
+RunWake = Callable[[dict], None]
+```
+
+In `tests/test_dispatch.py`: delete the unused `from state.transition import StaleTransition` import; replace `test_run_dispatcher_sleeps_only_when_idle_and_drains_after_writes` with these three:
+
+```python
+class _CountingSlack(FakeSlack):
+    """FakeSlack that counts post attempts and can fail transiently once."""
+
+    def __init__(self, fail_first: int = 0):
+        super().__init__()
+        self.attempts = 0
+        self.fail_first = fail_first
+
+    def post(self, channel, text, thread_ts=None, blocks=None, username=None,
+             icon_emoji=None):
+        self.attempts += 1
+        if self.attempts <= self.fail_first:
+            raise RuntimeError("slack hiccup")        # transient, not PermanentPostError
+        return super().post(channel, text, thread_ts, blocks, username, icon_emoji)
+
+
+def test_run_dispatcher_sleeps_only_when_idle(fund_db, clock):
+    _enqueue(fund_db, clock, subject="a")
+    _enqueue(fund_db, clock, subject="b")
+    naps = []
+
+    def _sleep(s):
+        naps.append(s)
+        clock.advance(seconds=int(s))
+
+    def boom(row):
+        raise RuntimeError("x")
+
+    cycles = dispatch.run_dispatcher(
+        fund_db, FakeSlack(), clock, boom, sleep=_sleep, poll_s=5.0, max_cycles=4)
+    assert cycles == 4
+    assert naps == [5.0, 5.0]                      # two busy cycles, two idle
+
+
+def test_run_dispatcher_leaves_a_foreign_unposted_event_alone_while_idle(fund_db, clock):
+    """Idle cycles do not drain: a row run_day queued (not ours) is still
+    unposted after several idle cycles. Distinguishes "drain only after our
+    writes" from "drain every cycle"."""
+    from slackkit.outbox import append_event
+    append_event(fund_db, "alert", {"code": "not_ours", "text": "run_day's"},
+                 iso(clock.now()))
+    slack = _CountingSlack()
+    dispatch.run_dispatcher(fund_db, slack, clock, lambda row: None,
+                            sleep=lambda s: clock.advance(seconds=int(s)),
+                            max_cycles=3)
+    assert slack.attempts == 0
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"] == 1
+
+
+def test_run_dispatcher_retries_a_transiently_failed_drain_on_the_next_idle_cycle(fund_db, clock):
+    """A wake fails, the alert's first post raises transiently, the queue goes
+    idle — the alert must still land on a later cycle, not wait for the next
+    write. Pins drain()'s retry contract through the loop."""
+    _enqueue(fund_db, clock)
+    slack = _CountingSlack(fail_first=1)
+
+    def boom(row):
+        raise RuntimeError("x")
+
+    dispatch.run_dispatcher(fund_db, slack, clock, boom,
+                            sleep=lambda s: clock.advance(seconds=int(s)),
+                            max_cycles=3)
+    assert slack.attempts == 2                     # cycle 1 failed, cycle 2 delivered
+    assert len(slack.posts["#risk"]) == 1
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE posted_at IS NULL").fetchone()["c"] == 0
+```
+
+Check `slackkit/fake.py`'s `FakeSlack.post` signature before subclassing and match it exactly. Run `tests/test_dispatch.py`, then `make test`, then commit: `git commit -m "fix(orchestrator): dispatcher drains until the outbox is empty; wake precondition (#228)"`.
+
 ---
 
 ### Task 7: `scripts/run_dispatcher.py` — composition root with a no-consumer wake
