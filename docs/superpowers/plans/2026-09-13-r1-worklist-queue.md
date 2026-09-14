@@ -398,8 +398,8 @@ git commit -m "feat(fundbt): work_id() — the worklist row hasher (#228)"
   - `allowed(producer: str, kind: str) -> bool`
   - `enqueue(conn, *, kind, producer, seat, subject, expires_at, now_iso, payload: dict | None = None, not_before: str | None = None, attempts: int = 0) -> str` — returns the `work_id`; raises `DisallowedWork`; a repeat with the same `(kind, subject, attempts)` is a no-op returning the same id.
   - `claim_next(conn, *, now_iso: str, lease_until_iso: str, seat: str | None = None) -> sqlite3.Row | None` — oldest claimable `open` row (`not_before` passed or NULL, `expires_at` in the future), CAS'd to `claimed` with `claimed_at`/`claim_expires_at` set; `None` when nothing is claimable.
-  - `finish(conn, work_id, now_iso)` — `claimed → done`, sets `finished_at`; raises `StaleTransition` if not claimed.
-  - `fail(conn, work_id, now_iso)` — `claimed → failed`, sets `finished_at`; raises likewise.
+  - `finish(conn, wid, now_iso)` — `claimed → done`, sets `finished_at`; raises `StaleTransition` if not claimed. (Parameter is `wid`, not `work_id`: the module imports the `work_id` hasher and must not shadow it. Callers pass it positionally.)
+  - `fail(conn, wid, now_iso)` — `claimed → failed`, sets `finished_at`; raises likewise.
 
 - [ ] **Step 1: Write the failing tests.** Append to `tests/test_worklist.py`:
 
@@ -480,18 +480,29 @@ def test_claim_next_filters_by_seat(fund_db):
     assert worklist.claim_next(fund_db, now_iso=NOW, lease_until_iso=LATER, seat="critic") is not None
 
 
-def test_concurrent_claimers_on_one_row_yield_exactly_one_claim(tmp_path):
+def test_concurrent_claimers_on_one_row_yield_exactly_one_claim(tmp_path, monkeypatch):
     """CAS under concurrent claim (design R1 acceptance). Two connections to one
-    file: both see the row open; the UPDATE ... WHERE status='open' is what
-    makes only the first flip land."""
+    file. Claimer `a` SELECTs the row as open; before its CAS runs, claimer `b`
+    claims the same row to completion. `a`'s UPDATE ... WHERE status='open' then
+    matches nothing, so `a` gets no row — exactly one claim. Without that WHERE
+    guard `a` would overwrite `b`'s claim and both would return the row."""
     path = tmp_path / "fund.sqlite"
     a, b = connect(path), connect(path)
     wid = _enqueue(a)
+    real = worklist.try_transition
+    raced: list = []
+
+    def interleave(conn, *args, **kw):
+        if conn is a and not raced:          # a has SELECTed; b races ahead
+            raced.append(worklist.claim_next(b, now_iso=NOW, lease_until_iso=LATER))
+        return real(conn, *args, **kw)
+
+    monkeypatch.setattr(worklist, "try_transition", interleave)
     ra = worklist.claim_next(a, now_iso=NOW, lease_until_iso=LATER)
-    rb = worklist.claim_next(b, now_iso=NOW, lease_until_iso=LATER)
-    assert ra is not None and ra["work_id"] == wid
-    assert rb is None
+    assert raced[0] is not None and raced[0]["work_id"] == wid   # b won
+    assert ra is None                                            # a's CAS lost
     assert b.execute("SELECT COUNT(*) c FROM worklist WHERE status='claimed'").fetchone()["c"] == 1
+    assert _row(b, wid)["claim_expires_at"] == LATER
     a.close(); b.close()
 
 
