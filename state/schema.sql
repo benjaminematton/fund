@@ -195,11 +195,11 @@ CREATE TABLE IF NOT EXISTS strategy_critiques (
 -- Registration WRITES this row (issue #197): state/specs.py's
 -- insert_strategy_spec INSERTs the spec and its lifecycle row in state SPEC
 -- in one transaction, which is §3.1's "INSERTs spec + `strategies` row in
--- state SPEC". Nothing TRANSITIONS a row, though — this table has no
--- state/transition.py machine, so try_transition() raises IllegalTransition
--- for a table absent from EDGES, which is the right behaviour until §4's
--- edges are implemented. state_version is declared because §2 declares it,
--- not because anything reads it.
+-- state SPEC". Only ONE edge is implemented: state/specs.py's
+-- advance_to_backtest CASes SPEC -> BACKTEST on state_version (#171 half
+-- two). This table has no state/transition.py machine, so try_transition()
+-- raises IllegalTransition for it; the rest of §4's edges are a follow-up
+-- once #170's EDGES change lands.
 --
 -- IF NOT EXISTS is load-bearing here and not style: state/db.py:12 matches
 -- that exact string to build _TABLES. §2 spells it CREATE TABLE, per its own

@@ -13,8 +13,9 @@ from pydantic import ValidationError
 
 from state.db import connect
 from state.models import SpecCritique, StrategySpec
-from state.specs import (OrphanedSpecs, insert_strategy_spec,
-                         specs_awaiting_critique)
+from state.specs import (OrphanedSpecs, advance_to_backtest,
+                         insert_strategy_spec, specs_awaiting_critique)
+from state.transition import IllegalTransition, StaleTransition
 
 NOW = "2026-07-06T15:00:00+00:00"
 
@@ -468,3 +469,88 @@ def test_hypothesis_and_invalidation_are_capped_at_five_hundred_chars():
         StrategySpec(**dict(SPEC, hypothesis="x" * 501))
     with pytest.raises(ValidationError):
         StrategySpec(**dict(SPEC, invalidation="x" * 501))
+
+
+# --- advance_to_backtest: the one strategies edge this tree implements ------
+
+def _lifecycle(conn, sid):
+    return conn.execute("SELECT state, state_version, updated_at FROM strategies"
+                        " WHERE strategy_id = ?", (sid,)).fetchone()
+
+
+def test_first_run_moves_spec_to_backtest_and_bumps_the_cas_token(conn):
+    """strategy-contracts.md §4 row 1: SPEC -> BACKTEST on the first
+    run_backtest. §4's CAS: state_version is the token, so it moves with the
+    state; updated_at is the injected clock."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    later = "2026-07-07T15:00:00+00:00"
+    assert advance_to_backtest(conn, sid, expected_state_version=0,
+                               now_iso=later) is True
+    row = _lifecycle(conn, sid)
+    assert (row["state"], row["state_version"], row["updated_at"]) == (
+        "BACKTEST", 1, later)
+
+
+def test_a_later_run_finds_backtest_and_is_a_no_op(conn):
+    """§4 has no BACKTEST -> BACKTEST edge, and §3.2 step 7 runs on every
+    call, so the second call must be a no-op — not an error, and not a
+    second bump of the token."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    advance_to_backtest(conn, sid, expected_state_version=0, now_iso=NOW)
+    before = tuple(_lifecycle(conn, sid))
+    assert advance_to_backtest(conn, sid, expected_state_version=1,
+                               now_iso="2026-07-08T15:00:00+00:00") is False
+    assert tuple(_lifecycle(conn, sid)) == before
+
+
+def test_a_stale_token_writes_nothing_and_raises(conn):
+    """§4: "every transition passes expected_state_version; mismatch ->
+    no-op". The row is in SPEC but its token moved under the caller, so the
+    UPDATE's WHERE matches nothing and the caller is told, not overwritten."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    conn.execute("UPDATE strategies SET state_version = 3 WHERE strategy_id = ?",
+                 (sid,))
+    conn.commit()
+    with pytest.raises(StaleTransition):
+        advance_to_backtest(conn, sid, expected_state_version=0, now_iso=NOW)
+    row = _lifecycle(conn, sid)
+    assert (row["state"], row["state_version"]) == ("SPEC", 3)
+
+
+def test_any_other_state_is_an_illegal_edge(conn):
+    """REJECTED (terminal) and VALIDATED (past BACKTEST) have no edge to
+    BACKTEST in §4. Raise, never overwrite (CLAUDE.md conventions)."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    for state in ("REJECTED", "VALIDATED"):
+        conn.execute("UPDATE strategies SET state = ? WHERE strategy_id = ?",
+                     (state, sid))
+        conn.commit()
+        with pytest.raises(IllegalTransition):
+            advance_to_backtest(conn, sid, expected_state_version=0,
+                                now_iso=NOW)
+        assert _lifecycle(conn, sid)["state"] == state
+
+
+def test_a_missing_lifecycle_row_raises_rather_than_inventing_one(conn):
+    """A spec with no strategies row is an orphan (_refuse_orphaned_specs);
+    advancing it would be the silent backfill that function refuses."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    conn.execute("DELETE FROM strategies WHERE strategy_id = ?", (sid,))
+    conn.commit()
+    with pytest.raises(LookupError):
+        advance_to_backtest(conn, sid, expected_state_version=0, now_iso=NOW)
+    assert _lifecycle(conn, sid) is None
+
+
+def test_advance_is_committed(tmp_path):
+    """Like insert_strategy_spec, the function commits: the handler that
+    calls it holds a per-tool-call connection (fundbt/registry.py:44-47)
+    and must not leave the move in an open transaction."""
+    path = tmp_path / "fund.sqlite"
+    c = connect(path)
+    sid = insert_strategy_spec(c, StrategySpec(**SPEC), NOW)
+    advance_to_backtest(c, sid, expected_state_version=0, now_iso=NOW)
+    c.close()
+    c2 = connect(path)
+    assert _lifecycle(c2, sid)["state"] == "BACKTEST"
+    c2.close()
