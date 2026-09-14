@@ -38,7 +38,7 @@ Copied from `CLAUDE.md` and the specs; every task's requirements include these.
 | D3 | No `@tool`, no cap, §4 row `not served`, seats cell empty, schema cell `strategy-contracts.md` §3.2. | Precedent rows `contracts.md:285` (`submit_critique`) and `:287-289` (empty seats cells). Why it stays green: see "Why a `not served` row with no decorator is green" below. |
 | D4 (revised) | ONE transition, `strategies` SPEC→BACKTEST, as a function in `state/specs.py` with §4 CAS semantics. `transition.py` untouched. | `strategies` DDL `state/schema.sql:207-216`: `state_version INTEGER NOT NULL DEFAULT 0`, `updated_at TEXT NOT NULL`, no `status` column. `IllegalTransition`/`StaleTransition` exist at `state/transition.py:29-34` and are imported, not redefined. |
 | D5 | Budget exhausted: engine logs the rejection and raises (`run_backtest.py:158-165`); handler additionally appends a `budget_exhausted` event via `append_event`. Fix `acceptance.md:91`. | `append_event(conn, kind, payload, now_iso) -> int` (`slackkit/outbox.py:29-31`), commits internally (`:20-26`). **Forced companion:** `tests/test_slackkit.py:829-832` `test_every_written_kind_has_a_renderer` AST-scans every `append_event` kind literal outside `tests/` and requires a `RENDERERS` entry (`slackkit/render.py:342-356`), so a renderer is mandatory, not optional. |
-| D6 (amended by Q1 ruling) | Step 6 stays "computed and recorded, not verified" (`strategy-contracts.md:185`). Steps 4 and 5 are engine-side. **Step 2 is handler-side in full** (ruling Q1): declared, numeric-typed where the bounds are numeric, in range — before the engine is called, with the engine's own reason spellings (`undeclared_param:<p>`, `param_out_of_range:<p>`, plus `param_type:<p>`). `fundbt/` is not changed; the engine's own step 2 (`:140-146`) then re-runs on inputs that already passed. | `snapshot_hash` recorded at `run_backtest.py:150`; holdout `:167-173`; cost floors + 2×/3× `:175-181`; engine step 2 `:140-146` (spellings at `:143`, `:146`). |
+| D6 (amended by Q1 ruling) | Step 6 stays "computed and recorded, not verified" (`strategy-contracts.md:185`). Steps 4 and 5 are engine-side. **Step 2 is handler-side in full** (ruling Q1, review F2/F3/F7): declared, complete, comparable to its bounds, in range — before the engine is called, with the engine's own reason spellings (`undeclared_param:<p>`, `param_out_of_range:<p>`) plus `missing_param:<p>`, `bad_range:<p>`, `param_type:<p>`. `fundbt/` is not changed; the engine's own step 2 (`:140-146`) then re-runs on inputs that already passed. | `snapshot_hash` recorded at `run_backtest.py:150`; holdout `:167-173`; cost floors + 2×/3× `:175-181`; engine step 2 `:140-146` (spellings at `:143`, `:146`). |
 | D7 | Add the `acceptance.md:89` test: no seat's `tools/list` contains `evaluate_holdout`, `run_backtest`, or any `stratgate` evaluator. | Lives in `tests/test_tool_surface_canon.py` (reason in T3). Evaluators: `stratgate/gate.py:65 evaluate_g2`, `:110 evaluate_g3`; `fundbt/run_backtest.py:233 evaluate_holdout`. |
 | D8 | Registry = `TrialRegistry(conn)` on the fund DB connection; `seat=` calling seat; `now_iso=` injected. | `TrialRegistry.__init__(self, conn: sqlite3.Connection)` (`fundbt/registry.py:50`). `fund_server.py:17-32` imports nothing from `fundbt` today. |
 | D9 | `BacktestRequest` in `state/models.py` beside `StrategySpec`/`SpecCritique` (`state/models.py:120-171`), `model_config = ConfigDict(extra="forbid")` as `:133`. Output = the engine's `BacktestResult` dict; `cached` as the engine gives it (`:156`, `:224`). | |
@@ -288,7 +288,11 @@ Expected: all pass (the pre-existing count plus 6).
 
 - [ ] **Step 5: Manufacture a red against the passing code**
 
-Temporarily delete ` AND state_version = ?` from the UPDATE's WHERE and drop `expected_state_version` from the params tuple. Run the file. Expected red: exactly `test_a_stale_token_writes_nothing_and_raises` (the row moves to BACKTEST with token 4). Restore. Then temporarily change `return False` (the BACKTEST branch) to fall through to the UPDATE: expected red `test_a_later_run_finds_backtest_and_is_a_no_op` only (StaleTransition, since `state = 'SPEC'` no longer matches). Restore. Record both failure lists in the task report.
+Three mutations, one at a time, each restored before the next; record every failure list in the task report:
+
+1. Delete ` AND state_version = ?` from the UPDATE's WHERE and drop `expected_state_version` from the params tuple. Expected red: exactly `test_a_stale_token_writes_nothing_and_raises` (the row moves to BACKTEST with token 4).
+2. Change `return False` (the BACKTEST branch) to fall through to the UPDATE. Expected red: `test_a_later_run_finds_backtest_and_is_a_no_op` only (`StaleTransition`, since `state = 'SPEC'` no longer matches).
+3. Delete the `if row["state"] != "SPEC": raise IllegalTransition(...)` block. Expected red: `test_any_other_state_is_an_illegal_edge` only — REJECTED and VALIDATED fall through to the UPDATE, whose `state = 'SPEC'` matches nothing, and the function raises `StaleTransition` instead of `IllegalTransition`. Nothing is written either way; what the mutation removes is the NAME of the failure, which is what an operator reads.
 
 - [ ] **Step 6: Full suite, then commit**
 
@@ -419,7 +423,7 @@ def test_a_seat_without_the_cap_is_refused_and_nothing_is_written(fund_db):
 
 
 def test_close_provider_is_a_required_keyword_and_build_fund_server_has_none(
-        fund_db, sim_clock):
+        fund_db):
     """D1 as ruled: the seam is a REQUIRED handler parameter, bound by the
     future @tool closure — not a build_fund_server kwarg nothing reads."""
     import inspect
@@ -445,16 +449,22 @@ def test_a_provider_with_no_data_is_a_tool_error_not_a_run(granted, fund_db):
     _assert_nothing_written(fund_db, sid)
 
 
+@pytest.mark.parametrize("exc", [RuntimeError("disk gone"),
+                                 KeyError("SYN00"),
+                                 IndexError("empty slice")])
 def test_a_provider_that_fails_for_another_reason_is_not_swallowed(granted,
-                                                                   fund_db):
-    """CLAUDE.md: fail fast, never swallow. Only the named LookupError is a
-    refusal; anything else is a bug and must surface as one."""
+                                                                   fund_db,
+                                                                   exc):
+    """CLAUDE.md: fail fast, never swallow. Only a bare LookupError is a
+    refusal. KeyError and IndexError are LookupError SUBCLASSES — the shape a
+    buggy loader actually raises (a missing column, an empty slice) — and
+    must propagate as bugs, not become a polite "no data" refusal."""
     sid = _golden(fund_db)
 
     def broken():
-        raise RuntimeError("disk gone")
+        raise exc
 
-    with pytest.raises(RuntimeError, match="disk gone"):
+    with pytest.raises(type(exc)):
         _run(fund_db, {"spec_id": sid, "params": GOLDEN_PARAMS},
              close_provider=broken)
     _assert_nothing_written(fund_db, sid)
@@ -543,17 +553,23 @@ def test_a_rule_name_the_engine_does_not_register_is_refused(granted, fund_db):
     _assert_nothing_written(fund_db, sid)
 
 
-# --- step 2: params declared, typed, in range — HANDLER-side (ruling Q1) ----
+# --- step 2: params declared, complete, typed, in range — HANDLER-side -------
 
 @pytest.mark.parametrize("params,reason", [
     ({**GOLDEN_PARAMS, "dip_pct": 0.20}, "param_out_of_range:dip_pct"),
     ({**GOLDEN_PARAMS, "dip_days": 2}, "param_out_of_range:dip_days"),
     ({**GOLDEN_PARAMS, "lookback": 10}, "undeclared_param:lookback"),
+    # Completeness: fundbt/rules.py:25-27 and _neighbor_params
+    # (run_backtest.py:105-118) read EVERY declared param, so a missing one
+    # is a raw KeyError inside the engine unless refused here.
+    ({"dip_days": 5}, "missing_param:"),
+    ({}, "missing_param:"),
     # §3.2 lets params carry str; a str against numeric bounds is a TYPE
     # refusal here, not the TypeError the engine's `lo <= v <= hi` would
-    # raise (run_backtest.py:145).
+    # raise (run_backtest.py:145). No bool case: pydantic coerces True to
+    # 1.0 under `float | int | str` before the handler ever sees it
+    # (measured), so a bool never reaches _check_params.
     ({**GOLDEN_PARAMS, "dip_days": "5"}, "param_type:dip_days"),
-    ({**GOLDEN_PARAMS, "dip_pct": True}, "param_type:dip_pct"),
 ])
 def test_a_bad_param_is_refused_by_the_handler_and_writes_nothing(
         granted, fund_db, params, reason):
@@ -563,6 +579,24 @@ def test_a_bad_param_is_refused_by_the_handler_and_writes_nothing(
     sid = _golden(fund_db)
     r = _run(fund_db, {"spec_id": sid, "params": params})
     assert r["ok"] is False and reason in r["error"]
+    _assert_nothing_written(fund_db, sid)
+
+
+def test_a_spec_with_a_malformed_range_is_refused_not_a_stack_trace(granted,
+                                                                    fund_db):
+    """StrategySpec.param_ranges is an unvalidated dict (state/models.py:142),
+    so a range that is not [lo, hi, step] is registrable TODAY through the
+    served submit_strategy_spec. Unpacking it is a ValueError/TypeError; the
+    handler names it `bad_range:<p>` and writes nothing."""
+    sid = handle_submit_strategy_spec(
+        fund_db, seat="quant",
+        args=spec_payload(signal_rule={"name": "dip_buyer"},
+                          param_ranges={"sigma": "wide"}),
+        now_iso=NOW)["spec_id"]
+    fund_db.execute("DELETE FROM events")
+    fund_db.commit()
+    r = _run(fund_db, {"spec_id": sid, "params": {"sigma": 1.5}})
+    assert r["ok"] is False and "bad_range:sigma" in r["error"]
     _assert_nothing_written(fund_db, sid)
 
 
@@ -641,6 +675,36 @@ def test_a_second_config_runs_from_backtest_and_adds_a_trial(granted, fund_db):
     assert tuple(_lifecycle(fund_db, sid)) == ("BACKTEST", 1)
 
 
+def test_a_token_that_moves_mid_run_is_a_tool_error_with_the_trial_standing(
+        granted, fund_db):
+    """Ruling Q7. The provider is called AFTER the handler reads
+    state_version and BEFORE the engine runs, so a provider that bumps the
+    token is exactly a concurrent writer in the window step 7's CAS guards.
+    The engine's trial INSERT is its own irreversible commit, so the row
+    stands; the lifecycle row is still SPEC (the CAS matched nothing); a
+    plain re-run returns the cached result and re-attempts the edge."""
+    sid = _golden(fund_db)
+
+    def bumping():
+        fund_db.execute("UPDATE strategies SET state_version = 1"
+                        " WHERE strategy_id = ?", (sid,))
+        fund_db.commit()
+        return CLOSE
+
+    r = _run(fund_db, {"spec_id": sid, "params": GOLDEN_PARAMS},
+             close_provider=bumping)
+    assert r["ok"] is False and "is logged" in r["error"]
+    assert _count(fund_db, "trial_registry") == 1
+    assert tuple(_lifecycle(fund_db, sid)) == ("SPEC", 1)
+    assert _count(fund_db, "events") == 0
+
+    again = _run(fund_db, {"spec_id": sid, "params": GOLDEN_PARAMS},
+                 now_iso=LATER)
+    assert again["ok"] is True and again["result"]["cached"] is True
+    assert _count(fund_db, "trial_registry") == 1
+    assert tuple(_lifecycle(fund_db, sid)) == ("BACKTEST", 2)
+
+
 # --- step 3: budget exhausted IS logged, and projects ------------------------
 
 def test_budget_exhaustion_logs_the_rejection_and_appends_one_event(granted,
@@ -666,7 +730,10 @@ def test_budget_exhaustion_logs_the_rejection_and_appends_one_event(granted,
                        "search_budget": 1}]
     post = render("budget_exhausted", events[0])
     assert post.channel == "#research" and post.username is None
-    assert tuple(_lifecycle(fund_db, sid)) == ("BACKTEST", 1)   # unchanged
+    # NOT this lane: §4's "SPEC/BACKTEST -> REJECTED (budget exhausted)"
+    # edge belongs to stratgate / the orchestrator, not the handler. The
+    # row stays where the first run left it.
+    assert tuple(_lifecycle(fund_db, sid)) == ("BACKTEST", 1)
 
 
 def test_a_refused_run_before_the_engine_appends_no_event(granted, fund_db):
@@ -769,23 +836,33 @@ BACKTESTABLE = ("SPEC", "BACKTEST")
 
 def _check_params(params: dict, ranges: dict) -> str | None:
     """§3.2 step 2, in full, before the engine: every param declared in the
-    spec's param_ranges, numeric where the declared bounds are numeric, and
-    inside [lo, hi]. Returns the refusal reason or None.
+    spec's param_ranges, every declared param present, comparable to its
+    bounds, and inside [lo, hi]. Returns the refusal reason or None.
 
     The engine repeats the declared/in-range half (run_backtest.py:140-146)
-    and this reuses its spellings so a seat sees one vocabulary; what the
-    engine lacks is the type check — §3.2 lets `params` carry str, and a
-    str against numeric bounds raises TypeError at run_backtest.py:145, an
-    exception rather than a refusal. bool is excluded explicitly: it is an
-    int to isinstance and `True` would pass a [0, 1] range as 1.
+    and this reuses its spellings so a seat sees one vocabulary. What the
+    engine lacks: (a) completeness — fundbt/rules.py:25-27 and
+    _neighbor_params (run_backtest.py:105-118) read every declared param,
+    so a missing one is a raw KeyError; (b) the type check — §3.2 lets
+    `params` carry str, and a str against numeric bounds is a TypeError at
+    run_backtest.py:145, an exception rather than a refusal; (c) a malformed
+    range — StrategySpec.param_ranges is an unvalidated dict
+    (state/models.py:142), so `[lo, hi, step]` is a convention the served
+    submit_strategy_spec does not enforce, and unpacking anything else is a
+    ValueError/TypeError. No bool handling: pydantic coerces a bool to 1.0
+    under `float | int | str` before this runs (measured).
     """
-    for p, v in params.items():
+    for p in params:
         if p not in ranges:
             return f"undeclared_param:{p}"
-        lo, hi, _step = ranges[p]
-        numeric = isinstance(lo, (int, float)) and isinstance(hi, (int, float))
-        if numeric and (isinstance(v, bool) or not isinstance(v, (int, float))):
-            return f"param_type:{p}"
+    for p in ranges:
+        if p not in params:
+            return f"missing_param:{p}"
+    for p, v in params.items():
+        try:
+            lo, hi, _step = ranges[p]
+        except (TypeError, ValueError):
+            return f"bad_range:{p}"
         try:
             inside = lo <= v <= hi
         except TypeError:
@@ -816,12 +893,27 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
     NOTHING IS WRITTEN ON REFUSAL except the engine's own budget-rejection
     trial row, which §3.2 step 3 says IS logged: a spent trial is a spent
     trial and N must move. Exactly that refusal also appends the event; no
-    other path projects anything.
+    other path projects anything. §4's "SPEC/BACKTEST -> REJECTED (budget
+    exhausted)" edge is NOT taken here — that edge is stratgate's / the
+    orchestrator's per §4's actor column, and this handler moves the row in
+    one direction only (step 7). The row stays where the last run left it.
+
+    THE BUDGET PATH IS TWO TRANSACTIONS, like handle_submit_strategy_spec
+    above and unlike handle_submit_spec_critique. registry.log commits the
+    rejection row inside the engine, then append_event commits again, so a
+    crash between them leaves a logged rejection that #research never hears
+    about and never will — drain() only posts rows the outbox holds. Closing
+    the gap means the engine taking the outbox write, and fundbt/ must not
+    import slackkit, so it is out of scope here; N is correct either way,
+    which is the half that matters to the gate.
 
     `close_provider` is REQUIRED and bound by the caller — the @tool closure
-    that will one day serve this — never by the seat. Only its LookupError
-    is a refusal; any other exception is a bug and propagates. The engine's
-    BacktestError is the refusal class; nothing else it raises is caught.
+    that will one day serve this — never by the seat. Only a BARE
+    LookupError from it is a refusal ("I have no data"); KeyError and
+    IndexError are LookupError subclasses and are exactly what a buggy
+    loader raises, so they are re-raised as the bugs they are. Any other
+    exception propagates. The engine's BacktestError is the refusal class;
+    nothing else it raises is caught.
 
     Step 7 on a row already in BACKTEST is a no-op — §4 has no
     BACKTEST -> BACKTEST edge. A StaleTransition after a successful run is
@@ -888,6 +980,8 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
     try:
         close = close_provider()
     except LookupError as e:
+        if type(e) is not LookupError:      # KeyError/IndexError: a bug
+            raise
         return {"ok": False, "error": str(e)}
     try:
         result = run_backtest(spec=spec, params=req.params, close=close,
@@ -921,20 +1015,22 @@ The `"pd.DataFrame"` annotation is a string under `from __future__ import annota
 - [ ] **Step 6: Run the handler tests**
 
 Run: `.venv/bin/python3 -m pytest tests/test_run_backtest_handler.py -q`
-Expected: 28 passed (parametrized cases count individually: 5 surface + 5 malformed + 5 step-1 + 2 rule + 5 step-2 + 4 step-7 + 2 budget).
+Expected: 33 passed (parametrized cases count individually: 7 surface [no-cap, seat-refused, required-keyword, no-data, 3× not-swallowed] + 5 malformed + 5 step-1 + 2 rule + 7 step-2 [6 parametrized + bad_range] + 5 step-7 [first run, production path, cached, second config, stale token] + 2 budget).
 
 Then: `.venv/bin/python3 -m pytest tests/test_slackkit.py tests/test_state_specs.py tests/test_submit_strategy_spec.py -q`
 Expected: green. If `test_every_written_kind_has_a_renderer` reddens, the `RENDERERS` entry from Step 4 is missing.
 
 - [ ] **Step 7: Manufacture a red against the passing code**
 
-Five mutations, one at a time, each restored before the next; record every failure list in the task report:
+Seven mutations, one at a time, each restored before the next, so that every branch the handler owns has been seen to bite; record every failure list in the task report:
 
-1. Delete the `import fundbt.rules` line inside the handler body. Expected red: every test that reaches the rule pre-check with a `dip_buyer` spec — `test_the_first_run_...`, `test_a_spec_registered_through_the_production_write_path_backtests`, `test_the_same_run_again_...`, `test_a_second_config_...`, `test_budget_exhaustion_...`, the five `test_a_bad_param_...[...]` cases, `test_a_provider_with_no_data_...` and `test_a_provider_that_fails_for_another_reason_...` — twelve, all refused as `unknown_rule` before the engine or the provider is reached. This is the evidence that the deferred import is load-bearing, not a lint nit.
+1. Delete the `import fundbt.rules` line inside the handler body. Expected red: every test that reaches the rule pre-check with a `dip_buyer` spec — `test_the_first_run_...`, `test_a_spec_registered_through_the_production_write_path_backtests`, `test_the_same_run_again_...`, `test_a_second_config_...`, `test_a_token_that_moves_mid_run_...`, `test_budget_exhaustion_...`, the six `test_a_bad_param_...[...]` cases, `test_a_spec_with_a_malformed_range_...`, `test_a_provider_with_no_data_...` and the three `test_a_provider_that_fails_for_another_reason_...[...]` cases — seventeen, all refused as `unknown_rule` before the engine or the provider is reached. This is the evidence that the deferred import is load-bearing, not a lint nit.
 2. Delete the `if state not in BACKTESTABLE:` block. Expected red: the three `test_a_spec_outside_spec_or_backtest_is_refused[...]` cases, each failing with `IllegalTransition` escaping from `advance_to_backtest` after the engine has already logged a trial — T1's function is the second lock, and this mutation shows why the handler's pre-check is the first: without it a REJECTED spec spends a trial.
 3. Delete the `append_event(...)` call. Expected red: `test_budget_exhaustion_logs_the_rejection_and_appends_one_event` only.
-4. Change `except LookupError` to `except Exception` on the provider call. Expected red: `test_a_provider_that_fails_for_another_reason_is_not_swallowed` only.
-5. Delete the `_check_params` call (the two lines `bad = ...` / `if bad is not None: ...`). Expected red: exactly the two `param_type` cases of `test_a_bad_param_...` — `dip_days: "5"` escapes as a `TypeError` from `run_backtest.py:145`, and `dip_pct: True` is refused by the engine as `param_out_of_range:dip_pct` (`True` compares as `1 > 0.08`), not `param_type` — while the out-of-range and undeclared cases stay green because the engine refuses them with the same spelling. That is the precise value the handler's step 2 adds over the engine, shown rather than claimed.
+4. Delete the two-line guard `if type(e) is not LookupError: raise` under the provider's `except LookupError`. Expected red: exactly the `KeyError` and `IndexError` cases of `test_a_provider_that_fails_for_another_reason_is_not_swallowed` — both come back as a polite `{"ok": False}` instead of propagating — while the `RuntimeError` case stays green (it was never a `LookupError`). That is F6's pin: the subclass leak, not the broad-except one.
+5. Delete the `_check_params` call (the two lines `bad = ...` / `if bad is not None: ...`). Expected red: four, one per thing the handler's step 2 adds over the engine — `dip_days: "5"` escapes as a `TypeError` from `run_backtest.py:145`; the two `missing_param` cases escape as `KeyError('dip_pct')` / `KeyError('dip_days')` from `fundbt/rules.py:25-26` after a trial has been hashed; `test_a_spec_with_a_malformed_range_...` escapes as `ValueError` from the engine's own unpack at `run_backtest.py:144`. The out-of-range and undeclared cases stay green because the engine refuses them with the same spelling. Four reds, not one: with the completeness and bad-range checks folded in, deleting the call removes four contributions, and each shows up.
+6. Delete the `advance_to_backtest(...)` call together with its `try`/`except StaleTransition`. Expected red: six — `test_the_first_run_...`, `test_a_spec_registered_through_the_production_write_path_backtests`, `test_the_same_run_again_...`, `test_a_second_config_...`, `test_budget_exhaustion_...` (each on its `("BACKTEST", 1)` lifecycle assertion, the row still `("SPEC", 0)`) and `test_a_token_that_moves_mid_run_...` (`ok` is `True` where a refusal was expected). Step 7's lifecycle half is the handler's alone.
+7. Delete the `if state is None:` block. Expected red: `test_a_spec_with_no_lifecycle_row_is_refused_not_assumed_spec` only, with `LookupError` escaping from `advance_to_backtest` — after the engine has logged a trial for an orphan (the FK to `strategy_specs` still resolves). Same lesson as mutation 2: T1's raise is the second lock, and without the handler's pre-check an orphan spends a trial before it is refused.
 
 - [ ] **Step 8: Full suite, then commit**
 
@@ -1064,7 +1160,7 @@ git commit -m "docs: run_backtest §4 row (not served), budget-rejection logging
 | `BacktestRequest` exactly §3.2, `extra="forbid"` | T2 Step 3; pinned by `test_a_malformed_request_is_refused_and_writes_nothing` (extra field, wrong types, missing fields) |
 | `BacktestResult` = the engine's dict exactly; `cached` semantics | T2 `test_the_first_run_...` asserts the exact key set; `test_the_same_run_again_...` asserts `cached is True`, no new row |
 | Step 1: spec exists, `state ∈ {SPEC, BACKTEST}` | T2 handler + three tests (unregistered, orphaned, wrong state) |
-| Step 2: params declared, typed, in range | T2 `_check_params`, before the engine (ruling Q1); five `test_a_bad_param_...` cases; mutation 5 shows the type check is the handler's own contribution |
+| Step 2: params declared, complete, typed, in range; malformed range named | T2 `_check_params`, before the engine (ruling Q1 + review F2/F3); six `test_a_bad_param_...` cases + `test_a_spec_with_a_malformed_range_...`; mutation 5 shows the four handler-only contributions |
 | Step 3: budget count, log, `budget_exhausted` event | engine logs (`:158-165`); T2 handler appends the event; renderer forced by `tests/test_slackkit.py:829`; `acceptance.md:91` corrected in T3 |
 | Step 4: holdout excluded | engine (`:167-173`); not duplicated; `test_the_first_run_...` runs on the full 10y synthetic market and the engine's own `test_planted_edge_detected_and_sane` pins `span_years > 7.5` |
 | Step 5: cost floors, 2×/3× | engine (`:175-181`); key set assertion covers `net_sharpe_2x`/`_3x` presence |
@@ -1077,10 +1173,11 @@ git commit -m "docs: run_backtest §4 row (not served), budget-rejection logging
 | D3 no `@tool`, no cap, `not served` row | T2 (no registration), T3 (row); `test_no_shipped_seat_holds_the_cap` |
 | D7 evaluator-toolbelt test (`acceptance.md:89`) | T3 |
 | D8 `TrialRegistry(conn)`, `seat=`, `now_iso=` | T2 handler; `test_the_first_run_...` asserts the trial row's `seat` and `created_at` |
-| D10 no swallowed exceptions | T2 `test_a_provider_that_fails_for_another_reason_is_not_swallowed`; handler catches only `ValidationError/TypeError` (model), `LookupError` (provider), `BacktestError` (engine), `StaleTransition` (edge); `_check_params` catches `TypeError` only around the one comparison it owns |
+| D10 no swallowed exceptions | T2 `test_a_provider_that_fails_for_another_reason_is_not_swallowed` ×3 (RuntimeError, KeyError, IndexError); handler catches only `ValidationError/TypeError` (model), a BARE `LookupError` (provider — subclasses re-raised, F6), `BacktestError` (engine), `StaleTransition` (edge); `_check_params` catches `TypeError` around the one comparison it owns and `(TypeError, ValueError)` around the one unpack it owns |
+| Ruling Q7 / F4: stale token mid-run | T2 `test_a_token_that_moves_mid_run_is_a_tool_error_with_the_trial_standing` — tool error naming the logged trial, `("SPEC", 1)`, then a re-run cached with `("BACKTEST", 2)` |
 | §4 "every transition passes `expected_state_version`; mismatch → no-op" | T1: the UPDATE's WHERE is the CAS; mismatch writes nothing and raises `StaleTransition`; no `stale_transition` event kind is added (ruling Q3 — part of the follow-up below) |
 
-**Gap, named:** the rest of §4's `strategies` edges, and general `strategies` support in `state/transition.py`, are **not** delivered — see Follow-ups. `specs/acceptance.md`'s "Lifecycle: illegal strategy transitions raise (state machine per §4)" is therefore only partially met (one edge raises correctly on illegal states; the table as a whole has no machine).
+**Gap, named:** the rest of §4's `strategies` edges, and general `strategies` support in `state/transition.py`, are **not** delivered — see Follow-ups. In particular §4's **`SPEC/BACKTEST → REJECTED` on `budget_exhausted`** (actor: stratgate / orchestrator, `strategy-contracts.md:257`) is not taken by this handler: after a budget rejection the row stays where the last run left it (`test_budget_exhaustion_...` asserts `("BACKTEST", 1)` for that reason, and the handler docstring says so). `specs/acceptance.md`'s "Lifecycle: illegal strategy transitions raise (state machine per §4)" is therefore only partially met (one edge raises correctly on illegal states; the table as a whole has no machine).
 
 ### Placeholder scan
 
@@ -1093,7 +1190,8 @@ No TBD/TODO. Every code step shows the code. `"pd.DataFrame"` in the handler ann
 - `run_backtest(spec=..., params=req.params, close=..., registry=TrialRegistry(conn), seat=seat, now_iso=now_iso, seed=req.seed)` — keyword-only per `run_backtest.py:121-131`; `req.params` is `dict[str, float|int|str]`, `req.seed` is `int`.
 - `append_event(conn, "budget_exhausted", {...}, now_iso)` — literal kind (the AST scan at `tests/test_slackkit.py:784-826` requires a string constant); payload keys `{"seat","spec_id","family","search_budget"}` match the renderer's reads and `BUDGET_EXHAUSTED` in the tests.
 - `close_provider` is keyword-only with no default in the handler signature, the `_run` helper, and `test_close_provider_is_a_required_keyword_...`; the test-local `_no_data` raises `LookupError` with the substring `no close-price data`, which the handler catches and the test matches.
-- `_check_params(params, ranges) -> str | None` returns exactly the spellings `undeclared_param:<p>`, `param_type:<p>`, `param_out_of_range:<p>`; the five parametrized cases assert those substrings; the handler wraps the reason as `run_backtest refused: <reason>`, the same prefix the engine's `BacktestError` path uses.
+- `_check_params(params, ranges) -> str | None` returns exactly the spellings `undeclared_param:<p>`, `missing_param:<p>`, `bad_range:<p>`, `param_type:<p>`, `param_out_of_range:<p>`, checked in that order; the six parametrized cases and the bad-range test assert those substrings; the handler wraps the reason as `run_backtest refused: <reason>`, the same prefix the engine's `BacktestError` path uses.
+- The stale-token test's error assertion (`"is logged" in r["error"]`) matches the handler's literal `"trial {run_key} is logged but the lifecycle row moved"`.
 
 ### Rulings applied (2026-09-13) — the first draft's eight open questions, closed
 
@@ -1108,6 +1206,7 @@ No TBD/TODO. Every code step shows the code. `"pd.DataFrame"` in the handler ann
 
 ### Follow-ups (not this lane)
 
-- **General `strategies` support in `state/transition.py`** — all §4 edges, `KEYS["strategies"] = ("strategy_id",)`, `state` instead of `status`, `state_version` CAS, and the `stale_transition` event kind (with its renderer, since `tests/test_slackkit.py:829` will require one) — filed by the overseer when this lane's PR opens, after #170's `EDGES` change lands. `advance_to_backtest` remains the entry point run_backtest calls.
-- **`StrategySpec.param_ranges` is an unvalidated `dict`** (`state/models.py:142`): a range that is not a 3-list (`[lo, hi, step]`) raises `ValueError`/`TypeError` out of `_check_params`' unpacking, and out of the engine's `_neighbor_params` (`run_backtest.py:108`) even without the handler. Registration-time validation belongs to the model, which this lane does not touch (D2's fence).
+- **General `strategies` support in `state/transition.py`** — all §4 edges including `SPEC/BACKTEST → REJECTED` on `budget_exhausted` (stratgate / orchestrator's edge, not the handler's), `KEYS["strategies"] = ("strategy_id",)`, `state` instead of `status`, `state_version` CAS, and the `stale_transition` event kind (with its renderer, since `tests/test_slackkit.py:829` will require one) — filed by the overseer when this lane's PR opens, after #170's `EDGES` change lands. `advance_to_backtest` remains the entry point run_backtest calls.
+- **`StrategySpec.param_ranges` is an unvalidated `dict`** (`state/models.py:142`): a malformed range is registrable today. The handler now names it `bad_range:<p>` (F3) rather than letting the unpack escape, but that is detection at run time; registration-time validation belongs to the model, which this lane does not touch (D2's fence).
+- **The budget path is two commits** (`registry.log` inside the engine, then `append_event`): a crash between them leaves a logged rejection `#research` never hears about. Closing it means the engine taking the outbox write, and `fundbt/` must not import `slackkit`; N is correct either way. Named in the handler docstring (F9), mirroring `fund_server.py:309-323`.
 - **Side observation, left alone:** `contracts.md:441` says only `signal` and `decision` carry a face; `spec_critique` and `strategy_spec` do too (`render.py:296`, `:331`).
