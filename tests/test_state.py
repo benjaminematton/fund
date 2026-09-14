@@ -215,3 +215,35 @@ def test_a_database_without_the_log_gains_it_on_reconnect(tmp_path):
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='protection'"
     ).fetchone() is not None
+
+
+def _seed_work(conn, wid="wk_0000000000000001", status="open"):
+    conn.execute(
+        "INSERT INTO worklist (work_id, kind, producer, seat, subject, status,"
+        " expires_at, created_at) VALUES (?, 'spec_review', 'orchestrator',"
+        " 'critic', 'spec_abc', ?, '2026-07-06T20:00:00+00:00', ?)",
+        (wid, status, NOW))
+    conn.commit()
+    return wid
+
+
+def test_transition_extra_columns_ride_in_the_same_cas_update(fund_db):
+    """A claim that wins the CAS must carry its lease atomically — a second
+    UPDATE could be lost to a crash and leave a claimed row with no lease."""
+    wid = _seed_work(fund_db)
+    ok = try_transition(fund_db, "worklist", {"work_id": wid}, "open", "claimed",
+                        NOW, extra={"claimed_at": NOW,
+                                    "claim_expires_at": "2026-07-06T15:35:00+00:00"})
+    assert ok is True
+    row = fund_db.execute("SELECT * FROM worklist WHERE work_id=?", (wid,)).fetchone()
+    assert (row["status"], row["claimed_at"], row["claim_expires_at"]) == (
+        "claimed", NOW, "2026-07-06T15:35:00+00:00")
+
+
+def test_transition_extra_is_not_applied_when_the_cas_misses(fund_db):
+    wid = _seed_work(fund_db, status="claimed")
+    ok = try_transition(fund_db, "worklist", {"work_id": wid}, "open", "claimed",
+                        NOW, extra={"claimed_at": "should-not-land"})
+    assert ok is False
+    row = fund_db.execute("SELECT claimed_at FROM worklist WHERE work_id=?", (wid,)).fetchone()
+    assert row["claimed_at"] is None
