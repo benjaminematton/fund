@@ -88,7 +88,7 @@ Note: `fundbt/`, `stratgate/`, and `calibration/` arrive from the starter kit wi
 - [ ] Starter-kit test suite green inside the fund repo (`make test` runs it).
 - [ ] Only `run_backtest` is exposed to seats via MCP; `evaluate_holdout` and G2/G3/G4 evaluators are orchestrator-invoked only (test: seat toolbelt contains no evaluator tools).
 - [ ] Trial registry unified: `fundbt/registry.py` writes to the fund DB; schema matches `specs/strategy-contracts.md` §2 (single source of truth).
-- [ ] Spec enforcement: `run_backtest` without a registered `spec_id`, with config outside `param_ranges`, or beyond `search_budget` → refused, no stats, no trial row.
+- [ ] Spec enforcement: `run_backtest` without a registered `spec_id` or with config outside `param_ranges` → refused, no stats, no trial row; beyond `search_budget` → refused, no stats, and the rejection **is** logged as a trial row plus a `budget_exhausted` event (`strategy-contracts.md` §3.2 step 3: a spent trial is a spent trial, so N moves).
 - [ ] Trial registry: every successful/errored run inserts exactly one `trials` row; identical `(config, data, engine, seed)` returns the cached result with **no** new row (assert N unchanged).
 - [ ] Cost floors: sub-floor cost config refused; every result contains 2× and 3× cost reruns.
 - [ ] Holdout quarantine: `run_backtest` cannot read the reserved months (data-slice test); G3 evaluator runs once — second attempt hits the `holdout_evaluations` PRIMARY KEY and resolves to REJECT `holdout_already_consumed`; the row is written on pass AND fail.

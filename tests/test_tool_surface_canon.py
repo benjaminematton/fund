@@ -322,3 +322,31 @@ def test_the_canon_parser_rejects_what_it_cannot_read(fund_db, sim_clock):
     with pytest.raises(ValueError, match="seats that do not exist"):
         _canon(body.replace("| `submit_decision` | `pm` |",
                             "| `submit_decision` | `pmm` |"))
+
+
+def test_no_seat_is_served_an_evaluator_or_the_backtest_tool(fund_db,
+                                                             sim_clock):
+    """specs/acceptance.md Phase 5: "`evaluate_holdout` and G2/G3/G4
+    evaluators are orchestrator-invoked only (test: seat toolbelt contains
+    no evaluator tools)". Through the real per-seat servers, not SEAT_CAPS.
+
+    The evaluator names are DERIVED from stratgate.gate's `evaluate_*`
+    callables rather than typed out, so an evaluator added there is covered
+    the day it lands; the two known ones are asserted present so the
+    derivation cannot go vacuous. `run_backtest` is in the set FOR NOW —
+    #171 half two ships its handler served to nobody (contracts.md §4,
+    `not served`); the lane that serves it removes that one name here and
+    flips the §4 row in the same commit.
+    """
+    import stratgate.gate as gate
+    from fundbt import run_backtest as engine
+
+    evaluators = {n for n in dir(gate)
+                  if n.startswith("evaluate_") and callable(getattr(gate, n))}
+    assert {"evaluate_g2", "evaluate_g3"} <= evaluators, "instrument broken"
+    assert callable(engine.evaluate_holdout) and callable(engine.run_backtest)
+    forbidden = evaluators | {"evaluate_holdout", "run_backtest"}
+
+    served = set(_served(fund_db, sim_clock))
+    assert served, "served set empty — the instrument is broken"
+    assert served & forbidden == set(), sorted(served & forbidden)

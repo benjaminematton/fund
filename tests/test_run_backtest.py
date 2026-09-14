@@ -62,6 +62,31 @@ def test_param_range_enforced():
         assert "param_out_of_range" in str(e)
 
 
+def test_handler_reason_vocabulary_matches_the_engine_verbatim():
+    """agents/tools/fund_server.py:_check_params reuses the engine's own
+    spellings for undeclared_param and param_out_of_range
+    (run_backtest.py:141-146) as independent string literals -- nothing
+    ties the two together except convention, so either side could drift
+    silently. Run the SAME bad params through both the engine directly and
+    _check_params, and assert the BacktestError string equals the handler's
+    return for identical input: a spelling change in either package reddens
+    this test instead of leaving a seat looking at two vocabularies."""
+    from agents.tools.fund_server import _check_params
+
+    close, spec, reg = setup()
+
+    for params in (
+         {**GOLDEN_PARAMS, "dip_pct": 0.20},         # param_out_of_range
+         {**GOLDEN_PARAMS, "lookback": 10},          # undeclared_param
+    ):
+        try:
+            run_backtest(spec=spec, params=params, close=close, registry=reg,
+                        seat="quant", now_iso=NOW)
+            raise AssertionError("should have raised")
+        except BacktestError as e:
+            assert str(e) == _check_params(params, spec["param_ranges"])
+
+
 def test_budget_exhaustion_is_logged():
     close, spec, reg = setup()
     spec["search_budget"] = 2

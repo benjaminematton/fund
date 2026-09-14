@@ -28,8 +28,11 @@ from orchestrator.reflect import reflection_frame, store_reflection
 from slackkit.outbox import append_event
 from state.critiques import insert_default_critiques  # noqa: F401 (re-export)
 from state.journal import recent_entries
-from state.models import Decision, SpecCritique, Signal, StrategySpec
-from state.specs import insert_strategy_spec, specs_awaiting_critique
+from state.models import (BacktestRequest, Decision, SpecCritique, Signal,
+                          StrategySpec)
+from state.specs import (JSON_COLUMNS, advance_to_backtest,
+                         insert_strategy_spec, specs_awaiting_critique)
+from state.transition import StaleTransition
 
 # One table, not four parallel lists (ADR-0002): registering a seat is a single
 # edit, and a half-registered seat — one that may signal but gets no brief — is
@@ -349,6 +352,201 @@ def handle_submit_strategy_spec(conn: sqlite3.Connection, *, seat: str,
                       "mechanism_class": spec.mechanism_class,
                       "hypothesis": spec.hypothesis}, now_iso)
     return {"ok": True, "spec_id": sid, "duplicate": duplicate}
+
+
+# §3.2 step 1: the lifecycle states a backtest may run from.
+BACKTESTABLE = ("SPEC", "BACKTEST")
+
+
+def _check_params(params: dict, ranges: dict) -> str | None:
+    """§3.2 step 2, in full, before the engine: every param declared in the
+    spec's param_ranges, every declared param present, comparable to its
+    bounds, and inside [lo, hi]. Returns the refusal reason or None.
+
+    The engine repeats the declared/in-range half (run_backtest.py:140-146)
+    and this reuses its spellings so a seat sees one vocabulary. What the
+    engine lacks: (a) completeness — fundbt/rules.py:25-27 and
+    _neighbor_params (run_backtest.py:105-118) read every declared param,
+    so a missing one is a raw KeyError; (b) the type check — §3.2 lets
+    `params` carry str, and a str against numeric bounds is a TypeError at
+    run_backtest.py:145, an exception rather than a refusal; (c) a malformed
+    range — StrategySpec.param_ranges is an unvalidated dict
+    (state/models.py:142), so `[lo, hi, step]` is a convention the served
+    submit_strategy_spec does not enforce, and unpacking anything else is a
+    ValueError/TypeError. No bool handling: pydantic coerces a bool to 1.0
+    under `float | int | str` before this runs (measured).
+    """
+    for p in params:
+        if p not in ranges:
+            return f"undeclared_param:{p}"
+    for p in ranges:
+        if p not in params:
+            return f"missing_param:{p}"
+    for p, v in params.items():
+        try:
+            lo, hi, _step = ranges[p]
+        except (TypeError, ValueError):
+            return f"bad_range:{p}"
+        if any(isinstance(x, bool) or not isinstance(x, (int, float))
+               for x in (lo, hi, _step)):
+            return f"bad_range:{p}"
+        try:
+            inside = lo <= v <= hi
+        except TypeError:
+            return f"param_type:{p}"
+        if not inside:
+            return f"param_out_of_range:{p}"
+    return None
+
+
+def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
+                        now_iso: str,
+                        close_provider: Callable[[], "pd.DataFrame"]) -> dict:
+    """The run_backtest wrapper: strategy-contracts.md §3.2's enforcement
+    order, with the computation left to fundbt.run_backtest.run_backtest.
+
+    HANDLER-SIDE: step 1 (spec registered, `strategies.state` in SPEC or
+    BACKTEST — §3.2 says this check "lives in the MCP handler"), step 2 in
+    full (_check_params, before anything is hashed), a rule pre-check the
+    engine lacks (a signal_rule with no `name` KeyErrors at
+    run_backtest.py:137; here it is the `unknown_rule` refusal §3.2 means),
+    step 3's `budget_exhausted` EVENT, and step 7's lifecycle move through
+    state/specs.py:advance_to_backtest. ENGINE-SIDE, passed through and not
+    duplicated: step 3's count-and-log, step 4 (holdout excluded), step 5
+    (cost floors, 2x/3x), step 6's snapshot hash (recorded, not verified —
+    no manifest exists), and the trial INSERT, idempotent on run_key
+    (`cached` is the engine's word for a re-run).
+
+    NOTHING IS WRITTEN ON REFUSAL except the engine's own budget-rejection
+    trial row, which §3.2 step 3 says IS logged: a spent trial is a spent
+    trial and N must move. Exactly that refusal also appends the event; no
+    other path projects anything. §4's "SPEC/BACKTEST -> REJECTED (budget
+    exhausted)" edge is NOT taken here — that edge is stratgate's / the
+    orchestrator's per §4's actor column, and this handler moves the row in
+    one direction only (step 7). The row stays where the last run left it.
+
+    THE BUDGET PATH IS TWO TRANSACTIONS, like handle_submit_strategy_spec
+    above and unlike handle_submit_spec_critique. registry.log commits the
+    rejection row inside the engine, then append_event commits again, so a
+    crash between them leaves a logged rejection that #research never hears
+    about and never will — drain() only posts rows the outbox holds. Closing
+    the gap means the engine taking the outbox write, and fundbt/ must not
+    import slackkit, so it is out of scope here; N is correct either way,
+    which is the half that matters to the gate.
+
+    `close_provider` is REQUIRED and bound by the caller — the @tool closure
+    that will one day serve this — never by the seat. Only a BARE
+    LookupError from it is a refusal ("I have no data"); KeyError and
+    IndexError are LookupError subclasses and are exactly what a buggy
+    loader raises, so they are re-raised as the bugs they are. Any other
+    exception propagates. The engine's BacktestError is the refusal class;
+    nothing else it raises is caught.
+
+    Step 7 on a row already in BACKTEST is a no-op — §4 has no
+    BACKTEST -> BACKTEST edge. A StaleTransition after a successful run is
+    a tool error with the trial row standing (the engine's own irreversible
+    write) and the lifecycle row still in SPEC, so a re-run returns the
+    cached result and re-attempts the edge.
+
+    THE fundbt IMPORTS ARE INSIDE THE BODY, deliberately, and AFTER the
+    `_can` guard below. `import fundbt.rules` is what populates RULES
+    (fundbt/rules.py:17) — without it every spec is unknown_rule — and it
+    drags pandas/numpy in with it; agents/seats.py:15 imports this module
+    (agents/seats.py:263 calls build_fund_server) to build EVERY seat's
+    server, and no seat holds the cap (§4 row `not served`), so a capless
+    caller — every caller, today — must not pay that import either. The
+    `_can` check is what a future SEAT_CAPS line switches on.
+
+    `seat` is the calling seat, bound here; §5 of strategy-contracts.md
+    allows a seat to run another seat's spec, logged under the caller.
+    """
+    if not _can(seat, "run_backtest"):
+        return {"ok": False,
+                "error": f"run_backtest is not granted to seat {seat!r}"}
+    import fundbt.rules  # noqa: F401 — populates RULES; see the docstring
+    from fundbt.registry import TrialRegistry
+    from fundbt.run_backtest import RULES, BacktestError, run_backtest
+
+    try:
+        req = BacktestRequest(**args)
+    except (ValidationError, TypeError) as e:
+        return {"ok": False, "error": str(e)}
+    row = conn.execute(
+        "SELECT s.*, st.state AS lifecycle_state, st.state_version"
+        " FROM strategy_specs s"
+        " LEFT JOIN strategies st ON st.strategy_id = s.spec_id"
+        " WHERE s.spec_id = ?", (req.spec_id,)).fetchone()
+    if row is None:
+        return {"ok": False,
+                "error": f"spec {req.spec_id!r} is not registered —"
+                         " run_backtest refused"}
+    state = row["lifecycle_state"]
+    if state is None:
+        return {"ok": False,
+                "error": f"spec {req.spec_id!r} has no `strategies` lifecycle"
+                         " row and cannot advance — run_backtest refused"
+                         " (state/specs.py:OrphanedSpecs names the repair)"}
+    if state not in BACKTESTABLE:
+        return {"ok": False,
+                "error": f"spec {req.spec_id!r} is in state {state!r};"
+                         " run_backtest runs only from SPEC or BACKTEST"
+                         " (strategy-contracts.md §3.2 step 1)"}
+    spec = {c: (json.loads(row[c]) if c in JSON_COLUMNS else row[c])
+            for c in row.keys() if c not in ("lifecycle_state", "state_version")}
+    rule = (spec["signal_rule"].get("name")
+            if isinstance(spec["signal_rule"], dict) else None)
+    if not isinstance(rule, str) or rule not in RULES:
+        return {"ok": False,
+                "error": f"unknown_rule: spec {req.spec_id!r} names signal"
+                         f" rule {rule!r}; registered rules are"
+                         f" {sorted(RULES)}"}
+    bad = _check_params(req.params, spec["param_ranges"])
+    if bad is not None:
+        return {"ok": False, "error": f"run_backtest refused: {bad}"}
+    try:
+        close = close_provider()
+    except LookupError as e:
+        if type(e) is not LookupError:      # KeyError/IndexError: a bug
+            raise
+        return {"ok": False, "error": str(e)}
+    try:
+        result = run_backtest(spec=spec, params=req.params, close=close,
+                              registry=TrialRegistry(conn), seat=seat,
+                              now_iso=now_iso, seed=req.seed)
+    except BacktestError as e:
+        reason = e.args[0]
+        if reason == "budget_exhausted":
+            append_event(conn, "budget_exhausted",
+                         {"seat": seat, "spec_id": spec["spec_id"],
+                          "family": spec["family"],
+                          "search_budget": spec["search_budget"]}, now_iso)
+        return {"ok": False, "error": f"run_backtest refused: {reason}"}
+    # A retry of the identical (spec_id, params, seed) that already drew
+    # budget_exhausted does NOT raise BacktestError: registry.get(rkey)
+    # (fundbt/run_backtest.py:154, checked BEFORE the budget test at
+    # :158-165) hits the logged rejection row first and the engine returns
+    # it as a normal cache hit — {**cached, "cached": True} at :156, where
+    # `cached` is json.loads(stats) == {"rejected": "budget_exhausted"}
+    # (fundbt/registry.py:55-59). Nothing gets written below for this: the
+    # rejection was already logged and evented on the FIRST refusal, so a
+    # second budget_exhausted event here would be a duplicate #research post
+    # for a run that did not happen.
+    if "run_key" not in result:
+        reason = result.get("rejected", "unknown")
+        return {"ok": False,
+                "error": f"run_backtest refused: {reason} (cached"
+                         f" rejection for this spec/params/seed: {result!r})"}
+    try:
+        advance_to_backtest(conn, spec["spec_id"],
+                            expected_state_version=row["state_version"],
+                            now_iso=now_iso)
+    except StaleTransition as e:
+        return {"ok": False,
+                "error": f"trial {result['run_key']} is logged but the"
+                         f" lifecycle row moved under this run ({e}) —"
+                         " it is still SPEC, so a re-run returns the cached"
+                         " result and re-attempts the edge"}
+    return {"ok": True, "result": result}
 
 
 def handle_submit_spec_critique(conn: sqlite3.Connection, *, seat: str,
