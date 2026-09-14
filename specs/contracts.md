@@ -287,8 +287,11 @@ No tool may exist without a row here, and every row marked `served` must exist. 
 | `get_improvement_brief` |  | `improvement.md` §5 | not served — Phase 2b |
 | `submit_lessons` |  | `improvement.md` §5 | not served — Phase 2b |
 | `submit_proposal` |  | `improvement.md` §5 | not served — Phase 2b |
+| `run_backtest` |  | `strategy-contracts.md` §3.2 | not served — handler only, no driving seat (#171 half two) |
 
 The three `improvement.md` rows follow the G1 pair's pattern — enumerated here, schemas in the file that owns the loop. Their `seats` cells are empty because the seats do not exist yet: the `distill` and `proposer` seats are named in `improvement.md` §2.4 and §3.1 but are absent from `SEAT_CAPS`, and a seat name this table's parser cannot find there is a typo, not a plan. The cells fill when the seats ship (`improvement.md` §8).
+
+`run_backtest` follows the same pattern one lane later: `agents/tools/fund_server.py:handle_run_backtest` implements `strategy-contracts.md` §3.2's enforcement order and is directly tested, but carries no `@tool` and no cap (G-2(iii), as `submit_strategy_spec` shipped in #171). Its `seats` cell is empty because §3.2 says "seats listed in the spec's family config" and no such config exists yet; the lane that staffs a backtesting turn grants the cap, registers the tool, and fills the cell together.
 
 Some rows above carry a qualification that isn't expressible in the columns. The G1 pair (`get_spec_brief`, `submit_spec_critique`) is enumerated here because the fund server serves it, but its schemas stay in `specs/strategy-contracts.md` §3.4 and that file remains their authority — restating them here would create the second source of truth this table exists to prevent. And `submit_critique` is specified below but **not served**: the Critic seat runs G1 only, and the trade-pipeline critique is Phase 3 (`specs/design.md`; the Decision stage runs as a single turn on the orchestrator's own `no_critic_seat` rows until then). `status` is exactly `served` or begins `not served`; anything else fails the test rather than being interpreted.
 
@@ -438,7 +441,7 @@ Seats have names, so a channel reads as people talking and a reader can tell who
 | name | Nora (Analyst) | Vic (PM) | Dash (Execution) | Ida (Critic) | Kai (Quant) |
 | icon | 🔎 | 🎯 | ⚡ | 🧪 | 📐 |
 
-Only `signal` and `decision` set `username`/`icon_emoji` — the two kinds with a model behind them. **Machinery posts as the fund itself**: `gate_approved`, `gate_rejected`, `fill`, `digest`, `pnl`, `alert`, `model_fallback_used`, `scorecard` and `projection_error` leave both `None`, so Slack shows the app's own identity. Invariant 3 keeps the gate free of LLM code; this keeps it free of an LLM's face, preserving the distinction a reader most needs — which posts came from a model, and which came from code that cannot be argued with. An unmapped slug falls back to its raw name with no icon rather than raising or borrowing another seat's face.
+Only `signal` and `decision` set `username`/`icon_emoji` — the two kinds with a model behind them. **Machinery posts as the fund itself**: `gate_approved`, `gate_rejected`, `fill`, `digest`, `pnl`, `alert`, `model_fallback_used`, `scorecard`, `budget_exhausted` and `projection_error` leave both `None`, so Slack shows the app's own identity. Invariant 3 keeps the gate free of LLM code; this keeps it free of an LLM's face, preserving the distinction a reader most needs — which posts came from a model, and which came from code that cannot be argued with. An unmapped slug falls back to its raw name with no icon rather than raising or borrowing another seat's face.
 
 `username`/`icon_emoji` need the bot token's `chat:write.customize` scope, and `slackkit/real.py` omits each when falsy. **Any decorator wrapping `SlackPort.post` must widen with it** (`scripts/run_day.py:RemappedSlack`) — dropping the arguments loses seat identity silently on the staging path only, which is the one case a rehearsal exists to catch.
 
