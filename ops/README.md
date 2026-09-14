@@ -108,12 +108,12 @@ bump.
 
 ```bash
 set -a; . /etc/fund/env; set +a
-# Derive the WHOLE argv, not just the spec: it carries the `--with fastmcp<4`
-# constraint, and a pre-warm that omits it caches a resolution the seats never use.
+# Derive the spec from `agents/seats.py` — the one the seats launch — so the
+# pre-warm cannot rot at the next bump and never warms bare/latest instead.
 # `--transport stdio </dev/null`, NOT `--help`: click exits before importing
 # `.server`, so `--help` stayed green for the three days the server could not
 # start at all (2026-08-31 → 09-02). Only starting the transport imports it.
-uvx $(.venv/bin/python3 -c 'from agents.seats import ALPACA_MCP_ARGS as a; print(" ".join(a))') \
+uvx $(.venv/bin/python3 -c 'from agents.seats import ALPACA_MCP_SPEC as s; print(s)') \
     --transport stdio < /dev/null 2>&1 | tail -5
 ```
 
@@ -267,7 +267,7 @@ make schema-pin                 # the REAL tool schema, at the pinned version
 # broker tools reachable — the same pinned argv the seats launch, never bare.
 # Starts the transport rather than asking `--help`, which cannot fail on a
 # server that is broken at import time.
-uvx $(.venv/bin/python3 -c 'from agents.seats import ALPACA_MCP_ARGS as a; print(" ".join(a))') \
+uvx $(.venv/bin/python3 -c 'from agents.seats import ALPACA_MCP_SPEC as s; print(s)') \
     --transport stdio < /dev/null 2>&1 | tail -5
 python scripts/run_day.py       # market closed -> exit 0, writes nothing
 ```
