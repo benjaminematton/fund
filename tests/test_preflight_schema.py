@@ -141,7 +141,7 @@ def test_a_current_db_is_green(tmp_path):
 
 
 def test_the_expected_table_count_is_pinned(tmp_path):
-    """17 tables today. expected_schema() reads state/schema.sql, so a table
+    """18 tables today. expected_schema() reads state/schema.sql, so a table
     added there is checked with no edit to the script — this assertion is the
     tripwire that makes such an addition deliberate. It IS a second edit, on
     purpose: bump it in the same commit that adds the table.

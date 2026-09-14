@@ -33,7 +33,7 @@ journal: `journalctl -u fund-daily`.
 | `fund-pnl.timer` | 16:35 ET Mon–Fri | `scripts/close_pnl.py`, then `scripts/resolve_day.py`, then `scripts/weights_day.py`, then `scripts/reflect_day.py`, then `scripts/critic_g1.py` |
 | `fund-backup.timer` | 17:30 ET daily | `ops/backup.sh` |
 | `fund-alert@.service` | on any of the above failing | `ops/notify_failure.sh` |
-| `fund-dispatcher.service` | **not installed** — committed by #228 (Phase 6 R1); install is a human act at R2, when a consumer exists | `scripts/run_dispatcher.py` (resident; `Type=simple`, no `Restart=`) |
+| `fund-dispatcher.service` | **not enabled** — copied by the install step with the other units (the `fund-*.service` glob), never enabled or started; enabling is a human act at R2, when a consumer exists (#228, Phase 6 R1) | `scripts/run_dispatcher.py` (resident; `Type=simple`, no `Restart=`) |
 
 Four things about these are deliberate and should not be "tidied":
 
@@ -373,6 +373,9 @@ systemctl list-timers 'fund-*' --no-pager
 deploy is a pull. Nothing needs restarting for a *code* change: every unit is
 `Type=oneshot` and reads the working tree fresh at each invocation. That also
 means the tree is read *while the next run starts* — hence the guard below.
+The exception is `fund-dispatcher.service` (Phase 6 R1): `Type=simple` and
+resident, so once it is enabled a pull does not reach the running process
+until it is restarted.
 
 **The unit files are the exception, and they are the easy thing to miss.**
 `/etc/systemd/system/fund-*.{service,timer}` are **copies**, not symlinks into
