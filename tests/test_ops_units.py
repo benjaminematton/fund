@@ -1,4 +1,5 @@
 """ops/*.service — properties whose loss changes trading behavior."""
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +92,101 @@ def test_the_nightly_unit_runs_its_five_legs_in_the_committed_order():
     assert [Path(cmd.split()[-1]).name for cmd in _exec_starts(PNL)] == [
         "close_pnl.py", "resolve_day.py", "weights_day.py", "reflect_day.py",
         "critic_g1.py"]
+
+
+PROGRESS = (ROOT / "PROGRESS.md").read_text()
+_ORDINAL = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh"]
+_COUNT = ["zero", "one", "two", "three", "four", "five", "six", "seven"]
+# A prose restatement of the leg list: an ordinal, or a number within a few
+# words of "leg"/"job"/"ExecStart" (the forms the stale sites in #218 took).
+_RESTATES = re.compile(
+    r"\b(third|fourth|fifth|sixth|seventh)\b"
+    r"|\b(three|four|five|six|seven)\b[^\n|.]{0,30}\b(legs?|jobs?|ExecStart)",
+    re.I)
+
+
+def _comment_block_above(unit: str, script: str) -> str:
+    """The run of `#` lines directly above the ExecStart that runs `script`."""
+    lines = unit.splitlines()
+    i = next(n for n, l in enumerate(lines)
+             if l.startswith("ExecStart=") and l.endswith("/" + script))
+    block = []
+    while i > 0 and lines[i - 1].startswith("#"):
+        i -= 1
+        block.insert(0, lines[i])
+    return "\n".join(block)
+
+
+def test_every_prose_count_or_position_of_the_nightly_legs_is_derived_from_the_unit():
+    """#218. The leg list was restated in prose in eight places and went stale
+    on both leg additions (3->4, then 4->5); a hand-sweep missed sites both
+    times. Every literal below is derived from the unit's ExecStart lines, so
+    the next addition reddens each restatement instead of waiting for a sweep.
+
+    The sites are deliberately few. ops/README.md's units table is the ONE
+    prose home for the list; the rest of the README, PROGRESS.md's timer row
+    and the Makefile point at it and are pinned NOT to restate. The unit's own
+    comments and the sibling test's docstring do name positions, because there
+    the order is the argument.
+
+    Assumed, not derived: every leg from reflect_day on runs seat turns (the
+    "seat-running legs" count), and every leg ahead of it is arithmetic.
+
+    Out of scope: scripts/register_spec.py's "fifth daily seat" counts seat
+    turns off run_day.SEATS, not legs — a different ordinal sharing the word.
+    """
+    legs = [Path(cmd.split()[-1]).name for cmd in _exec_starts(PNL)]
+    n = len(legs)
+    reflect, critic = legs.index("reflect_day.py"), legs.index("critic_g1.py")
+    assert critic == n - 1 and reflect == critic - 1, legs  # what the prose argues from
+    seat_running = n - reflect
+
+    # ops/README.md — the units table row IS the list, verbatim and in order.
+    row = next(l for l in OPS_README.splitlines()
+               if l.startswith("| `fund-pnl.timer` |"))
+    assert row.split("|")[3].strip() == ", then ".join(
+        f"`scripts/{leg}`" for leg in legs), row
+    rest = OPS_README.replace(row, "")
+    assert not _RESTATES.search(rest), (
+        "ops/README.md restates the leg count or a position outside the units"
+        f" table: {_RESTATES.search(rest).group(0)!r}")
+
+    # PROGRESS.md — the timer row points at the README and restates nothing.
+    prow = next(l for l in PROGRESS.splitlines()
+                if l.startswith("| `fund-pnl.timer` |"))
+    assert "`ops/README.md`" in prow, prow
+    assert not _RESTATES.search(prow), f"PROGRESS.md restates the legs: {prow}"
+
+    # Makefile — target comments point at the README; the one position kept
+    # ("last, after reflect") is the critic-g1 argument, asserted above.
+    assert not _RESTATES.search(MAKEFILE), (
+        f"Makefile restates a leg position: {_RESTATES.search(MAKEFILE).group(0)!r}")
+    assert "ops/README.md" in MAKEFILE
+    assert "last, after reflect" in MAKEFILE
+    assert "not a systemd leg (CEO ruling B1)" in MAKEFILE
+
+    # ops/fund-pnl.service — a leg's own comment may name its position; if it
+    # does, the position must be the one the ExecStart order gives it.
+    for i, leg in enumerate(legs):
+        block = _comment_block_above(PNL, leg)
+        m = re.match(r"# (\w+)( and last)?:", block)
+        if m:
+            assert m.group(1).lower() == _ORDINAL[i], f"{leg}: {m.group(0)!r}"
+            assert bool(m.group(2)) == (i == n - 1), f"{leg}: {m.group(0)!r}"
+        for word in re.findall(r"all (\w+) legs above", block):
+            assert word == _COUNT[i], f"{leg}: 'all {word} legs above'"
+    assert f"{_COUNT[seat_running].upper()} seat-running legs" in PNL
+
+    # This file's sibling: its name counts the legs, its docstring places them.
+    sibling = test_the_nightly_unit_runs_its_five_legs_in_the_committed_order
+    assert f"_{_COUNT[n]}_legs_" in sibling.__name__
+    for i, leg in enumerate(legs):
+        stem = leg.removesuffix(".py")
+        m = re.search(rf"^\s*{stem}\s+(\w+):", sibling.__doc__, re.M)
+        if m:  # a leg named alone at the start of a line states its position
+            want = "last" if i == n - 1 else _ORDINAL[i]
+            assert m.group(1) == want, (
+                f"{stem}: docstring says {m.group(1)}, the unit says {want}")
 
 
 def test_the_nightly_unit_still_bounds_and_alerts_itself():
