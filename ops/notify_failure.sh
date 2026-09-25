@@ -18,9 +18,11 @@ JOURNALCTL="${FUND_ALERT_JOURNALCTL:-journalctl}"
 
 # Redact anything shaped like a credential before it leaves the box. A
 # traceback that dumps os.environ must not publish broker keys to Slack.
-# Prefix rules catch known token shapes; the name-based rule catches
-# secrets with no recognizable prefix (e.g. ALPACA_SECRET_KEY), whether
-# written as NAME=VALUE, NAME: VALUE, or quoted python/JSON dict dumps
+# Prefix rules catch known token shapes; the hc-ping.com rule catches the
+# healthchecks ping URL (bearer-equivalent: it forges the liveness heartbeat)
+# even with no NAME= beside it; the name-based rule catches secrets with no
+# recognizable prefix (e.g. ALPACA_SECRET_KEY, HC_PING_URL), whether written
+# as NAME=VALUE, NAME: VALUE, or quoted python/JSON dict dumps
 # ('NAME': 'VALUE', "NAME": "VALUE").
 redact() {
     sed -E \
@@ -28,7 +30,8 @@ redact() {
         -e 's/xoxb-[A-Za-z0-9-]+/xoxb-REDACTED/g' \
         -e 's/xapp-[A-Za-z0-9-]+/xapp-REDACTED/g' \
         -e 's/PK[A-Z0-9]{16,}/PK-REDACTED/g' \
-        -e "s/['\"]?([A-Z][A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)['\"]?[[:space:]]*[=:][[:space:]]*['\"]?[^[:space:]]+/\1=REDACTED/g"
+        -e "s#https://([A-Za-z0-9.-]*\.)?hc-ping\.com/[^[:space:]'\"]+#https://hc-ping.com/REDACTED#g" \
+        -e "s/['\"]?([A-Z][A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD|PING_URL)[A-Z0-9_]*)['\"]?[[:space:]]*[=:][[:space:]]*['\"]?[^[:space:]]+/\1=REDACTED/g"
 }
 
 STATUS="$(systemctl show -p Result --value "$UNIT" 2>/dev/null || echo unknown)"
@@ -45,7 +48,9 @@ TAIL="$("$JOURNALCTL" -u "$UNIT" -n 20 --no-pager -o cat 2>/dev/null | redact ||
 # worse than a terse one. Confirming position state stays a human step.
 case "$UNIT" in
     fund-daily*)  HEADLINE='The fund did not trade — check positions before the next open' ;;
-    fund-pnl*)    HEADLINE='No P&L was posted for today' ;;
+    # Five ExecStart legs and only the first posts P&L; the unit name cannot
+    # say which one failed, so the headline must be true for every leg (#183).
+    fund-pnl*)    HEADLINE='A post-close job failed — P&L may have posted; check the journal for which leg' ;;
     fund-backup*) HEADLINE='The nightly backup did not run' ;;
     *)            HEADLINE='A fund job failed' ;;
 esac
