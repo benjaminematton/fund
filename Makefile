@@ -49,11 +49,16 @@ lint: deps
 sim-day: deps
 	$(PYTHON) -m pytest tests/test_sim_day.py -v
 
-# Replay a recorded day's LLM decisions against current code.
-replay:
-	@echo "replay: not implemented yet — requires the recorder/replayer (Phase 1," >&2
-	@echo "see specs/acceptance.md §0). Usage when built: make replay REC=<recording>" >&2
-	@exit 2
+# Replay ONE recording's LLM decisions against current code: the same simulated
+# day sim-day runs (tests/test_sim_day.py's composition — injected clock,
+# FakeSlack, FakeAlpaca, temp DB, REAL tools/gate/hooks), with the recording's
+# seats slotted into their stage turns and the golden day's recordings filling
+# the rest. Offline, no keys, no LLM. Exit 0 iff the day audits clean
+# (scripts/audit_day.py); scripts/replay_day.py's docstring has the rest.
+#   make replay REC=tests/recordings/mvf_pm_hold.jsonl
+replay: deps
+	@test -n "$(REC)" || { echo "replay: REC=<recording.jsonl> is required, e.g. make replay REC=tests/recordings/mvf_exec.jsonl" >&2; exit 2; }
+	$(PYTHON) scripts/replay_day.py "$(REC)"
 
 # Pin the broker's REAL tool schema. Read-only: initialize + tools/list, no
 # order is ever placed. Needs .env loaded and uvx on PATH.
