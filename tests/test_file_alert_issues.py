@@ -1,7 +1,7 @@
 """The filer's dedupe, against the REAL alert texts from 2026-08-21 and
 2026-08-24. Synthetic text would not prove the key survives interpolation,
 which is the entire defect this script exists to fix."""
-import importlib.util, json, sqlite3, sys
+import importlib.util, json, os, shutil, sqlite3, sys
 from pathlib import Path
 
 import pytest
@@ -327,6 +327,44 @@ def test_a_missing_db_is_not_created_by_the_connect(tmp_path):
     _load().main([str(missing), "--since", "2026-08-24", "--apply"],
                  run=RecordingRun())
     assert not missing.exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory mode bits")
+def test_a_wal_snapshot_without_sidecars_is_readable_from_an_unwritable_mirror(tmp_path, capsys):
+    """#240. The mirror is a `sqlite3 .backup` copy of a WAL-mode DB with no
+    `-shm`/`-wal` beside it. A `mode=ro` open of that needs the sidecars, so
+    it CREATES them — silently on this venv's SQLite (3.53.2), and not at all
+    on the launchd python's (3.51.0), where it fails "unable to open database
+    file" and the filer exited 1 every night from 2026-08-29.
+
+    Manufactured red: this venv's SQLite would just create the sidecars, so
+    the mirror directory is made unwritable instead. Under `mode=ro` the open
+    then fails on every SQLite; `immutable=1` never touches the directory."""
+    src = tmp_path / "src.sqlite"
+    conn = sqlite3.connect(src)
+    conn.execute("PRAGMA journal_mode=wal")
+    conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT,"
+                 " payload TEXT, created_at TEXT, posted_at TEXT)")
+    _alert(conn, "2026-08-24T13:37:54+00:00", code="unprotected_position",
+           ticker="NVDA", text=NVDA_0824)
+    conn.close()
+    for sidecar in ("-wal", "-shm"):
+        Path(str(src) + sidecar).unlink(missing_ok=True)
+
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    snapshot = mirror / "fund-2026-08-24.sqlite"
+    shutil.copy(src, snapshot)
+    mirror.chmod(0o555)
+    try:
+        rc = _load().main([str(snapshot), "--since", "2026-08-24"],
+                          run=RecordingRun())
+    finally:
+        mirror.chmod(0o755)
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert "would file" in captured.out
+    assert sorted(p.name for p in mirror.iterdir()) == [snapshot.name]
 
 
 def test_it_names_the_database_it_read(db, db_path, capsys):
