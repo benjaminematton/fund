@@ -145,6 +145,7 @@ The following targets cover the offline suite, a simulated day, and one real day
 ```bash
 make test         # full offline suite + purity lint. No network, no keys.
 make sim-day      # six simulated day shapes: real everything, recorded LLM
+make replay REC=tests/recordings/mvf_pm_hold.jsonl   # ONE recording as a simulated day
 make live-day     # ONE real day: real Slack + Alpaca paper + real LLM seats
 ```
 
