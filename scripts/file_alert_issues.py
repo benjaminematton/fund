@@ -168,13 +168,23 @@ def main(argv: list[str] | None = None, run=None) -> int:
     # effect, which is why dev_status.py opens every production read `mode=ro`,
     # and the argument is stronger for a job nobody is watching.
     #
-    # It also fixes a quieter thing. Plain sqlite3.connect CREATES a missing
-    # file rather than raising, so a wrong path used to surface as "no such
-    # table: events" on the first query — indistinguishable from a database
-    # with nothing in it, and leaving an empty file behind. The `mode=ro` URI
-    # raises on connect instead.
+    # PLUS `immutable=1` (#240). The snapshot is a `.backup` copy of a
+    # WAL-mode DB with no `-shm`/`-wal` sidecars; a plain `mode=ro` open still
+    # needs them, and whether it may create them depends on which SQLite the
+    # script lands on — launchd's python refused ("unable to open database
+    # file") for 27 nights straight. `immutable=1` reads the file as the copy
+    # it is and never touches the mirror directory. (preflight_schema.py
+    # rightly does NOT use it: on the LIVE DB the `-wal` holds real commits;
+    # a snapshot has none.)
+    #
+    # `mode=ro` stays, and not for the read-only part. Plain sqlite3.connect
+    # CREATES a missing file rather than raising — and so does a bare
+    # `immutable=1` — so a wrong path used to surface as "no such table:
+    # events" on the first query, indistinguishable from a database with
+    # nothing in it, and leaving an empty file behind. `mode=ro` raises on
+    # connect instead.
     try:
-        conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{args.db}?mode=ro&immutable=1", uri=True)
     except sqlite3.Error as e:
         print(f"cannot read {args.db}: {e}", file=sys.stderr)
         return 1
