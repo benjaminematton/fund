@@ -131,6 +131,22 @@ def test_read_only_seats_cannot_trade(seat, tmp_path):
     assert "trading" not in env["ALPACA_TOOLSETS"]
 
 
+@pytest.mark.parametrize("seat", [s for s in ALL_SEATS if s != "exec"])
+def test_every_non_trading_seat_denies_order_tools_on_its_standing_options(
+        seat, tmp_path):
+    """Invariant 2's belt, on the STANDING options of every seat but exec —
+    including reflect and quant, which the parametrization above leaves out
+    (it also asserts a threaded ALPACA_TOOLSETS on seats that carry the alpaca
+    glob, and neither does). Both yamls declare the deny; nothing pinned that
+    it reached the built options except, for quant, on ONE narrowed turn
+    (tests/test_register_spec_job.py) — so a seats.py that dropped the
+    threading for exactly those two seats stayed green here (#209 item 1).
+    Belt, not brace: `tools` is what makes the broker unavailable, and the
+    two direct tests below pin that."""
+    assert "mcp__alpaca__place_*" in (_opts(seat, tmp_path).disallowed_tools
+                                      or [])
+
+
 def test_only_exec_has_trading_toolset(tmp_path):
     assert "trading" in _cfg("exec")["alpaca_toolsets"]
     env = _opts("exec", tmp_path).mcp_servers["alpaca"]["env"]
