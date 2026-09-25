@@ -170,16 +170,17 @@ weights: deps
 	$(PYTHON) scripts/weights_day.py
 
 # Nightly reflection: resolutions with no reflection yet -> one seat turn each
-# (design §3, §7). Rides the same 16:35 timer, fourth, after close-pnl,
-# resolve, and weights — nothing is reflectable until resolve has written
-# the outcome.
+# (design §3, §7). Rides the same 16:35 timer, behind the arithmetic legs
+# (ops/README.md's units table has the order) — nothing is reflectable until
+# resolve has written the outcome.
 reflect: deps
 	$(PYTHON) scripts/reflect_day.py
 
 # Nightly G1 enforcement: registered strategy specs with no verdict -> one
-# Critic turn each (issue #169). Rides the same 16:35 fire, FIFTH and last,
-# after reflect — ops/fund-pnl.service explains why the leg whose misses are
-# recoverable goes behind the leg whose misses are not.
+# Critic turn each (issue #169). Rides the same 16:35 fire last, after reflect
+# (ops/README.md's units table has the order) — ops/fund-pnl.service explains
+# why the leg whose misses are recoverable goes behind the leg whose misses
+# are not.
 # Safe to re-run and cheap to re-run: a spec that already carries a verdict is
 # not selected again, so a re-fire pays only for what is still pending. Costs
 # $0 on a night with an empty queue. Until #198 that was every night; now it is
@@ -193,7 +194,7 @@ critic-g1: deps
 # production database (evals/fixtures.py calls insert_strategy_spec directly,
 # against a fresh eval database, to seed Critic test cases).
 #
-# NEVER on a timer, and deliberately not a fifth systemd leg (CEO ruling B1).
+# NEVER on a timer, and deliberately not a systemd leg (CEO ruling B1).
 # specs/strategy.md makes SPEC reachable only through *PM sponsors -> SPEC* and
 # no sponsorship mechanism exists in code, so a scheduled run would enter a
 # lifecycle state by skipping the gate that guards entry to it, every night,
