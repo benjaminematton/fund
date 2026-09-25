@@ -12,7 +12,9 @@ here — and then injected.
 Posture (invariant 4: the default is HOLD):
   * ALPACA_PAPER_TRADE != 'true'      -> exit 1 before a single client is built
   * a missing env var                 -> exit 1 naming every missing var
-  * another run_day already running   -> log, exit 0, touch nothing
+  * another run_day already running   -> log the lock path, exit 2, touch
+                                          nothing: the day is LOST, and a red
+                                          unit is how anyone learns it (#129)
   * market closed / clock unreadable  -> log, exit 0, trade nothing
   * a seat turn that raises            -> one `alert`, then the stage's own
                                           default (neutral/0, pm_timeout hold)
@@ -101,8 +103,9 @@ LOCK_NAME = "run_day.lock"
 # Wall-clock ceiling for ONE seat turn (issue #44). max_turns and
 # max_budget_usd bound turns and dollars; a stalled MCP tool call or model
 # stream spends neither, so without this a hung turn hangs the whole day —
-# holding the flock, so tomorrow's timer finds the lock and exits 0, which
-# reads exactly like a market-closed day.
+# holding the flock, so tomorrow's timer finds the lock and loses its day too
+# (exit 2 since #129; before that exit 0, which read exactly like a
+# market-closed day).
 #
 # Sized to fire BEFORE ops/fund-daily.service's TimeoutStartSec=30min, whose
 # SIGTERM can land between the broker accepting a place_stock_order and the
@@ -616,9 +619,23 @@ def main(argv: list[str] | None = None) -> int:
     lock_path = Path(db_path).parent / LOCK_NAME
     lock = acquire_lock(lock_path)           # must outlive the run; kept in scope
     if lock is None:
-        log(f"another run_day holds {lock_path} — exiting 0 rather than racing"
-            " it (two overlapping runs = two seat turns and two drains)")
-        return 0
+        # Issue #129. Not a race that resolves itself: flock dies with its
+        # process (ops/README.md "Stopping a day"), so a held lock at the
+        # timer's fire is an earlier run_day STILL RUNNING and today's day is
+        # lost. Exit 0 read as a market holiday — OnFailure never fired and
+        # the Healthchecks ping registered a success. No alert row is possible
+        # here (connect() has not run and every alert path lives in the
+        # process that holds the lock), so the exit code is the whole report:
+        # non-zero fires fund-alert@fund-daily.service, and 2 rather than 1
+        # tells the operator "held lock" apart from "the day failed" (the code
+        # scripts/register_spec.py uses for the same refusal). Always, not
+        # only past some lock age: fund-daily.timer fires once a day, so any
+        # overlap is either a hang or a human's `systemctl start`, and both
+        # want to be told.
+        log(f"another run_day holds {lock_path} — exiting 2 rather than racing"
+            " it (two overlapping runs = two seat turns and two drains). No"
+            " trading day ran; that is a red unit, not a quiet one")
+        return 2
 
     clock = WallClock()                      # the one real clock, injected below
     source = AlpacaSource()                  # re-guards ALPACA_PAPER_TRADE

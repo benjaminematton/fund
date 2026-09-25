@@ -7,7 +7,8 @@ the market-closed guard, the channel remap, and the committed watchlist — and
 those are exactly the places a wrong answer trades against a shut market, an
 unfunded account, or the wrong Slack channel.
 
-Never calls main(): that builds real clients.
+main() is called only up to the lock refusal (issue #129), with everything
+before it faked; past the lock it builds real clients.
 """
 
 from __future__ import annotations
@@ -424,6 +425,31 @@ def test_a_dead_process_leaves_no_lock_behind(tmp_path):
     held = run_day_script.acquire_lock(path)
     held.close()                                   # == the process going away
     assert run_day_script.acquire_lock(path) is not None
+
+
+def test_a_held_lock_is_a_red_unit_that_names_the_lock(tmp_path, monkeypatch,
+                                                       capsys):
+    """Issue #129. A lock still held at the timer's fire means an earlier
+    run_day is STILL RUNNING — the kernel drops a dead process's flock, so it
+    cannot be stale — and today's trading day is not happening. Exit 0 here
+    made that indistinguishable from a market holiday: OnFailure never fired
+    and the Healthchecks ping registered a success. No alert row can be
+    written on this path (connect() has not run), so the exit code is the
+    whole report; 2 rather than 1 so the operator can tell "held lock" from
+    "the day failed" (the code scripts/register_spec.py documents for the
+    same refusal). main() is driven only up to the refusal: everything after
+    the lock builds a real client and is faked to fail."""
+    monkeypatch.setattr(run_day_script, "paper_guard", lambda env: None)
+    monkeypatch.setattr(run_day_script, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(run_day_script, "acquire_lock", lambda p: None)
+    monkeypatch.setattr(run_day_script, "WallClock",
+                        lambda: pytest.fail("must stop at the lock"))
+
+    assert run_day_script.main([]) == 2
+    out = capsys.readouterr().out
+    assert str(tmp_path / run_day_script.LOCK_NAME) in out
 
 
 # --- cost accounting must never take the day down (Fix 6) -------------------
