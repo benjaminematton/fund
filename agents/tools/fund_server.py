@@ -32,7 +32,7 @@ from state.models import (BacktestRequest, Decision, SpecCritique, Signal,
                           StrategySpec)
 from state.specs import (JSON_COLUMNS, advance_to_backtest,
                          insert_strategy_spec, specs_awaiting_critique)
-from state.transition import StaleTransition
+from state.transition import IllegalTransition, StaleTransition
 
 # One table, not four parallel lists (ADR-0002): registering a seat is a single
 # edit, and a half-registered seat — one that may signal but gets no brief — is
@@ -443,10 +443,12 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
     nothing else it raises is caught.
 
     Step 7 on a row already in BACKTEST is a no-op — §4 has no
-    BACKTEST -> BACKTEST edge. A StaleTransition after a successful run is
-    a tool error with the trial row standing (the engine's own irreversible
-    write) and the lifecycle row still in SPEC, so a re-run returns the
-    cached result and re-attempts the edge.
+    BACKTEST -> BACKTEST edge. A StaleTransition (token moved) or an
+    IllegalTransition (row moved to a state with no edge to BACKTEST) after
+    a successful run is a tool error with the trial row standing (the
+    engine's own irreversible write) and the lifecycle row untouched, so a
+    re-run returns the cached result and re-attempts the edge from wherever
+    the row is now — or is refused at step 1 if that is nowhere.
 
     THE fundbt IMPORTS ARE INSIDE THE BODY, deliberately, and AFTER the
     `_can` guard below. `import fundbt.rules` is what populates RULES
@@ -540,12 +542,21 @@ def handle_run_backtest(conn: sqlite3.Connection, *, seat: str, args: dict,
         advance_to_backtest(conn, spec["spec_id"],
                             expected_state_version=row["state_version"],
                             now_iso=now_iso)
-    except StaleTransition as e:
+    except (StaleTransition, IllegalTransition) as e:
+        # Both are the step-7 CAS losing the window between this handler's
+        # step-1 read and its UPDATE: a token bump (Stale) or a move to a
+        # state with no edge to BACKTEST, e.g. SPEC -> REJECTED (Illegal).
+        # §4 says "mismatch -> no-op + stale_transition event", but no such
+        # event kind exists in contracts.md §1; adding one is a human commit
+        # that also forces a slackkit renderer (tests/test_slackkit.py
+        # AST-scans every append_event kind). Until then the race is a tool
+        # error: the trial stands, nothing else is written (#238 item 2).
         return {"ok": False,
                 "error": f"trial {result['run_key']} is logged but the"
-                         f" lifecycle row moved under this run ({e}) —"
-                         " it is still SPEC, so a re-run returns the cached"
-                         " result and re-attempts the edge"}
+                         f" lifecycle row moved under this run ({e}) — the"
+                         " trial stands; a re-run returns the cached result"
+                         " and re-attempts the edge from the row's current"
+                         " state"}
     return {"ok": True, "result": result}
 
 

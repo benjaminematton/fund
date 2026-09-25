@@ -397,6 +397,41 @@ def test_a_token_that_moves_mid_run_is_a_tool_error_with_the_trial_standing(
     assert tuple(_lifecycle(fund_db, sid)) == ("BACKTEST", 2)
 
 
+def test_a_row_rejected_mid_run_is_the_same_tool_error_not_a_stack_trace(
+        granted, fund_db):
+    """#238 item 3. Same window as the test above, different writer: a
+    rejection (SPEC -> REJECTED, §4's stratgate/orchestrator edge, taken
+    here through transition() with the token the handler read) lands
+    between the handler's step-1 read and its step-7 CAS. The CAS then has
+    no edge from REJECTED, which is IllegalTransition, and the handler must
+    treat it exactly like the token race: trial logged and standing,
+    lifecycle row untouched, `ok: False`, no event, no exception. A re-run
+    is refused at step 1 (REJECTED is not backtestable), so unlike the
+    token race there is no edge left to re-attempt."""
+    from state.transition import transition
+
+    sid = _golden(fund_db)
+
+    def rejecting():
+        transition(fund_db, "strategies", {"strategy_id": sid},
+                   "SPEC", "REJECTED", NOW, expected_state_version=0,
+                   extra={"reject_reason": "30d idle"})
+        return CLOSE
+
+    r = _run(fund_db, {"spec_id": sid, "params": GOLDEN_PARAMS},
+             close_provider=rejecting)
+    assert r["ok"] is False and "is logged" in r["error"]
+    assert "REJECTED" in r["error"]
+    assert _count(fund_db, "trial_registry") == 1
+    assert tuple(_lifecycle(fund_db, sid)) == ("REJECTED", 1)
+    assert _count(fund_db, "events") == 0
+
+    again = _run(fund_db, {"spec_id": sid, "params": GOLDEN_PARAMS},
+                 now_iso=LATER)
+    assert again["ok"] is False and "REJECTED" in again["error"]
+    assert _count(fund_db, "trial_registry") == 1
+
+
 # --- step 3: budget exhausted IS logged, and projects ------------------------
 
 def test_budget_exhaustion_logs_the_rejection_and_appends_one_event(granted,

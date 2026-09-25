@@ -503,6 +503,21 @@ def test_a_later_run_finds_backtest_and_is_a_no_op(conn):
     assert tuple(_lifecycle(conn, sid)) == before
 
 
+def test_a_stale_token_against_an_already_backtest_row_is_the_same_no_op(conn):
+    """The missing pin from #171's review (#238). A row already in BACKTEST
+    is the no-op above whatever token the caller holds: §4 has no
+    BACKTEST -> BACKTEST edge, so there is no transition to CAS and nothing
+    the token could protect. The handler that reads state_version 0 from a
+    SPEC row and then loses the first run to a concurrent caller lands here
+    — its trial is logged and the row is where it wanted it."""
+    sid = insert_strategy_spec(conn, StrategySpec(**SPEC), NOW)
+    advance_to_backtest(conn, sid, expected_state_version=0, now_iso=NOW)
+    before = tuple(_lifecycle(conn, sid))
+    assert advance_to_backtest(conn, sid, expected_state_version=0,
+                               now_iso="2026-07-08T15:00:00+00:00") is False
+    assert tuple(_lifecycle(conn, sid)) == before
+
+
 def test_a_stale_token_writes_nothing_and_raises(conn):
     """§4: "every transition passes expected_state_version; mismatch ->
     no-op". The row is in SPEC but its token moved under the caller, so the
