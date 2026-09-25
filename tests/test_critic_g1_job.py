@@ -756,11 +756,12 @@ def test_an_objections_verdict_advances_nothing_because_nothing_can_advance(db):
     says so deliberately", asserted as `"strategies" not in tables`. #197
     created that table, and registration now writes a lifecycle row in state
     SPEC for every spec (state/specs.py:insert_strategy_spec), so that
-    PREMISE expired. The CLAIM did not. Nothing added a G1 edge to §4, and
-    nothing added `strategies` to EDGES — deliberately: try_transition emits
-    `SET status = ?` and this table's column is `state`, so an EDGES key alone
-    would not even be a working transition, and the edge has to be designed
-    (#181) rather than declared.
+    PREMISE expired. The CLAIM did not. Nothing added a G1 edge to §4.
+    (#238 added `strategies` to EDGES — §4's table verbatim, on the `state`
+    column with the state_version CAS — so `"strategies" not in EDGES` was
+    retired in turn; the pin is now that SPEC's only exits are §4's two,
+    BACKTEST and REJECTED, neither of which a verdict triggers. A G1 edge
+    still has to be designed (#181) rather than declared.)
 
     So the absence assertion was replaced by one against the world that now
     exists. It no longer says "no table exists to move a spec in"; it says the
@@ -780,9 +781,10 @@ def test_an_objections_verdict_advances_nothing_because_nothing_can_advance(db):
 
     WHAT THIS DOES AND DOES NOT CATCH — stated, because "the day someone adds
     an advance path this test reddens" is more than it can promise. It reddens
-    on exactly three shapes: a new key in state/transition.py's EDGES, ANY
-    mutation of this spec's `strategies` row across the verdict, and a
-    `state`/`status` column on strategy_specs. It would NOT catch an advance
+    on exactly three shapes: a new exit from SPEC in state/transition.py's
+    EDGES["strategies"] (or a `strategy_specs` key there), ANY mutation of
+    this spec's `strategies` row across the verdict, and a `state`/`status`
+    column on strategy_specs. It would NOT catch an advance
     path that runs outside this call — a verdict-gated stratgate sweep on a
     LATER night, or a scheduler that reads strategy_critiques directly — nor a
     lifecycle field under a different name on strategy_specs (`phase`,
@@ -829,9 +831,11 @@ def test_an_objections_verdict_advances_nothing_because_nothing_can_advance(db):
         (life_before, life_after)
     assert life_after == life_before
 
-    # 4. and there is still no advance path to withhold
+    # 4. and there is still no advance path to withhold: SPEC leaves only by
+    #    the first run_backtest or a rejection (§4), never by a verdict
     assert "strategy_specs" not in EDGES
-    assert "strategies" not in EDGES
+    assert {to for frm, to in EDGES["strategies"] if frm == "SPEC"} == {
+        "BACKTEST", "REJECTED"}
     columns = {r["name"] for r in db.execute("PRAGMA table_info(strategy_specs)")}
     assert not ({"state", "status"} & columns), columns
 

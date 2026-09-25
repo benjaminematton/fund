@@ -2,8 +2,8 @@ import pytest
 
 from orchestrator.clock import iso
 from state.db import connect
-from state.transition import (EDGES, IllegalTransition, StaleTransition,
-                              transition, try_transition)
+from state.transition import (EDGES, STATE_COLUMN, IllegalTransition,
+                              StaleTransition, transition, try_transition)
 
 NOW = "2026-07-06T15:30:00+00:00"
 
@@ -17,6 +17,8 @@ STATUSES = {
     "orders": ["submitted", "filled", "partially_filled", "canceled", "rejected"],
     "checkpoints": ["pending", "running", "done", "failed"],
     "worklist": ["open", "claimed", "done", "failed", "expired"],
+    "strategies": ["SPEC", "BACKTEST", "VALIDATED", "INCUBATING", "ALLOCATED",
+                   "SCALED", "PROBATION", "RETIRED", "REJECTED"],
 }
 
 NON_EDGES = [(t, a, b) for t, ss in STATUSES.items()
@@ -41,10 +43,13 @@ def test_ddl_applies_cleanly_and_is_idempotent(tmp_path):
 
 
 def test_every_status_table_has_a_state_machine(fund_db):
+    """Every table with a state column has a machine, and every machine has
+    a table. The column is `status` except where STATE_COLUMN says otherwise
+    (`strategies.state`, strategy-contracts.md §2)."""
     tables = {r["name"] for r in fund_db.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     with_status = {t for t in tables if any(
-        c["name"] == "status"
+        c["name"] == STATE_COLUMN.get(t, "status")
         for c in fund_db.execute(f"PRAGMA table_info({t})"))}
     assert with_status == set(STATUSES) == set(EDGES)
 
@@ -66,6 +71,8 @@ def test_every_non_edge_raises(fund_db, table, frm, to):
         key = {"client_order_id": "x"}
     if table == "worklist":
         key = {"work_id": "wk_x"}
+    if table == "strategies":
+        key = {"strategy_id": "x"}
     with pytest.raises(IllegalTransition):
         transition(fund_db, table, key, frm, to, NOW)
 
@@ -259,3 +266,99 @@ def test_transition_extra_rejects_a_non_identifier_column(fund_db):
                        NOW, extra={"claimed_at = ?, status": NOW})
     assert fund_db.execute("SELECT status FROM worklist WHERE work_id=?",
                            (wid,)).fetchone()["status"] == "open"
+
+
+# --- strategies: the `state` + `state_version` machine (strategy-contracts §4)
+
+def _seed_strategy(conn, state="SPEC", version=0):
+    from tests.synthetic import seed_spec_row
+    sid = seed_spec_row(conn)
+    conn.execute("UPDATE strategies SET state = ?, state_version = ?"
+                 " WHERE strategy_id = ?", (state, version, sid))
+    conn.commit()
+    return sid
+
+
+def _strategy(conn, sid):
+    return conn.execute("SELECT state, state_version, updated_at, reject_reason"
+                        " FROM strategies WHERE strategy_id = ?", (sid,)).fetchone()
+
+
+def test_strategies_edges_are_exactly_section_4():
+    """Literal, not derived from EDGES: strategy-contracts.md §4's table, with
+    PROBATION -> "prior state" spelled as the two states that enter
+    PROBATION. NON_EDGES above is filtered by EDGES and so cannot see an
+    edge go missing; this can."""
+    assert EDGES["strategies"] == {
+        ("SPEC", "BACKTEST"),
+        ("SPEC", "REJECTED"), ("BACKTEST", "REJECTED"),
+        ("BACKTEST", "VALIDATED"),
+        ("VALIDATED", "INCUBATING"),
+        ("INCUBATING", "ALLOCATED"), ("INCUBATING", "REJECTED"),
+        ("ALLOCATED", "SCALED"),
+        ("ALLOCATED", "PROBATION"), ("SCALED", "PROBATION"),
+        ("PROBATION", "ALLOCATED"), ("PROBATION", "SCALED"),
+        ("PROBATION", "RETIRED"),
+    }
+
+
+def test_strategies_cas_moves_the_row_bumps_the_token_and_stamps_updated_at(fund_db):
+    sid = _seed_strategy(fund_db)
+    later = "2026-07-07T15:30:00+00:00"
+    assert try_transition(fund_db, "strategies", {"strategy_id": sid},
+                          "SPEC", "BACKTEST", later,
+                          expected_state_version=0) is True
+    row = _strategy(fund_db, sid)
+    assert (row["state"], row["state_version"], row["updated_at"]) == (
+        "BACKTEST", 1, later)
+
+
+def test_strategies_stale_token_writes_nothing_and_raises(fund_db):
+    """§4: "every transition passes expected_state_version; mismatch ->
+    no-op". Right state, wrong token: the WHERE matches nothing."""
+    sid = _seed_strategy(fund_db, version=3)
+    with pytest.raises(StaleTransition, match="state_version 0"):
+        transition(fund_db, "strategies", {"strategy_id": sid},
+                   "SPEC", "BACKTEST", NOW, expected_state_version=0)
+    assert tuple(_strategy(fund_db, sid))[:2] == ("SPEC", 3)
+
+
+def test_strategies_wrong_state_with_the_right_token_is_stale_too(fund_db):
+    sid = _seed_strategy(fund_db, state="BACKTEST", version=1)
+    assert try_transition(fund_db, "strategies", {"strategy_id": sid},
+                          "SPEC", "REJECTED", NOW,
+                          expected_state_version=1) is False
+    assert tuple(_strategy(fund_db, sid))[:2] == ("BACKTEST", 1)
+
+
+def test_strategies_extra_rides_in_the_cas_update(fund_db):
+    """§2: reject_reason is "required when state='REJECTED'"; the caller
+    carries it in the same UPDATE as the move, like a worklist lease."""
+    sid = _seed_strategy(fund_db)
+    transition(fund_db, "strategies", {"strategy_id": sid}, "SPEC", "REJECTED",
+               NOW, expected_state_version=0, extra={"reject_reason": "30d idle"})
+    row = _strategy(fund_db, sid)
+    assert (row["state"], row["state_version"], row["reject_reason"]) == (
+        "REJECTED", 1, "30d idle")
+
+
+def test_strategies_requires_the_cas_token(fund_db):
+    """§4's "every transition passes expected_state_version" is a
+    requirement, not a default: a token-less call on this table is a bug,
+    never a move."""
+    sid = _seed_strategy(fund_db)
+    with pytest.raises(ValueError, match="expected_state_version"):
+        transition(fund_db, "strategies", {"strategy_id": sid},
+                   "SPEC", "BACKTEST", NOW)
+    assert tuple(_strategy(fund_db, sid))[:2] == ("SPEC", 0)
+
+
+def test_status_tables_reject_a_cas_token(fund_db):
+    """No other table carries state_version; a token there would be
+    silently ignored, and a caller who thought it was a CAS was wrong."""
+    did = _seed_decision(fund_db)
+    with pytest.raises(ValueError, match="state_version"):
+        transition(fund_db, "decisions", {"id": did}, "submitted", "approved",
+                   NOW, expected_state_version=0)
+    row = fund_db.execute("SELECT status FROM decisions WHERE id=?", (did,)).fetchone()
+    assert row["status"] == "submitted"
