@@ -208,7 +208,7 @@ def test_an_unmapped_holding_fails_buys_closed_through_the_gate():
     account = _account()
     out = build_market_inputs(["NVDA"], account, px, {"NVDA": "tech"})["NVDA"]
     assert math.isnan(out["sector_value"])           # AAPL is held, unmapped
-    assert size({**out, "side": "buy"}, "enforce") == Rejected("gate_error")
+    assert size({**out, "side": "buy"}) == Rejected("gate_error")
 
 
 def test_annualized_vol_empty_series_is_nan():
@@ -229,7 +229,7 @@ def test_missing_data_nan_lands_on_gate_error_not_a_crash():
         ticker="NVDA", side="buy", equity=100000.0, cash=30000.0, price=180.0,
         vol_60d=0.2, avg_corr=bad_corr, held_qty=0, position_count=2,
         sectors={"NVDA": "tech"}, sector_value=48040.0, daily_pnl_pct=-0.004)
-    assert size(gi, "enforce") == Rejected("gate_error")
+    assert size(gi) == Rejected("gate_error")
 
     bad_sector_value = sector_book_value(
         positions={"AAPL": 120, "MSFT": 40}, prices={"AAPL": 232.0},
@@ -238,7 +238,7 @@ def test_missing_data_nan_lands_on_gate_error_not_a_crash():
         ticker="NVDA", side="buy", equity=100000.0, cash=30000.0, price=180.0,
         vol_60d=0.2, avg_corr=0.1, held_qty=0, position_count=2,
         sectors={"NVDA": "tech"}, sector_value=bad_sector_value, daily_pnl_pct=-0.004)
-    assert size(gi2, "enforce") == Rejected("gate_error")
+    assert size(gi2) == Rejected("gate_error")
 
 
 # --- build_market_inputs: the live composition root's market snapshot -------
@@ -304,21 +304,21 @@ def test_one_unpriceable_holding_does_not_reject_the_whole_universe():
     out = build_market_inputs(["NVDA", "MSFT", "AAPL"], account, px, sectors)
 
     assert not math.isnan(out["NVDA"]["avg_corr"])   # measured vs MSFT alone
-    assert isinstance(size({**out["NVDA"], "side": "buy"}, "enforce"), Approved)
+    assert isinstance(size({**out["NVDA"], "side": "buy"}), Approved)
 
     # ...and the poisoned ticker still rejects ALONE: its price is the
     # broker's live mark, so NaN vol from its own missing bars is the only
     # thing failing it. A candidate's OWN NaN must never stop being a reject.
     assert math.isnan(out["AAPL"]["vol_60d"])
     assert out["AAPL"]["price"] == 200.0
-    assert size({**out["AAPL"], "side": "buy"}, "enforce") == Rejected("gate_error")
+    assert size({**out["AAPL"], "side": "buy"}) == Rejected("gate_error")
 
     # MSFT is held, so ITS book is the unpriceable AAPL alone -> every member
     # excluded -> NaN -> rejected. Asserted here rather than hidden: the
     # blast radius of a data outage is exactly the tickers whose whole book
     # went dark, and never wider.
     assert math.isnan(out["MSFT"]["avg_corr"])
-    assert size({**out["MSFT"], "side": "buy"}, "enforce") == Rejected("gate_error")
+    assert size({**out["MSFT"], "side": "buy"}) == Rejected("gate_error")
 
 
 def test_avg_corr_vs_book_excludes_a_book_ticker_with_no_bars():
@@ -343,7 +343,7 @@ def test_an_empty_book_sizes_at_the_permissive_tier():
         ticker="NVDA", side="buy", price=100.0, equity=100_000.0, cash=100_000.0,
         sectors={"NVDA": "tech"}, vol_60d=0.30, avg_corr=avg_corr_vs_book(px, "NVDA", []),
         held_qty=0, position_count=0, sector_value=0.0, daily_pnl_pct=0.0)
-    assert isinstance(size(inputs, "enforce"), Approved)
+    assert isinstance(size(inputs), Approved)
 
 
 def test_a_book_we_cannot_price_at_all_fails_closed():
@@ -360,7 +360,7 @@ def test_a_book_we_cannot_price_at_all_fails_closed():
         ticker="NVDA", side="buy", price=100.0, equity=100_000.0, cash=100_000.0,
         sectors={"NVDA": "tech"}, vol_60d=0.30, avg_corr=avg_corr_vs_book(px, "NVDA", ["AAPL"]),
         held_qty=0, position_count=1, sector_value=0.0, daily_pnl_pct=0.0)
-    assert size(inputs, "enforce") == Rejected("gate_error")
+    assert size(inputs) == Rejected("gate_error")
 
 
 def test_a_two_return_holding_cannot_drag_the_basket():
@@ -467,10 +467,10 @@ def test_a_well_formed_snapshot_is_APPROVED_with_the_hand_derived_qty():
     assert out["avg_corr"] == pytest.approx(0.5, abs=1e-9)
     assert out["sector_value"] == 2000.0
 
-    assert size({**out, "side": "buy"}, "enforce") == Approved(
+    assert size({**out, "side": "buy"}) == Approved(
         max_qty=144, pre_sector_qty=144, side="buy")
     # ...and the held leg is sell-able for exactly what is held
-    assert size({**inputs["AAPL"], "side": "sell"}, "enforce") == Approved(
+    assert size({**inputs["AAPL"], "side": "sell"}) == Approved(
         max_qty=40, pre_sector_qty=40, side="sell")
 
 
@@ -480,4 +480,4 @@ def test_build_market_inputs_unknown_ticker_reaches_the_gate_as_gate_error():
     px = _frame()
     out = build_market_inputs(["ZZZZ"], _account(), px, {"AAPL": "tech"})["ZZZZ"]
     assert math.isnan(out["price"]) and out["sector"] is None
-    assert isinstance(size({**out, "side": "buy"}, "advisory"), Rejected)
+    assert isinstance(size({**out, "side": "buy"}), Rejected)
