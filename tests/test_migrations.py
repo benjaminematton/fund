@@ -1,8 +1,10 @@
 """Attribution columns, and the migration that gets them onto a live database.
 
-state/db.py's connect() executes schema.sql only when the DB is absent, so a
-column added to that file never reaches an existing database — including the
-droplet's. Nothing in this repo migrated a column before; this is the first.
+state/db.py's connect() re-runs schema.sql only when a table it declares is
+missing, and CREATE TABLE IF NOT EXISTS is a no-op against a table that already
+exists, so a column added to that file never reaches an existing database —
+including the droplet's. Nothing in this repo migrated a column before; this is
+the first.
 
 The three-value vocabulary is the point of most of these tests. A real version
 means a seat produced the row under that charter. 'none' means the orchestrator

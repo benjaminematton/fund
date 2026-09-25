@@ -1,9 +1,13 @@
 """Schema migrations for databases that already exist.
 
-state/db.py's connect() executes schema.sql only when the DB is empty, so a
-column added to that file never reaches a live database — including the
-droplet's. This is the repo's first migration; before it, the only way to add a
-column was to lose every row.
+state/db.py's connect() re-runs schema.sql only when a TABLE it declares is
+missing (the guard is `if not _TABLES <= have`, with _TABLES parsed from
+schema.sql) — so a new table self-creates on the next connect(), no migration
+needed. CREATE TABLE IF NOT EXISTS is a no-op against a table that already
+exists, so a COLUMN added to that file never reaches a live database —
+including the droplet's — and carrying it there is what migrations are for.
+This is the repo's first migration; before it, the only way to add a column
+was to lose every row.
 
 Every migration is additive and idempotent. Nothing here drops or rewrites a
 column: a migration that can destroy data is one nobody dares run.

@@ -1,4 +1,8 @@
 seat: pm
+# `claude-sonnet-5` is the complete id: current-generation ids carry no date
+# suffix, so there is no dated snapshot to pin to. The haiku seats'
+# `claude-haiku-4-5-20251001` is dated only because that model was published
+# under a dated id. Never append a date here — it would 404 (#125).
 model: claude-sonnet-5
 fallback_model: claude-sonnet-5
 max_budget_usd: 0.75

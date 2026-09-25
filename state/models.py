@@ -5,6 +5,7 @@ is the G1 one)."""
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime
 from typing import Annotated, Literal
@@ -116,6 +117,38 @@ def _check_family(v: str) -> str:
 
 Family = Annotated[str, AfterValidator(_check_family)]
 
+# strategy-contracts.md §2: predicted TEXT NOT NULL -- JSON: {net_sharpe, max_dd, hit_rate}
+PREDICTED_KEYS = frozenset({"net_sharpe", "max_dd", "hit_rate"})
+
+
+def _check_predicted(v: dict) -> dict:
+    """Exactly the three metrics, each a finite number — and nothing coerced.
+
+    `predicted` is the calibration record (strategy.md §2), in a write-once
+    table: a spec registered with `{}` or a misspelled key can never be scored
+    and can never be corrected, only superseded (#206). The tool's JSON schema
+    says the same thing, but contracts.md §4 records that it is advisory to
+    the model; this is the enforcement.
+
+    Values are checked, never converted, because this dict is hash input
+    (fundbt.hashing.spec_id): an int 1 rewritten as 1.0 would move the id of
+    every spec carrying one. bool is excluded by hand — it is an int to
+    isinstance and a prediction to nobody.
+    """
+    if set(v) != PREDICTED_KEYS:
+        raise ValueError(
+            f"predicted must carry exactly {sorted(PREDICTED_KEYS)} (specs/"
+            f"strategy-contracts.md §2); got keys {sorted(v)}")
+    for k in sorted(PREDICTED_KEYS):
+        x = v[k]
+        if isinstance(x, bool) or not isinstance(x, (int, float)) \
+                or not math.isfinite(x):
+            raise ValueError(f"predicted.{k} must be a finite number; got {x!r}")
+    return v
+
+
+Predicted = Annotated[dict, AfterValidator(_check_predicted)]
+
 
 class StrategySpec(BaseModel):
     """strategy-contracts.md §2 `strategy_specs`, minus the DB-owned
@@ -147,7 +180,7 @@ class StrategySpec(BaseModel):
     exit_rule: str
     invalidation: str = Field(max_length=500)
     capacity_usd: float = Field(gt=0)
-    predicted: dict
+    predicted: Predicted
     llm_in_loop: int = Field(ge=0, le=1)
 
 
