@@ -18,7 +18,7 @@ import sqlite3
 
 from fundbt.hashing import spec_id as compute_spec_id
 from state.models import StrategySpec
-from state.transition import IllegalTransition, StaleTransition
+from state.transition import transition
 
 JSON_COLUMNS = ("universe", "signal_rule", "param_ranges", "predicted")
 COLUMNS = ("family", "seat", "hypothesis", "mechanism_class", "universe",
@@ -112,34 +112,13 @@ def insert_strategy_spec(conn: sqlite3.Connection, spec: StrategySpec,
 
 def advance_to_backtest(conn: sqlite3.Connection, spec_id: str, *,
                         expected_state_version: int, now_iso: str) -> bool:
-    """CAS one `strategies` row from SPEC to BACKTEST (strategy-contracts.md
-    §4, row 1: "first run_backtest"). True if it moved; False if it was
-    already in BACKTEST, which is §3.2 step 7 on every run after the first
-    — §4 has no BACKTEST -> BACKTEST edge, so that call is a no-op, not an
-    error.
-
-    THIS IS THE ONLY `strategies` EDGE IMPLEMENTED, and it lives here rather
-    than in state/transition.py's EDGES on purpose: try_transition hard-codes
-    a `status` column (transition.py:49-53) that this table does not have
-    (schema.sql:209 — `state`), and the CAS token §4 requires
-    (`expected_state_version`) is not part of that helper's contract. The
-    general machine for this table is a follow-up that lands after #170's
-    EDGES change. The exception classes are transition.py's own, so the
-    failure reads the same to an operator whichever helper raised it.
-
-    CAS is the WHERE clause: `state = 'SPEC' AND state_version = ?`. A
-    matching row moves and its token bumps; a row whose token moved under
-    the caller matches nothing, and that is reported as StaleTransition with
-    nothing written rather than overwritten. Any state other than SPEC or
-    BACKTEST is an edge §4 does not have -> IllegalTransition. No row at all
-    is an orphan (_refuse_orphaned_specs below) -> LookupError; backfilling
-    one here would be the silent invention that function exists to refuse.
-
-    Commits, like insert_strategy_spec: the caller holds a per-tool-call
-    connection and must not leave the move open.
-    """
+    """§3.2 step 7: the SPEC -> BACKTEST edge through state/transition.py's
+    machine (schema.sql:198-202). True if the row moved; False if it was
+    already in BACKTEST (no edge, so no CAS and no write); IllegalTransition
+    from any other state; StaleTransition on a token mismatch; LookupError
+    on no row (an orphan — _refuse_orphaned_specs names the repair)."""
     row = conn.execute(
-        "SELECT state, state_version FROM strategies WHERE strategy_id = ?",
+        "SELECT state FROM strategies WHERE strategy_id = ?",
         (spec_id,)).fetchone()
     if row is None:
         raise LookupError(
@@ -147,21 +126,9 @@ def advance_to_backtest(conn: sqlite3.Connection, spec_id: str, *,
             " advance (see OrphanedSpecs for the repair)")
     if row["state"] == "BACKTEST":
         return False
-    if row["state"] != "SPEC":
-        raise IllegalTransition(
-            f"strategies: {row['state']!r} -> 'BACKTEST' is not a legal edge"
-            " (strategy-contracts.md §4)")
-    cur = conn.execute(
-        "UPDATE strategies SET state = 'BACKTEST',"
-        " state_version = state_version + 1, updated_at = ?"
-        " WHERE strategy_id = ? AND state = 'SPEC' AND state_version = ?",
-        (now_iso, spec_id, expected_state_version))
-    conn.commit()
-    if cur.rowcount != 1:
-        raise StaleTransition(
-            f"strategies {spec_id!r}: not at state_version"
-            f" {expected_state_version} (or no longer SPEC) — refusing to"
-            " overwrite")
+    transition(conn, "strategies", {"strategy_id": spec_id},
+               row["state"], "BACKTEST", now_iso,
+               expected_state_version=expected_state_version)
     return True
 
 
