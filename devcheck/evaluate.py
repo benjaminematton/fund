@@ -18,8 +18,10 @@ CHECKS = (
     checks.check_checkpoints,
     checks.check_journals,
     checks.check_reflection,
+    checks.check_g1_backlog,
     checks.check_position_coverage,
     checks.check_deploy_state,
+    checks.check_units_installed,
     checks.check_services,
     checks.check_database,
 )
@@ -50,7 +52,8 @@ def evaluate(snapshot: Snapshot) -> list[Finding]:
 # fails there is nothing true to say about them, and "ok" would be the false
 # green this package exists to remove. They warn rather than alert so one root
 # cause stays loud instead of five copies of it.
-DB_DERIVED = ("order_idempotency", "outbox", "checkpoints", "journals", "reflection")
+DB_DERIVED = ("order_idempotency", "outbox", "checkpoints", "journals", "reflection",
+              "g1_backlog")
 
 
 def _starve_db_derived(findings: list[Finding], db_read_ok: bool) -> list[Finding]:

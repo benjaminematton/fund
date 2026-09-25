@@ -41,6 +41,23 @@ class ServiceResult:
 
 
 @dataclass(frozen=True)
+class UnitCopy:
+    """One ops/fund-*.{service,timer} in the deployed tree beside its
+    /etc/systemd/system copy. Installed units are root-owned COPIES
+    (ops/README.md "Install the units"), so the two can drift (#220)."""
+    unit: str                        # e.g. "fund-pnl.service"
+    repo_sha256: str                 # /opt/fund/ops/<unit>, the deployed commit
+    installed_sha256: str | None     # /etc/systemd/system/<unit>; None = never copied
+
+
+@dataclass(frozen=True)
+class PendingSpec:
+    """A strategy spec awaiting its G1 critique (#185)."""
+    spec_id: str
+    registered_on: str               # ET date of strategy_specs.created_at; "" = unparsable
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """One complete read of production. Every field is data; nothing here
     computes. Built by scripts/dev_status.py, consumed by evaluate()."""
@@ -74,3 +91,6 @@ class Snapshot:
     db_read_ok: bool = True            # False = the fund DB could not be read at all
     suppressed: frozenset[str] = field(default_factory=frozenset)
     tracked_checks: frozenset[str] = field(default_factory=frozenset)
+    units: Sequence[UnitCopy] | None = None         # None = not read; [] = none found
+    g1_pending: Sequence[PendingSpec] | None = None  # None = not read; never an empty list
+    run_dates: Sequence[str] = ()       # every ET date the fund ran: distinct checkpoints.run_date

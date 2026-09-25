@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -35,16 +36,20 @@ sys.path.insert(0, str(ROOT))
 from devcheck.evaluate import apply_suppression, evaluate      # noqa: E402
 from devcheck.model import (                                   # noqa: E402
     OrderRow,
+    PendingSpec,
     Position,
     ServiceResult,
     Snapshot,
+    UnitCopy,
 )
 from devcheck.render import render                             # noqa: E402
+from orchestrator.clock import et_run_date                     # noqa: E402
 
 HEALTH = ROOT / ".claude" / "health.md"
 
 DROPLET = "root@138.197.47.97"
 REMOTE_ROOT = "/opt/fund"
+SYSTEMD_DIR = "/etc/systemd/system"
 # NOT a constant: the path is read from the droplet's own FUND_DB, because a
 # hardcoded guess is silently wrong rather than loudly wrong. The first guess
 # here was /var/lib/fund/fund.db, which EXISTS on the box as a 0-byte stray
@@ -268,6 +273,88 @@ def _deploy_state() -> tuple[str, str, int]:
     return head[:7], origin[:7], int(behind) if behind.isdigit() else 0
 
 
+# Both trees in one round-trip. `2>/dev/null; true` is load-bearing: a unit
+# that was never copied makes sha256sum exit nonzero, and _real_ssh turns any
+# nonzero exit into None — which would render "not read" for the exact case
+# (#220) this exists to catch. With it, a missing file is simply absent from
+# the reply and parse_unit_hashes reports it as never installed; ssh's own
+# failure to connect still returns None.
+_UNIT_HASH_CMD = (
+    f"sha256sum {REMOTE_ROOT}/ops/fund-*.service {REMOTE_ROOT}/ops/fund-*.timer "
+    f"{SYSTEMD_DIR}/fund-*.service {SYSTEMD_DIR}/fund-*.timer 2>/dev/null; true"
+)
+
+
+def parse_unit_hashes(raw: str) -> list[UnitCopy]:
+    """sha256sum's `<hash>  <path>` lines -> one UnitCopy per unit in the
+    deployed ops/, paired with its installed copy or None.
+
+    Keyed on the deployed tree, not the installed one: the question is whether
+    every unit the repo ships is what the box runs. An installed unit the repo
+    no longer carries is a different question and is not reported here.
+    """
+    repo: dict[str, str] = {}
+    installed: dict[str, str] = {}
+    for line in raw.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, path = parts[0], parts[1].strip()
+        name = path.rsplit("/", 1)[-1]
+        if path.startswith(f"{REMOTE_ROOT}/ops/"):
+            repo[name] = digest
+        elif path.startswith(f"{SYSTEMD_DIR}/"):
+            installed[name] = digest
+    return [UnitCopy(name, repo[name], installed.get(name)) for name in sorted(repo)]
+
+
+def _units_installed() -> list[UnitCopy] | None:
+    """The deployed ops/fund-* units beside their /etc/systemd/system copies.
+    None = the droplet did not answer; [] = it answered and found no unit."""
+    raw = _ssh(_UNIT_HASH_CMD)
+    if raw is None:
+        return None
+    return parse_unit_hashes(raw)
+
+
+# state/specs.py:specs_awaiting_critique's predicate, verbatim: state SPEC AND
+# no critique row (strategy-contracts.md §2 correction — the two are
+# conjunctive, not interchangeable). Mirrored rather than imported because the
+# DB is reached over ssh; tests/test_dev_status_job.py holds the copy to the
+# original on real rows. No LIMIT: the check needs the whole queue, and the
+# selector's orphan refusal is not repeated — an orphan fails critic_g1 loudly
+# and `services` already reports that.
+_G1_PENDING_SQL = (
+    "select s.spec_id, s.created_at from strategy_specs s "
+    "join strategies st on st.strategy_id = s.spec_id "
+    "left join strategy_critiques c on c.spec_id = s.spec_id "
+    "where st.state = 'SPEC' and c.spec_id is null "
+    "order by s.created_at, s.spec_id"
+)
+
+
+def registered_on_et(created_at: str) -> str:
+    """strategy_specs.created_at (ISO-8601 UTC, schema.sql) -> its ET date,
+    the calendar checkpoints.run_date is in. "" when it does not parse or is
+    naive: an unreadable date is reported by the check, never aged as zero."""
+    try:
+        return et_run_date(datetime.fromisoformat(created_at))
+    except ValueError:
+        return ""
+
+
+def _g1_state() -> tuple[list[PendingSpec] | None, list[str]]:
+    """(specs awaiting critique, every ET date the fund ran). Both or neither:
+    a pending list beside an unread calendar would age every spec as zero."""
+    pending_rows = _sql(_G1_PENDING_SQL)
+    run_rows = _sql("select distinct run_date from checkpoints order by run_date")
+    if pending_rows is None or run_rows is None:
+        return None, []
+    pending = [PendingSpec(str(r["spec_id"]), registered_on_et(str(r["created_at"])))
+               for r in pending_rows]
+    return pending, [str(r["run_date"]) for r in run_rows]
+
+
 def _run_local(*argv: str) -> str:
     try:
         out = subprocess.run(list(argv), capture_output=True, text=True, timeout=30)
@@ -383,6 +470,7 @@ def build_snapshot() -> Snapshot:
     positions, _open_orders, broker_fills, broker_error = _positions_and_coverage()
     head, origin, behind = _deploy_state()
     alert_codes, alert_date = _alert_codes()
+    g1_pending, run_dates = _g1_state()
 
     return Snapshot(
         droplet_env=_droplet_env(),
@@ -407,6 +495,9 @@ def build_snapshot() -> Snapshot:
         db_read_ok=db_read_ok,
         suppressed=read_suppressed(HEALTH),
         tracked_checks=_tracked_checks(),
+        units=_units_installed(),
+        g1_pending=g1_pending,
+        run_dates=run_dates,
     )
 
 
