@@ -30,3 +30,20 @@ neither lose nor duplicate a post. Tests: `tests/test_state*.py`.
   structs `test_schema_matches_spec` compares, so a column's `schema.sql`
   comment and its spec twin are hand-matched, not enforced. `coverage` and
   `abstention_rate` both rely on that today.
+
+## 2026-09-25 · #206 #238 #140 · fund-fe (overseer)
+- `StrategySpec.predicted` (PR #249) requires exactly `{net_sharpe, max_dd, hit_rate}`, each
+  a finite non-bool number, **checked never coerced** — it is `spec_id` hash input, so an int
+  `1` rewritten as `1.0` would move every id. The pre-existing frozen id pin kept its literal
+  by restoring `predicted={}` on the dump before hashing; a second pin recorded on the bare
+  dict model guards `predicted`'s own serialisation.
+- `state/transition.py` (PR #254) has the `strategies` machine: §4's 13 edges verbatim,
+  `STATE_COLUMN["strategies"] = "state"`, `VERSIONED` tables require keyword-only
+  `expected_state_version` (refused on every other table) and bump it in the same UPDATE.
+  `advance_to_backtest` is a 5-line wrapper. No `stale_transition` event kind exists — adding
+  one is a `contracts.md` human commit and forces a slackkit renderer — so a lost CAS is a
+  tool error (`StaleTransition` OR `IllegalTransition`, both caught in `handle_run_backtest`).
+  `specs/strategy-contracts.md:25` still says `EDGES` carries no strategies entry — now
+  false; canonical, awaiting a human commit.
+- `state/protection.py:qty_of` (PR #248) returns `None` for non-finite values; before, a
+  `nan` qty raised out of `dev_status` and broke its EXIT-0 contract.

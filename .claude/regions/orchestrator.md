@@ -29,3 +29,8 @@ Workflow tables are state machines: transitions only through
   placeholder rows (`charter_version='none'`) get graded exactly like real
   ones — `grade_rows` doesn't filter on it. Only de-rostering freezes it;
   don't treat `n_graded` alone as a "seat gone quiet" signal.
+
+## 2026-09-25 · #137 · fund-fe (overseer)
+- `daily.py:_sized(inputs, side)` — the `mode` argument is gone with `gate.size()`'s (PR
+  #243). Advisory (`allowed_actions`, `_pre_gate_stage`) and enforcement (`_gate_handle`)
+  are the same call; the parity pin in `tests/test_risk.py` drives both through this module.

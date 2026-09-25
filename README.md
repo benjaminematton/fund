@@ -134,7 +134,7 @@ LLM-free by an AST lint (`scripts/check_purity.py`) that runs in `make test`.
   are advisory to the model, because the pinned SDK has no `strict=True`. The
   pydantic handler validates every safety-relevant constraint, so no code
   anywhere parses a ticker, an action, or a size out of free text.
-- **Record/replay test suite.** 518 offline tests including six full simulated
+- **Record/replay test suite.** An offline suite of 2,000+ tests including six full simulated
   day shapes that run the real gate, hooks, tools, DB, and fill-poll against
   recorded LLM decisions — no network, no API keys, $0 of inference.
 
