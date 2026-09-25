@@ -7,8 +7,9 @@ design.md §3's Nightly row says deciding agents write reflections; §7 makes
 memory load-bearing in Phase 2. orchestrator/reflect.py has shipped the frame
 and the writer since 2026-08-19 and nothing called either. This is the caller.
 
-WHY IT RIDES THE 16:35 TIMER, FOURTH. Reflections need resolutions, and
-resolve_day writes those at 16:35 — seven hours after the 09:35 trading day.
+WHY IT RIDES THE 16:35 TIMER, BEHIND resolve_day (ops/README.md's units
+table has the order). Reflections need resolutions, and resolve_day writes
+those at 16:35 — seven hours after the 09:35 trading day.
 A reflection stage inside run_day would have nothing to reflect on. Type=oneshot
 runs ExecStart lines in order and stops at the first failure, so this runs only
 if close_pnl and resolve_day both succeeded — which is exactly right: if
@@ -20,7 +21,7 @@ because it posts nothing and runs no seat: an unrelated missing var must not
 stop the calibration record being written. This job runs seats, which cost
 money and can fail, and a failed turn appends an alert. audit_day's
 undrained-events check has NO date bound, so an alert this job cannot drain
-reddens tomorrow's audit. It runs behind all three arithmetic legs, so a missing
+reddens tomorrow's audit. It runs behind the arithmetic legs, so a missing
 token here cannot stop close_pnl, resolve_day, or weights_day, all of which
 have already run — and weights_day exits 0 on a scoring failure by design,
 so a bad scoring night can never hold this perishable leg back either.
