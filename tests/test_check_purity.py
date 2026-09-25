@@ -230,6 +230,22 @@ UNLISTED_CLOCK_CALL_CASES = [
         async def pause():
             await asyncio.sleep(0.1)
     """, RULE_CLOCK_REF),
+    # Issue #144: both are bounds measured against the real event-loop clock,
+    # which a SimClock does not drive. `asyncio.sleep` was listed; the two
+    # constructs a person reaches for to BOUND something were not.
+    ("asyncio.wait_for()", """
+        import asyncio
+
+        async def bound(x):
+            return await asyncio.wait_for(x, 5)
+    """, RULE_CLOCK_REF),
+    ("asyncio.timeout()", """
+        import asyncio
+
+        async def bound(x):
+            async with asyncio.timeout(5):
+                return await x
+    """, RULE_CLOCK_REF),
 ]
 
 # --- round two -------------------------------------------------------------
@@ -2050,6 +2066,36 @@ def test_the_real_slackkit_init_is_empty():
     assert init.read_text().strip() == "", (
         f"{init} is no longer empty, which breaks the boundary "
         f"slackkit/real.py:1-3 documents:\n{init.read_text()}")
+
+
+# Issue #167: PURE_PACKAGES was pinned by nothing. The real-tree test below
+# asserts only exit 0, and a lint that scans nothing finds nothing — so the
+# list could shrink to [] and the suite stayed green. Written out literally on
+# purpose: deriving it from the tree would re-open the hole from the other
+# side (a dropped directory would drop out of the expectation too).
+EXPECTED_PURE_PACKAGES = {
+    "gate", "stratgate", "calibration",          # CLAUDE.md invariant 3
+    "fundbt", "orchestrator", "state", "market", "slackkit", "devcheck",
+}
+
+
+def test_pure_packages_is_pinned():
+    """Both ways a package can silently leave the lint: removed from the list,
+    or renamed on disk so the list's entry names nothing (main() skips a
+    missing directory rather than failing)."""
+    scanned = set(_load().PURE_PACKAGES)
+    assert scanned == EXPECTED_PURE_PACKAGES, (
+        f"PURE_PACKAGES drifted from the pinned set — missing "
+        f"{sorted(EXPECTED_PURE_PACKAGES - scanned)}, unexpected "
+        f"{sorted(scanned - EXPECTED_PURE_PACKAGES)}. Adding a pure package is a "
+        f"decision: update EXPECTED_PURE_PACKAGES deliberately.")
+    for pkg in sorted(EXPECTED_PURE_PACKAGES):
+        pkg_dir = ROOT / pkg
+        assert pkg_dir.is_dir(), (
+            f"{pkg}/ is not a directory — the lint skips it silently, so a "
+            f"rename has dropped it from purity linting")
+        assert any(pkg_dir.rglob("*.py")), (
+            f"{pkg}/ holds no .py file — the lint scans nothing there")
 
 
 def test_the_real_tree_stays_clean():

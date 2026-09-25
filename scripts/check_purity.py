@@ -18,8 +18,10 @@ Checks over the no-LLM business-logic packages listed in PURE_PACKAGES:
      package has to stay statically analyzable, and the argument may be
      computed ("claude" + "_agent_sdk"), so the call itself is the violation.
   3. No wall clock: datetime.now()/utcnow()/today(), date.today(),
-     pandas.Timestamp.now()/today(), asyncio.sleep(), and the time module's
-     sleep, counters and clock readers. strftime/asctime/ctime/gmtime/localtime
+     pandas.Timestamp.now()/today(), asyncio.sleep()/timeout()/wait_for()
+     (bounds against the real event-loop clock, which no SimClock drives),
+     and the time module's sleep, counters and clock readers.
+     strftime/asctime/ctime/gmtime/localtime
      read the clock only when called with too few arguments to render a
      supplied value; given one they are pure converters and are left alone
      (see ARITY_PURE_FROM).
@@ -73,7 +75,7 @@ FORBIDDEN_REFS = {
     "time.monotonic_ns", "time.perf_counter", "time.perf_counter_ns",
     "time.process_time", "time.process_time_ns", "time.thread_time",
     "time.thread_time_ns", "time.clock_gettime", "time.clock_gettime_ns",
-    "asyncio.sleep",
+    "asyncio.sleep", "asyncio.timeout", "asyncio.wait_for",
     "pandas.Timestamp.now", "pandas.Timestamp.today", "pandas.Timestamp.utcnow",
 }
 # Names that read the wall clock ONLY when called with too few arguments to
