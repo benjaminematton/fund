@@ -647,7 +647,7 @@ def test_main_exits_one_when_the_guarded_body_fails(db, tmp_path, monkeypatch):
                         | {"FUND_DB": str(tmp_path / "fund.sqlite")})
     monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
     monkeypatch.setattr(critic_g1, "connect", lambda p: db)
-    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+    monkeypatch.setattr(critic_g1.run_day, "_build_slack", lambda env, environ:
                         FakeSlack())
     monkeypatch.setattr(critic_g1, "critique_and_log",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -664,7 +664,7 @@ def test_main_exits_zero_on_a_clean_night(db, tmp_path, monkeypatch):
                         | {"FUND_DB": str(tmp_path / "fund.sqlite")})
     monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
     monkeypatch.setattr(critic_g1, "connect", lambda p: db)
-    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+    monkeypatch.setattr(critic_g1.run_day, "_build_slack", lambda env, environ:
                         FakeSlack())
     monkeypatch.setattr(critic_g1, "critique_and_log",
                         lambda *a, **k: {"critiqued": 0, "failed": 0})
@@ -702,7 +702,7 @@ def test_a_bad_seat_config_fails_the_unit_rather_than_passing_silently(
                         | {"FUND_DB": str(tmp_path / "fund.sqlite")})
     monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
     monkeypatch.setattr(critic_g1, "connect", lambda p: db)
-    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+    monkeypatch.setattr(critic_g1.run_day, "_build_slack", lambda env, environ:
                         FakeSlack())
     monkeypatch.setattr(critic_g1, "load_seat_config",
                         lambda p: (_ for _ in ()).throw(

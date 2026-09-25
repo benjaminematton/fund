@@ -49,18 +49,6 @@ def no_consumer(row: dict) -> None:
                      f" (work {row['work_id']}); R1 ships the loop only")
 
 
-def _build_slack(env: dict, environ):
-    """Named seam so tests can drive main() without a network client."""
-    from slackkit.real import RealSlack
-    slack = RealSlack(env["SLACK_BOT_TOKEN"])
-    overrides = run_day.parse_channel_overrides(
-        environ.get("SLACK_CHANNEL_OVERRIDES"))
-    if overrides:
-        log(f"channel overrides active: {overrides}")
-        slack = run_day.RemappedSlack(slack, overrides)
-    return slack
-
-
 def _guarded(conn, slack, clock, body) -> int:
     """Never a silent death. Exit 1 makes OnFailure=fund-alert@%n.service fire
     (the report path that shares no failure mode with this process); the
@@ -104,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = WallClock()
     conn = connect(db_path)
-    slack = _build_slack(env, environ)
+    slack = run_day._build_slack(env, environ)
 
     def _body() -> int:
         cycles = run_dispatcher_loop(conn, slack, clock, no_consumer,

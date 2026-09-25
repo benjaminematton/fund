@@ -404,6 +404,20 @@ def test_the_audit_rollup_keeps_its_self_alert_marker(wired, monkeypatch):
     assert payload[run_day_script.audit_day.SELF_ALERT_KEY] is True
 
 
+# --- shared helpers live here once (issue #200) ------------------------------
+
+def test_build_slack_is_defined_exactly_once_under_scripts():
+    """Issue #200. _build_slack was byte-copied into three nightly jobs, one
+    copy still claiming to be "the ONE place" the Slack client is built. This
+    file is the home of every other helper those jobs share (paper_guard,
+    require_env, acquire_lock, parse_channel_overrides, RemappedSlack,
+    _alert), so the single definition lives here and they import it."""
+    import re
+    defs = sorted(p for p in (ROOT / "scripts").glob("*.py")
+                  if re.search(r"^def _build_slack\(", p.read_text(), re.M))
+    assert defs == [SCRIPT]
+
+
 # --- single-instance guard (Fix 5) ------------------------------------------
 
 def test_a_second_instance_backs_off_instead_of_racing(tmp_path):

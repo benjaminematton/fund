@@ -568,7 +568,7 @@ def _fake_main_env(monkeypatch, db, tmp_path, *, held=()):
                         | {"FUND_DB": str(tmp_path / "fund.sqlite")})
     monkeypatch.setattr(register_spec.run_day, "acquire_lock", _acquire)
     monkeypatch.setattr(register_spec, "connect", lambda p: db)
-    monkeypatch.setattr(register_spec, "_build_slack",
+    monkeypatch.setattr(register_spec.run_day, "_build_slack",
                         lambda env, environ: FakeSlack())
     return handed
 
@@ -707,7 +707,7 @@ def test_a_missing_note_never_opens_the_db_or_builds_a_client(monkeypatch, db,
     _fake_main_env(monkeypatch, db, tmp_path)
     opened, locked = [], []
     monkeypatch.setattr(register_spec, "connect", lambda p: opened.append(p))
-    monkeypatch.setattr(register_spec, "_build_slack",
+    monkeypatch.setattr(register_spec.run_day, "_build_slack",
                         lambda *a: locked.append("slack"))
     monkeypatch.setattr(register_spec.run_day, "acquire_lock",
                         lambda p: locked.append("lock"))

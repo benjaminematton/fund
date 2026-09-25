@@ -479,27 +479,6 @@ def _guarded(conn, slack, clock, body) -> int:
         return 1
 
 
-def _build_slack(env: dict, environ):
-    """The Slack client _guarded needs in order to report anything, plus this
-    run's channel remapping.
-
-    A named seam so tests can drive main() without a network client.
-
-    Copied from scripts/critic_g1.py:463-478 rather than shared. Hoisting it
-    into scripts/run_day.py is issue #200 and is out of this lane's scope; that
-    issue exists BECAUSE of this copy.
-    """
-    from slackkit.real import RealSlack
-
-    slack = RealSlack(env["SLACK_BOT_TOKEN"])
-    overrides = run_day.parse_channel_overrides(
-        environ.get("SLACK_CHANNEL_OVERRIDES"))
-    if overrides:
-        log(f"channel overrides active: {overrides}")
-        slack = run_day.RemappedSlack(slack, overrides)
-    return slack
-
-
 def _make_run_turn(seat: str, cfg: dict, db_path: str, clock, conn,
                    run_date: str, note: str):
     """Build the `run_turn` callable `register_and_log` drives.
@@ -639,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = WallClock()
     conn = connect(db_path)
-    slack = _build_slack(env, environ)
+    slack = run_day._build_slack(env, environ)
 
     def _body() -> int:
         cfg = load_seat_config(SEAT_CONFIG)

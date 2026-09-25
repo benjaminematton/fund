@@ -226,6 +226,23 @@ class RemappedSlack:
                                 thread_ts, blocks, username, icon_emoji)
 
 
+def _build_slack(env: dict, environ):
+    """The Slack client a guard needs in order to report anything, plus this
+    run's channel remapping.
+
+    A named seam so tests can drive main() without a network client, and so the
+    ONE thing that must exist before a guard can report is built in one place —
+    here, for this day and for every nightly job that imports it (issue #200)."""
+    from slackkit.real import RealSlack
+
+    slack = RealSlack(env["SLACK_BOT_TOKEN"])
+    overrides = parse_channel_overrides(environ.get("SLACK_CHANNEL_OVERRIDES"))
+    if overrides:
+        log(f"channel overrides active: {overrides}")
+        slack = RemappedSlack(slack, overrides)
+    return slack
+
+
 # --- market gate ------------------------------------------------------------
 
 def market_is_open(source) -> bool:
@@ -608,7 +625,6 @@ def guarded(conn, slack, clock, body: Callable[[], int]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     from market.source_alpaca import AlpacaSource
-    from slackkit.real import RealSlack
 
     environ = os.environ
     paper_guard(environ)                     # invariant 1, before anything else
@@ -646,11 +662,7 @@ def main(argv: list[str] | None = None) -> int:
     run_date = et_run_date(clock.now())
     conn = connect(db_path)
 
-    slack = RealSlack(env["SLACK_BOT_TOKEN"])
-    overrides = parse_channel_overrides(environ.get("SLACK_CHANNEL_OVERRIDES"))
-    if overrides:
-        log(f"channel overrides active: {overrides}")
-        slack = RemappedSlack(slack, overrides)
+    slack = _build_slack(env, environ)
 
     # From here (after connect(), RealSlack construction and channel-override
     # parsing) onward nothing may die silently: the guard covers the
