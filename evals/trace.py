@@ -42,8 +42,8 @@ WRITE_TABLES = {"pm": ["decisions"], "analyst": ["signals"],
 # Tables keyed on the trading day. `strategy_critiques` is NOT: a spec is
 # reviewed once, not once per day, so it carries no `run_date` and no `ticker`.
 # A live scan that assumed otherwise would emit invalid SQL rather than an
-# empty result — see evals/live.py:rows_written, which skips what it cannot
-# scope. The eval rig has no such problem: its trial DB is fresh, so an
+# empty result — see evals/live.py:rows_written, which scopes it by `seat`
+# instead. The eval rig has no such problem: its trial DB is fresh, so an
 # unscoped select already means "this trial" (evals/runner.py:ROW_SCOPE).
 DAILY_TABLES = frozenset({"decisions", "signals"})
 

@@ -321,3 +321,108 @@ def test_i4_no_longer_reports_a_refusal_that_did_not_happen(tmp_path):
 
     verdict = i4_schema(trace, _Seat(), _Case())
     assert verdict.outcome == "PASS", verdict.detail
+
+
+# --- strategy_critiques: the Critic's table (#184) ---------------------------
+#
+# `strategy_critiques` has no run_date and no ticker, so the daily scan cannot
+# reach it. Until #169 nothing scheduled a Critic turn and the scan skipped the
+# table; scripts/critic_g1.py now runs one nightly, so a skipped table means a
+# live G1 trace grades as a seat that wrote nothing while the eval rig
+# (evals/runner.py:ROW_SCOPE) counts the row. The pin is against the rig's own
+# `_rows` on the same DB: same rows, same order, same decoded `objections`.
+
+from state.models import StrategySpec
+from state.specs import insert_strategy_spec
+
+SPEC = dict(
+    family="F1", seat="quant",
+    hypothesis="Reversal pays for absorbing forced selling.",
+    mechanism_class="liquidity_provision",
+    universe={"index": "Russell 1000", "pit_constituents": True, "filters": []},
+    liquidity_bucket="mega_large",
+    signal_rule={"entry": "5d return below -1.5 sigma"},
+    param_ranges={"sigma": [1.0, 2.5, 0.25]},
+    search_budget=24, holding_period_d=5, rebalance="daily",
+    expected_turnover=42.0, exit_rule="close at 5 trading days",
+    invalidation="12m low-turnover spread negative for two quarters.",
+    capacity_usd=4000000.0,
+    predicted={"net_sharpe": 0.8, "max_dd": 0.14, "hit_rate": 0.55},
+    llm_in_loop=0)
+
+
+def _spec(conn, **override) -> str:
+    return insert_strategy_spec(conn, StrategySpec(**{**SPEC, **override}), NOW)
+
+
+def _critique(conn, spec_id, seat="critic", objections=(), created_at=NOW):
+    conn.execute(
+        "INSERT INTO strategy_critiques (spec_id, verdict, objections, seat,"
+        " charter_version, model_id, created_at) VALUES (?, ?, ?, ?, 'v2',"
+        " 'm', ?)",
+        (spec_id, "objections" if objections else "clear",
+         json.dumps(list(objections)), seat, created_at))
+    conn.commit()
+
+
+def test_the_critic_trace_carries_the_critique_row_it_wrote(tmp_path):
+    """The manufactured red for #184: one critique row for seat `critic`, and
+    the live scan reported nothing. After: exactly what the rig counts."""
+    from evals.live import rows_written
+    from evals.runner import _rows
+
+    conn = connect(tmp_path / "fund.sqlite")
+    sid = _spec(conn)
+    _critique(conn, sid, objections=["the rule filters the top decile"])
+
+    rows = rows_written(conn, "critic", RUN)["strategy_critiques"]
+    assert len(rows) == 1
+    assert rows[0]["spec_id"] == sid
+    assert rows[0]["objections"] == ["the rule filters the top decile"]
+    assert rows == _rows(conn, "critic", RUN)["strategy_critiques"]
+
+
+def test_critique_rows_are_scoped_by_seat_and_ordered_by_spec_id(tmp_path):
+    """The rig's select is unscoped because its DB is fresh per trial; a live
+    DB is not, so the live scan takes `WHERE seat = ?` — the one deliberate
+    difference — and keeps the rig's `ORDER BY spec_id`."""
+    from evals.live import rows_written
+
+    conn = connect(tmp_path / "fund.sqlite")
+    ids = sorted(_spec(conn, hypothesis=h) for h in ("h-one", "h-two", "h-3"))
+    _critique(conn, ids[2])
+    _critique(conn, ids[0])
+    _critique(conn, ids[1], seat="some_other_seat")
+
+    rows = rows_written(conn, "critic", RUN)["strategy_critiques"]
+    assert [r["spec_id"] for r in rows] == [ids[0], ids[2]]
+    assert all(r["seat"] == "critic" for r in rows)
+    assert all(r["objections"] == [] for r in rows)
+
+
+def test_a_critique_from_an_earlier_night_is_not_tonights(tmp_path):
+    """A seat scope alone is not "the rows THIS seat wrote today": the live DB
+    holds every night's critiques, so a scan by seat would hand night N's
+    trace every verdict the Critic ever wrote. The table has no run_date, so
+    the day comes from `created_at` through the same ET rule
+    scripts/critic_g1.py derives run_date with. The row written at 02:00 UTC
+    is 22:00 ET the night before — RUN's — and pins that it is the ET rule,
+    not a string prefix, doing the scoping. `created_at` itself is not a
+    ROW_COLUMNS column and must not leak into the trace."""
+    from evals.live import rows_written
+    from evals.runner import _rows
+
+    conn = connect(tmp_path / "fund.sqlite")
+    ids = sorted(_spec(conn, hypothesis=h) for h in ("h-one", "h-two", "h-3"))
+    _critique(conn, ids[0], created_at="2026-08-19T13:00:00+00:00")
+    _critique(conn, ids[1], created_at=NOW)
+    _critique(conn, ids[2], created_at="2026-08-21T02:00:00+00:00")
+
+    rows = rows_written(conn, "critic", RUN)["strategy_critiques"]
+    assert [r["spec_id"] for r in rows] == [ids[1], ids[2]]
+    assert "created_at" not in rows[0]
+
+    # On a DB where every row is today's, the live scan and the rig still agree.
+    conn.execute("DELETE FROM strategy_critiques WHERE spec_id = ?", (ids[0],))
+    conn.commit()
+    assert rows_written(conn, "critic", RUN) == _rows(conn, "critic", RUN)

@@ -23,13 +23,23 @@ writing evaluators before error analysis.
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from evals.trace import DAILY_TABLES, ROW_COLUMNS, WRITE_TABLES, Trace
+from orchestrator.clock import et_run_date
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+# Columns stored as JSON text, decoded here so graders receive the value the
+# pydantic model declares. Must equal evals/runner.py:JSON_COLUMNS — the same
+# set is not imported from there because runner pulls agents.seats and the SDK
+# onto the trading path. tests/test_live_trace.py pins this scan against the
+# rig's `_rows` on the same database, so a drift between the two goes red.
+JSON_COLUMNS = frozenset({"objections"})
 
 
 def rows_written(conn, seat: str, run_date: str) -> dict:
@@ -56,36 +66,47 @@ def rows_written(conn, seat: str, run_date: str) -> dict:
     one seat that touches the broker (invariant 4: a trace is evidence, never
     control flow).
 
-    A table outside `DAILY_TABLES` is SKIPPED for the same reason, not queried
-    and not raised on. `strategy_critiques` has no `run_date` and no `ticker`,
-    so the scan below would emit invalid SQL against it rather than return
-    nothing — and the Critic is the seat that writes it. Nothing schedules a
-    Critic turn today, so this is a guard against the wiring rather than a live
-    bug: whoever adds that stage must give this function the seat-scoped scan
-    the table actually needs (`WHERE seat = ?`, ordered by `spec_id`), and
-    should not discover the requirement from a traceback on the trading path.
+    A table outside `DAILY_TABLES` is scoped by SEAT instead. `strategy_critiques`
+    has no `run_date` and no `ticker` (a spec is reviewed once, not once per
+    day), so it takes `WHERE seat = ?` ordered by `spec_id` — the rig's
+    `evals/runner.py:ROW_SCOPE` order — and keeps only rows whose `created_at`
+    falls on `run_date` in ET: the seat and day scope a live database needs
+    and a fresh trial database does not. scripts/critic_g1.py runs that
+    seat nightly (#169), so until #184 a live G1 trace graded as a seat that
+    wrote nothing while an eval trace of the same turn carried the row.
 
-    TWO halves are needed there, not one. The scan is the obvious half; the
-    other is JSON decoding. `strategy_critiques.objections` is stored as JSON
-    text, so a scan alone hands every grader a raw string where the model
-    declares a list — `evals/runner.py:JSON_COLUMNS` already does this for the
-    rig, and a live trace that skipped it would grade differently from an eval
-    trace of the same turn. That divergence is exactly what moving ROW_COLUMNS
-    into evals/trace.py exists to prevent.
+    TWO halves, not one. The scan is the obvious half; the other is JSON
+    decoding. `strategy_critiques.objections` is stored as JSON text, so a scan
+    alone hands every grader a raw string where the model declares a list —
+    `evals/runner.py:JSON_COLUMNS` already does this for the rig, and a live
+    trace that skipped it would grade differently from an eval trace of the
+    same turn. That divergence is exactly what moving ROW_COLUMNS into
+    evals/trace.py exists to prevent.
     """
     out = {}
     for table in WRITE_TABLES.get(seat, ()):
-        if table not in DAILY_TABLES:
-            continue
         cols = ROW_COLUMNS[table]
-        scoped = "agent" in cols
-        rows = conn.execute(
-            f"SELECT {', '.join(cols)} FROM {table} WHERE run_date = ?"
-            + (" AND agent = ?" if scoped else "")
-            + " ORDER BY ticker",
-            (run_date, seat) if scoped else (run_date,)).fetchall()
+        if table in DAILY_TABLES:
+            scoped = "agent" in cols
+            rows = conn.execute(
+                f"SELECT {', '.join(cols)} FROM {table} WHERE run_date = ?"
+                + (" AND agent = ?" if scoped else "")
+                + " ORDER BY ticker",
+                (run_date, seat) if scoped else (run_date,)).fetchall()
+        else:
+            # No run_date column, so the day comes from `created_at` through
+            # the same ET rule scripts/critic_g1.py derives run_date with; the
+            # two agree by construction. A seat scope alone would hand night
+            # N's trace every critique the seat ever wrote. This is a pure
+            # function of a stored timestamp, not a clock read.
+            rows = [r for r in conn.execute(
+                f"SELECT {', '.join(cols)}, created_at FROM {table}"
+                " WHERE seat = ? ORDER BY spec_id", (seat,)).fetchall()
+                if et_run_date(datetime.fromisoformat(r["created_at"]))
+                == run_date]
         if rows:
-            out[table] = [dict(zip(cols, tuple(r))) for r in rows]
+            out[table] = [{c: json.loads(r[c]) if c in JSON_COLUMNS else r[c]
+                           for c in cols} for r in rows]
     return out
 
 
