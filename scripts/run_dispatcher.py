@@ -27,6 +27,7 @@ import run_day                                        # noqa: E402
 from orchestrator.clock import iso                    # noqa: E402
 from orchestrator.dispatch import run_dispatcher as run_dispatcher_loop  # noqa: E402
 from slackkit.outbox import drain                     # noqa: E402
+from slackkit.redact import redact                    # noqa: E402
 from state.db import connect                          # noqa: E402
 
 # No Alpaca, no Anthropic: R1 places no orders and runs no model.
@@ -72,7 +73,7 @@ def _guarded(conn, slack, clock, body) -> int:
                 " dispatcher stopped; rows past expires_at stop being claimable"
                 " at once and their expired transition + alert land on the next"
                 " start; nothing retries itself (invariant 4).")
-        log(f"ALERT {text}")
+        log(f"ALERT {redact(text)}")            # issue #150; see run_day._alert
         try:
             run_day._alert(conn, clock, "dispatcher_failed", text)
             drain(conn, slack, iso(clock.now()))

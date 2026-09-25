@@ -578,6 +578,18 @@ def test_a_failure_in_this_leg_exits_nonzero_so_systemd_reports_it(db):
     assert _undrained(db) == 0
 
 
+def test_a_failure_that_dumps_a_credential_is_redacted_in_the_log(db, capsys):
+    """Issue #150, the same shape as run_day.guarded: the stored row is
+    redacted by append_alert, but _guarded logs the raw text first, and on the
+    droplet stdout is the journal."""
+    def _boom():
+        raise RuntimeError("env dump: ALPACA_SECRET_KEY=abc123verysecret")
+
+    assert critic_g1._guarded(db, FakeSlack(), SimClock(NIGHTLY), _boom) == 1
+    assert "abc123verysecret" not in capsys.readouterr().out
+    assert "abc123verysecret" not in _alert_texts(db)[0]
+
+
 def test_a_hard_stop_inside_the_body_is_still_alerted_and_still_red(db):
     """SystemExit alongside Exception, for run_day.guarded's reason: a config
     hard stop must still say so in Slack rather than exiting silently — and

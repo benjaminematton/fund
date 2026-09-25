@@ -800,6 +800,55 @@ def test_seat_turn_failure_uses_a_literal_code_not_the_seat_name(
     assert payload["text"].startswith("analyst_turn_failed —")
 
 
+# --- the on-disk log line is redacted like the stored row (issue #150) ------
+
+SECRET = "ALPACA_SECRET_KEY=abc123verysecret"
+
+
+def _logged_alert_texts(capsys) -> list[str]:
+    return [ln.removeprefix("run_day: ALERT ")
+            for ln in capsys.readouterr().out.splitlines()
+            if ln.startswith("run_day: ALERT ")]
+
+
+def test_a_seat_failure_that_dumps_a_credential_is_redacted_in_the_log(
+        wired, monkeypatch, capsys):
+    """Issue #150. append_alert redacts `text` on its way into the outbox, so
+    Slack and the GitHub filer never see the secret — but _alert logged the
+    RAW text first, and on the droplet stdout is the journal and
+    logs/run_day.err.log. The log line must be the stored row, byte for
+    byte. Covers seat_turn_failed and exec_turn_violation, which both reach
+    the log through _alert."""
+    conn, _, clock = wired
+
+    async def _boom(*a, **k):
+        raise RuntimeError(f"env dump: {SECRET}")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _boom)
+    _turn(conn, clock, seat="analyst")()
+
+    logged = _logged_alert_texts(capsys)
+    assert len(logged) == 1
+    assert "abc123verysecret" not in logged[0]
+    assert logged == _alert_texts(conn)
+
+
+def test_a_day_failure_that_dumps_a_credential_is_redacted_in_the_log(
+        wired, capsys):
+    """The third site the issue cites: run_day_failed logs before it appends,
+    outside _alert."""
+    conn, slack, clock = wired
+
+    def body():
+        raise RuntimeError(f"env dump: {SECRET}")
+
+    assert run_day_script.guarded(conn, slack, clock, body) == 1
+    logged = _logged_alert_texts(capsys)
+    assert len(logged) == 1
+    assert "abc123verysecret" not in logged[0]
+    assert logged == _alert_texts(conn)
+
+
 # --- a seat turn that HANGS is a different failure from one that raises -----
 
 def test_a_seat_turn_that_never_returns_is_abandoned_at_its_wall_clock_bound(

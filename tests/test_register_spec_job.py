@@ -311,6 +311,17 @@ def test_a_failure_inside_the_body_is_alerted_and_exits_nonzero(db):
     assert _undrained(db) == 0
 
 
+def test_a_failure_that_dumps_a_credential_is_redacted_in_the_log(db, capsys):
+    """Issue #150, the same shape as run_day.guarded: append_alert redacts the
+    stored row, but _guarded logs the raw text first."""
+    def _body():
+        raise RuntimeError("env dump: ALPACA_SECRET_KEY=abc123verysecret")
+
+    assert register_spec._guarded(db, FakeSlack(), SimClock(RUN_AT), _body) == 1
+    assert "abc123verysecret" not in capsys.readouterr().out
+    assert "abc123verysecret" not in _alert_texts(db)[0]
+
+
 def test_a_clean_run_returns_the_bodys_own_code(db):
     """A NONZERO sentinel, deliberately — tests/test_critic_g1_job.py:612-618's
     shape. `lambda: 0` asserted against 0 cannot tell pass-through from a

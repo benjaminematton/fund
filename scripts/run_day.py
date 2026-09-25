@@ -77,6 +77,7 @@ from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
 from orchestrator.ingest_guard import account_snapshot             # noqa: E402
 from orchestrator.preconditions import assert_account_config_unchanged  # noqa: E402
 from slackkit.outbox import append_alert, drain                    # noqa: E402
+from slackkit.redact import redact                                 # noqa: E402
 from state.db import connect                                       # noqa: E402
 
 # Core env. ALPACA_PAPER_TRADE is checked separately and first (invariant 1).
@@ -470,7 +471,10 @@ def record_cost_guarded(conn, clock, run_date: str, seat: str, result,
 
 
 def _alert(conn, clock, code: str, text: str, **payload) -> None:
-    log(f"ALERT {text}")
+    # Redacted with the same function append_alert applies, so the on-disk
+    # log line is the stored row (issue #150): three callers interpolate a raw
+    # exception, and a traceback that touches os.environ carries credentials.
+    log(f"ALERT {redact(text)}")
     append_alert(conn, code, text, now_iso=iso(clock.now()), **payload)
 
 
@@ -587,7 +591,7 @@ def guarded(conn, slack, clock, body: Callable[[], int]) -> int:
         text = (f"run_day_failed — {type(exc).__name__}: {exc}. The day"
                 " stopped here and the audit did not run; nothing further was"
                 " traded (default is HOLD).")
-        log(f"ALERT {text}")
+        log(f"ALERT {redact(text)}")            # issue #150; see _alert
         try:
             append_alert(conn, "run_day_failed", text, now_iso=iso(clock.now()))
             drain(conn, slack, iso(clock.now()))

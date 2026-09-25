@@ -82,6 +82,21 @@ def test_main_exits_one_and_alerts_when_the_body_raises(tmp_path, monkeypatch):
     assert len(slack.posts["#risk"]) == 1
 
 
+def test_a_failure_that_dumps_a_credential_is_redacted_in_the_log(tmp_path,
+                                                                  capsys):
+    """Issue #150, the same shape as run_day.guarded: append_alert redacts the
+    stored row, but _guarded logs the raw text first."""
+    conn = connect(tmp_path / "fund.sqlite")
+
+    def _body():
+        raise RuntimeError("env dump: ALPACA_SECRET_KEY=abc123verysecret")
+
+    assert run_dispatcher._guarded(conn, FakeSlack(), SimClock(START), _body) == 1
+    out = capsys.readouterr().out
+    assert "abc123verysecret" not in out
+    assert "dispatcher_failed" in out
+
+
 def test_main_refuses_to_run_without_the_paper_flag(tmp_path, monkeypatch):
     _env(monkeypatch, tmp_path)
     monkeypatch.setenv("ALPACA_PAPER_TRADE", "false")

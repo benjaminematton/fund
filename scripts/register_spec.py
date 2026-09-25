@@ -123,6 +123,7 @@ import run_day                                        # noqa: E402
 from agents.seats import load_seat_config              # noqa: E402
 from orchestrator.clock import et_run_date, iso        # noqa: E402
 from slackkit.outbox import drain                      # noqa: E402
+from slackkit.redact import redact                     # noqa: E402
 from state.db import connect                           # noqa: E402
 from state.specs import specs_awaiting_critique        # noqa: E402
 
@@ -468,7 +469,7 @@ def _guarded(conn, slack, clock, body) -> int:
         text = (f"register_spec_failed — {type(exc).__name__}: {exc}. The"
                 " registration run stopped here; no spec was registered and"
                 " nothing retries.")
-        log(f"ALERT {text}")
+        log(f"ALERT {redact(text)}")            # issue #150; see run_day._alert
         try:
             run_day._alert(conn, clock, "register_spec_failed", text)
             drain(conn, slack, iso(clock.now()))
