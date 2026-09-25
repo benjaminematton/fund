@@ -89,13 +89,74 @@ def test_redacts_secret_key_with_no_recognized_value_prefix(tmp_path):
 
 
 def test_redacts_every_real_env_var_in_this_project(tmp_path):
-    """The name rule is anchored to ALL_CAPS env-var shape. Every credential
-    this fund actually carries is that shape — see .env."""
+    """The name rule is anchored to ALL_CAPS env-var shape and to a keyword
+    substring. The inventory is /etc/fund/env (ops/README.md), not .env:
+    HC_PING_URL lives only there, carries no KEY/TOKEN/SECRET/PASSWORD, and
+    was missed for exactly that reason (#146)."""
     for name in ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
-                 "SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN_EXEC", "SLACK_APP_TOKEN_EXEC"):
+                 "SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN_EXEC", "SLACK_APP_TOKEN_EXEC",
+                 "HC_PING_URL"):
         proc, body = _run(tmp_path, f"{name}=aB3dEfGhIjKlMnOpQrSt9zZ", '{"ok":true}')
         assert proc.returncode == 0, proc.stderr
         assert "aB3dEfGhIjKlMnOpQrSt9zZ" not in body["text"], f"{name} leaked"
+
+
+# --- HC_PING_URL (#146): bearer-equivalent, neither prefix-shaped nor
+# credential-named. Holding it forges the fund's liveness heartbeat.
+HC_UUID = "3f8e1c2a-9b4d-4e6f-8a7b-1c2d3e4f5a6b"
+HC_URL = f"https://hc-ping.com/{HC_UUID}"
+
+
+def test_redacts_hc_ping_url_by_name(tmp_path):
+    """NAME=VALUE, the shape /etc/fund/env is written in."""
+    proc, body = _run(tmp_path, f"HC_PING_URL={HC_URL}", '{"ok":true}')
+    assert proc.returncode == 0, proc.stderr
+    assert HC_UUID not in body["text"], f"leaked ping url: {body['text']}"
+    assert "HC_PING_URL=REDACTED" in body["text"]
+
+
+def test_redacts_hc_ping_url_in_an_os_environ_dump(tmp_path):
+    """The traceback shape the redactor exists for: environ({...}) repr."""
+    proc, body = _run(
+        tmp_path, f"environ({{'HC_PING_URL': '{HC_URL}'}})", '{"ok":true}'
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert HC_UUID not in body["text"], f"leaked ping url: {body['text']}"
+
+
+def test_redacts_a_bare_hc_ping_url_inside_an_exception_message(tmp_path):
+    """No NAME= in front of it — curl quoting the URL it could not reach. The
+    name rule cannot see this; only a value-shaped rule can. The diagnosis
+    around the URL must survive."""
+    line = f"curl: (28) Connection timed out after 20001 ms for {HC_URL}/0"
+    proc, body = _run(tmp_path, line, '{"ok":true}')
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"]
+    assert HC_UUID not in text, f"leaked ping url: {text}"
+    assert "curl: (28) Connection timed out after 20001 ms for" in text
+    assert "https://hc-ping.com/REDACTED" in text
+
+
+def test_redacts_hc_ping_url_with_uppercase_uuid_and_subdomain_host(tmp_path):
+    """An uppercase-hex UUID does not trip PK[A-Z0-9]{16,} (the hyphens break
+    the run), and healthchecks serves regional hosts under hc-ping.com."""
+    upper = HC_UUID.upper()
+    proc, body = _run(
+        tmp_path, f"pinged https://eu.hc-ping.com/{upper}/fail", '{"ok":true}'
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert upper not in body["text"], f"leaked ping url: {body['text']}"
+    assert "https://hc-ping.com/REDACTED" in body["text"]
+
+
+def test_does_not_redact_an_alpaca_order_url(tmp_path):
+    """The value rule is host-anchored on purpose. An alpaca-py traceback
+    names the order it failed on by URL, and that UUID is the diagnosis."""
+    line = ("HTTPError: 404 for https://paper-api.alpaca.markets/v2/orders/"
+            "9a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d")
+    proc, body = _run(tmp_path, line, '{"ok":true}')
+    assert proc.returncode == 0, proc.stderr
+    assert line in body["text"], body["text"]
 
 
 def test_diagnostic_text_naming_a_credential_survives_readable(tmp_path):
@@ -169,6 +230,18 @@ def test_headline_never_claims_positions_are_safe(tmp_path):
     text = body["text"].lower()
     for lie in ("no orders", "positions untouched", "nothing was placed"):
         assert lie not in text, f"alert asserts unverified safety: {lie}"
+
+
+def test_fund_pnl_headline_does_not_assert_pnl_was_not_posted(tmp_path):
+    """fund-pnl.service runs five ExecStart legs in order and only the first
+    posts P&L. A failure in any later leg used to be headlined "No P&L was
+    posted for today" — false, an hour after it posted (#183). The unit name
+    cannot say which leg failed, so the headline must be true for every leg."""
+    proc, body = _run(tmp_path, "boom", '{"ok":true}', unit="fund-pnl.service")
+    assert proc.returncode == 0, proc.stderr
+    text = body["text"].lower()
+    assert "no p&l was posted" not in text, body["text"]
+    assert "post-close" in text, body["text"]
 
 
 def test_headline_falls_back_for_an_unrecognized_unit(tmp_path):

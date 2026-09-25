@@ -18,8 +18,8 @@ append_alert ever sees it, so logs/run_day.err.log keeps an unredacted copy on
 the box. Neither is in scope here; do not read this module as a promise that a
 credential cannot reach disk.
 
-TWIN: the `redact()` shell function in ops/notify_failure.sh:25-32 applies
-these same five rules to the journal tail. That script is deliberately
+TWIN: the `redact()` shell function in ops/notify_failure.sh:27-35 applies
+these same six rules to the journal tail. That script is deliberately
 dependency-free of the fund (its header: "the alert path must not share a
 failure mode with the thing it is watching"), so the duplication is permanent
 and intentional — change the two together, and keep tests/test_ops_notify.py
@@ -123,8 +123,13 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"xoxb-[A-Za-z0-9-]+"), "xoxb-REDACTED"),
     (re.compile(r"xapp-[A-Za-z0-9-]+"), "xapp-REDACTED"),
     (re.compile(r"PK[A-Z0-9]{16,}"), "PK-REDACTED"),
+    # The healthchecks ping URL (#146): bearer-equivalent, since holding it
+    # forges the liveness heartbeat, and neither prefix-shaped nor
+    # credential-named. Host-anchored so an Alpaca order URL's UUID survives.
+    (re.compile(r"""https://(?:[A-Za-z0-9.-]*\.)?hc-ping\.com/[^\s'"]+"""),
+     "https://hc-ping.com/REDACTED"),
     (re.compile(r"""['"]?([A-Z]""" + _NAME_HEAD
-                + r"""(?:KEY|TOKEN|SECRET|PASSWORD)""" + _NAME_TAIL
+                + r"""(?:KEY|TOKEN|SECRET|PASSWORD|PING_URL)""" + _NAME_TAIL
                 + r""")['"]?""" + _SP + r"""*[=:]""" + _SP
                 + r"""*['"]?\S+"""), r"\1=REDACTED"),
 )

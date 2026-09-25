@@ -1,8 +1,8 @@
 """slackkit/redact.py — the in-band alert path must not leak secrets, must not
 gut the alert to do it, and must never cost an alert.
 
-Mirrors tests/test_ops_notify.py, which pins the same five rules on the
-out-of-band shell path (ops/notify_failure.sh:25-32). The two implementations
+Mirrors tests/test_ops_notify.py, which pins the same six rules on the
+out-of-band shell path (ops/notify_failure.sh:27-35). The two implementations
 are duplicated on purpose — that script is dependency-free of the fund — so
 these two test modules move together.
 """
@@ -60,16 +60,60 @@ def test_redacts_secret_key_with_no_recognized_value_prefix():
 
 
 def test_redacts_the_prefixed_credential_env_vars():
-    """The name rule is anchored to ALL_CAPS env-var shape AND to a KEY /
-    TOKEN / SECRET / PASSWORD substring, so it covers exactly the variables
-    named here and claims nothing beyond them. It does NOT cover every secret
-    the fund carries: HC_PING_URL (ops/README.md:150, injected at
-    ops/fund-daily.service:57) is bearer-equivalent and matches no rule on
-    either side. That gap is shared with the shell twin and is filed
-    separately — closing it here alone would desync the two."""
+    """The name rule is anchored to ALL_CAPS env-var shape AND to a keyword
+    substring, so it covers exactly the variables named here and claims
+    nothing beyond them. HC_PING_URL (ops/README.md:150, injected at
+    ops/fund-daily.service:57) is bearer-equivalent and carried no keyword
+    until PING_URL became one (#146) — closed on both twins together."""
     for name in ("ANTHROPIC_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
-                 "SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN_EXEC", "SLACK_APP_TOKEN_EXEC"):
+                 "SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN_EXEC", "SLACK_APP_TOKEN_EXEC",
+                 "HC_PING_URL"):
         assert SECRET not in redact(f"{name}={SECRET}"), f"{name} leaked"
+
+
+# --- HC_PING_URL (#146): mirrors test_ops_notify.py's vectors exactly --------
+HC_UUID = "3f8e1c2a-9b4d-4e6f-8a7b-1c2d3e4f5a6b"
+HC_URL = f"https://hc-ping.com/{HC_UUID}"
+
+
+def test_redacts_hc_ping_url_by_name():
+    """Mirrors test_ops_notify.py::test_redacts_hc_ping_url_by_name."""
+    text = redact(f"HC_PING_URL={HC_URL}")
+    assert HC_UUID not in text, f"leaked ping url: {text}"
+    assert "HC_PING_URL=REDACTED" in text
+
+
+def test_redacts_hc_ping_url_in_an_os_environ_dump():
+    """Mirrors test_ops_notify.py::test_redacts_hc_ping_url_in_an_os_environ_dump."""
+    text = redact(f"environ({{'HC_PING_URL': '{HC_URL}'}})")
+    assert HC_UUID not in text, f"leaked ping url: {text}"
+
+
+def test_redacts_a_bare_hc_ping_url_inside_an_exception_message():
+    """Mirrors test_ops_notify.py::test_redacts_a_bare_hc_ping_url_inside_an_exception_message.
+    No NAME= in front of it — only a value-shaped rule can see this, and the
+    diagnosis around the URL must survive."""
+    text = redact(f"curl: (28) Connection timed out after 20001 ms for {HC_URL}/0")
+    assert HC_UUID not in text, f"leaked ping url: {text}"
+    assert "curl: (28) Connection timed out after 20001 ms for" in text
+    assert "https://hc-ping.com/REDACTED" in text
+
+
+def test_redacts_hc_ping_url_with_uppercase_uuid_and_subdomain_host():
+    """Mirrors test_ops_notify.py::test_redacts_hc_ping_url_with_uppercase_uuid_and_subdomain_host."""
+    upper = HC_UUID.upper()
+    text = redact(f"pinged https://eu.hc-ping.com/{upper}/fail")
+    assert upper not in text, f"leaked ping url: {text}"
+    assert "https://hc-ping.com/REDACTED" in text
+
+
+def test_does_not_redact_an_alpaca_order_url():
+    """Mirrors test_ops_notify.py::test_does_not_redact_an_alpaca_order_url.
+    The value rule is host-anchored on purpose: an order UUID in an alpaca-py
+    traceback is the diagnosis."""
+    line = ("HTTPError: 404 for https://paper-api.alpaca.markets/v2/orders/"
+            "9a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d")
+    assert redact(line) == line
 
 
 def test_redacts_python_os_environ_repr_form():
