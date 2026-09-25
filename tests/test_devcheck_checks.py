@@ -10,12 +10,17 @@ passed, and two were caught by luck.
 from __future__ import annotations
 
 from devcheck.evaluate import evaluate
-from devcheck.model import OrderRow, Position, ServiceResult, Snapshot
+from devcheck.model import (OrderRow, PendingSpec, Position, ServiceResult,
+                            Snapshot, UnitCopy)
 
 
 def _snap(**over) -> Snapshot:
     """A wholly healthy world. Each test darkens exactly one field."""
     base = dict(
+        units=[UnitCopy("fund-daily.service", "aaa", "aaa"),
+               UnitCopy("fund-pnl.service", "bbb", "bbb")],
+        g1_pending=[],
+        run_dates=[],
         droplet_env={"ALPACA_PAPER_TRADE": "true"},
         seat_trading_toolsets={"exec": True, "pm": False, "analyst": False, "news": False},
         orders=[],
@@ -426,3 +431,128 @@ def test_degradations_fires_on_the_codes_the_fund_actually_emits():
     kinds = ["alert", "digest", "pnl", "scorecard"]        # what it used to receive
     stale = _only(evaluate(_snap(alert_codes=kinds)), "degradations")
     assert stale.severity == "ok", "event kinds must not look like degradations either"
+
+
+# --- installed units are copies (#220) ----------------------------------------
+# /etc/systemd/system/fund-*.{service,timer} are root-owned COPIES of ops/
+# (ops/README.md "Install the units"). The #169 deploy pulled /opt/fund and
+# never re-copied fund-pnl.service, so critic_g1 — leg 5 in the repo — did
+# not exist in the unit that fired, for four nights, behind a green heartbeat.
+
+def test_units_installed_ok_when_every_copy_matches():
+    f = _only(evaluate(_snap()), "units_installed")
+    assert f.severity == "ok"
+    assert "2 unit(s)" in f.detail
+
+
+def test_units_installed_alerts_naming_the_unit_whose_copy_differs():
+    """Manufactured red for #220: one unit's installed hash differs."""
+    s = _snap(units=[UnitCopy("fund-daily.service", "aaa", "aaa"),
+                     UnitCopy("fund-pnl.service", "bbb", "stale")])
+    f = _only(evaluate(s), "units_installed")
+    assert f.severity == "alert"
+    assert "fund-pnl.service" in f.detail
+    assert "fund-daily.service" not in f.detail
+
+
+def test_units_installed_alerts_naming_a_unit_never_installed():
+    """A unit added to ops/ and never copied is the same drift, one step
+    earlier: the repo says it runs and the box has never heard of it."""
+    s = _snap(units=[UnitCopy("fund-daily.service", "aaa", "aaa"),
+                     UnitCopy("fund-dispatcher.service", "ccc", None)])
+    f = _only(evaluate(s), "units_installed")
+    assert f.severity == "alert"
+    assert "fund-dispatcher.service" in f.detail
+    assert "not installed" in f.detail
+
+
+def test_units_installed_is_unknown_not_healthy_when_not_read():
+    """An unreachable droplet must not print a green row for a comparison
+    nobody performed."""
+    f = _only(evaluate(_snap(units=None)), "units_installed")
+    assert f.severity == "warn"
+    assert "not read" in f.detail
+
+
+def test_units_installed_alerts_when_the_deployed_tree_has_no_units():
+    """Zero units found is not zero drift: a glob that matched nothing would
+    otherwise read as 'every unit matches'."""
+    f = _only(evaluate(_snap(units=[])), "units_installed")
+    assert f.severity == "alert"
+
+
+# --- a G1 spec pending for many nights (#185) ---------------------------------
+# critic_g1's own alerts fire only when the script runs, and each night's
+# `wrote_nothing` looks routine on its own. Age is counted in RUN-DAYS — the
+# fund's own record, distinct checkpoints.run_date — because the repo has no
+# trading-day calendar (orchestrator/resolve.py) and strategy_specs has no
+# last-attempted column, so age since registration is the available signal.
+
+_RUN_DATES = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04",
+              "2026-09-08", "2026-09-09"]
+
+
+def test_g1_backlog_ok_when_nothing_is_pending():
+    f = _only(evaluate(_snap(run_dates=_RUN_DATES)), "g1_backlog")
+    assert f.severity == "ok"
+
+
+def test_g1_backlog_alerts_on_a_spec_pending_five_run_days():
+    """Manufactured red for #185: registered 5 run-days ago, no critique."""
+    s = _snap(run_dates=_RUN_DATES,
+              g1_pending=[PendingSpec("spec-aaaa", "2026-09-01")])
+    f = _only(evaluate(s), "g1_backlog")
+    assert f.severity == "alert"
+    assert "spec-aaaa" in f.detail
+    assert "5 run-day" in f.detail
+
+
+def test_g1_backlog_ok_at_exactly_the_threshold():
+    """Three nights is the threshold; 'more than', not 'at least'."""
+    s = _snap(run_dates=_RUN_DATES,
+              g1_pending=[PendingSpec("spec-bbbb", "2026-09-03")])   # 09-04, 08, 09
+    assert _only(evaluate(s), "g1_backlog").severity == "ok"
+
+
+def test_g1_backlog_counts_run_days_not_calendar_days():
+    """Eight calendar days but three run days: a long weekend or an outage
+    must not age a spec the critic never had a night to review."""
+    s = _snap(run_dates=["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-09"],
+              g1_pending=[PendingSpec("spec-cccc", "2026-09-01")])
+    assert _only(evaluate(s), "g1_backlog").severity == "ok"
+
+
+def test_g1_backlog_names_every_aged_spec_and_skips_the_fresh_one():
+    s = _snap(run_dates=_RUN_DATES,
+              g1_pending=[PendingSpec("spec-old1", "2026-09-01"),
+                          PendingSpec("spec-old2", "2026-09-02"),
+                          PendingSpec("spec-new", "2026-09-08")])
+    f = _only(evaluate(s), "g1_backlog")
+    assert f.severity == "alert"
+    assert "spec-old1" in f.detail and "spec-old2" in f.detail
+    assert "spec-new" not in f.detail
+
+
+def test_g1_backlog_alerts_on_a_registration_date_it_could_not_read():
+    """A spec whose created_at did not parse has an age nobody can state.
+    Reported, never silently aged as zero."""
+    s = _snap(run_dates=_RUN_DATES, g1_pending=[PendingSpec("spec-dddd", "")])
+    f = _only(evaluate(s), "g1_backlog")
+    assert f.severity == "alert"
+    assert "spec-dddd" in f.detail
+
+
+def test_g1_backlog_is_unknown_when_the_queue_was_not_read():
+    f = _only(evaluate(_snap(g1_pending=None)), "g1_backlog")
+    assert f.severity == "warn"
+    assert "not read" in f.detail
+
+
+def test_g1_backlog_is_starved_by_an_unread_database():
+    """It is DB-derived, so it joins the checks an unread database marks
+    unknown rather than claiming an empty queue."""
+    s = _snap(db_read_ok=False, run_dates=_RUN_DATES,
+              g1_pending=[PendingSpec("spec-aaaa", "2026-09-01")])
+    f = _only(evaluate(s), "g1_backlog")
+    assert f.severity == "warn"
+    assert "not read" in f.detail

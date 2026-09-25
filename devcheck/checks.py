@@ -223,6 +223,109 @@ def check_deploy_state(s: Snapshot) -> Finding:
     )
 
 
+def check_units_installed(s: Snapshot) -> Finding:
+    """#220 — the installed systemd units are root-owned COPIES of ops/.
+
+    ops/README.md "Install the units" is `cp` + `daemon-reload`, so a deploy
+    that pulls /opt/fund without re-copying leaves the box running the old
+    unit. The #169 deploy did exactly that: fund-pnl.service carried 3 legs on
+    the box and 5 in the repo for four nights, every leg succeeded, the
+    heartbeat stayed green, and critic_g1 never ran. tests/test_ops_units.py
+    pins the repo file; nothing compared the copy to it.
+    """
+    if s.units is None:
+        return Finding(
+            "units_installed",
+            "warn",
+            "the installed units were not read, so drift between the deployed ops/ "
+            "and /etc/systemd/system was never checked",
+        )
+    if not s.units:
+        return Finding(
+            "units_installed",
+            "alert",
+            "no fund-*.service or fund-*.timer found under the deployed ops/ — "
+            "nothing was compared",
+        )
+    missing = sorted(u.unit for u in s.units if u.installed_sha256 is None)
+    differing = sorted(
+        u.unit for u in s.units
+        if u.installed_sha256 is not None and u.installed_sha256 != u.repo_sha256
+    )
+    if not missing and not differing:
+        return Finding(
+            "units_installed",
+            "ok",
+            f"{len(s.units)} unit(s) installed byte-for-byte from the deployed ops/",
+        )
+    parts = []
+    if differing:
+        parts.append(f"installed copy differs from ops/: {', '.join(differing)}")
+    if missing:
+        parts.append(f"not installed: {', '.join(missing)}")
+    return Finding(
+        "units_installed",
+        "alert",
+        "; ".join(parts) + " — the box runs the stale unit until `cp` + "
+        "`daemon-reload` (ops/README.md \"Install the units\")",
+    )
+
+
+# Three nights is the overseer's threshold for a devcheck finding — advisory
+# to a human, with no authority over the run (docs/agents/devops.md "Two
+# checkers, one authority").
+G1_BACKLOG_RUN_DAYS = 3
+
+
+def check_g1_backlog(s: Snapshot) -> Finding:
+    """#185 — a G1 spec pending for many nights.
+
+    critic_g1's own alerts fire only when the script runs, and each night's
+    `wrote_nothing` looks routine on its own; nobody sees the ninth. The
+    pending set is the selector's predicate (state/specs.py:
+    specs_awaiting_critique — state SPEC AND no critique row), mirrored by the
+    builder. Age is in RUN-DAYS after registration, counted against the fund's
+    own record of days it ran: strategy_specs has no last-attempted column, and
+    the repo has no trading-day calendar (orchestrator/resolve.py).
+    """
+    if s.g1_pending is None:
+        return Finding(
+            "g1_backlog",
+            "warn",
+            "the G1 queue was not read, so whether a spec is stuck is unknown",
+        )
+    if not s.g1_pending:
+        return Finding("g1_backlog", "ok", "no spec awaiting critique")
+    aged: list[str] = []
+    unreadable: list[str] = []
+    for p in s.g1_pending:
+        if not p.registered_on:
+            unreadable.append(p.spec_id)
+            continue
+        age = sum(1 for d in s.run_dates if d > p.registered_on)
+        if age > G1_BACKLOG_RUN_DAYS:
+            aged.append(f"{p.spec_id} ({age} run-days)")
+    if not aged and not unreadable:
+        return Finding(
+            "g1_backlog",
+            "ok",
+            f"{len(s.g1_pending)} spec(s) awaiting critique, none for more than "
+            f"{G1_BACKLOG_RUN_DAYS} run-days",
+        )
+    parts = []
+    if aged:
+        parts.append(f"awaiting critique for more than {G1_BACKLOG_RUN_DAYS} run-days: "
+                     + ", ".join(aged))
+    if unreadable:
+        parts.append("registration date unreadable: " + ", ".join(unreadable))
+    return Finding(
+        "g1_backlog",
+        "alert",
+        "; ".join(parts) + " — critic_g1 alerts only on the nights it runs, and a "
+        "stalled head blocks every spec behind it (#185)",
+    )
+
+
 def _alert_codes_line(s: Snapshot) -> str:
     """What actually alerted, appended to a red `services`.
 

@@ -19,7 +19,10 @@ the Alpaca SDK, the `gh` CLI, and a local `git fetch` — and they are stubbed
 below, NOT covered. Their fields (positions, broker_fill_count, tracked_checks,
 droplet_head, origin_master, commits_behind) are not tested here and no claim is
 made about them. The `git fetch` in particular is why they are stubbed at all:
-leaving it live would put a network call inside `make test`.
+leaving it live would put a network call inside `make test`. Two droplet reads
+postdate the recording — `_units_installed` (#220) and `_g1_state` (#185) — and
+are stubbed to "not read" until it is re-captured; tests/test_dev_status_job.py
+covers their parsing on bytes in the documented shapes meanwhile.
 
 STALENESS. A recording replayed forever becomes confidently wrong, which is the
 failure this whole file exists to prevent. tests/test_status_faithful.py
@@ -66,6 +69,12 @@ def snapshot(recorded, monkeypatch):
     monkeypatch.setattr(ds, "_positions_and_coverage", lambda: ([], [], None, ""))
     monkeypatch.setattr(ds, "_tracked_checks", frozenset)
     monkeypatch.setattr(ds, "_deploy_state", lambda: ("stub123", "stub123", 0))
+    # Two droplet reads added AFTER the recording (#220, #185). Stubbed to
+    # "not read" — their honest value, since the fixture holds no bytes for
+    # them — until the next `make record-status` captures them; remove these
+    # two lines then and write assertions from what the recording shows.
+    monkeypatch.setattr(ds, "_units_installed", lambda: None)
+    monkeypatch.setattr(ds, "_g1_state", lambda: (None, []))
     monkeypatch.setattr(ds, "_ENV_CACHE", {})     # the real cache would leak between tests
 
     with ds.using_transport(replay):

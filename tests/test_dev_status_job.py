@@ -212,3 +212,148 @@ def test_an_import_error_is_a_code_defect_not_an_unavailable_client(monkeypatch)
     assert positions is None
     assert error.startswith("check crashed: ModuleNotFoundError: "), error
     assert "unavailable" not in error
+
+
+# --- the droplet reads behind units_installed (#220) and g1_backlog (#185) ----
+# Neither command is in tests/recordings/dev-status.json: the recording predates
+# them and is re-captured only by `make record-status` against the live box. So
+# tests/test_status_replay.py stubs both readers, and these pin the parsing on
+# bytes in the documented shapes instead — sha256sum's `<hash>  <path>` lines,
+# and `sqlite3 -json` rows produced by running the builder's own query against
+# a real local fund DB.
+
+import json
+import sqlite3
+from dataclasses import replace
+
+from devcheck.checks import check_g1_backlog, check_units_installed
+from devcheck.model import UnitCopy
+
+
+def test_parse_unit_hashes_pairs_each_deployed_unit_with_its_installed_copy():
+    """A unit in ops/ with no installed copy is carried with installed=None —
+    never dropped, which would read as 'nothing to compare'. A stray installed
+    unit the repo no longer ships is not this check's question and is ignored."""
+    raw = (
+        "aaaa  /opt/fund/ops/fund-daily.service\n"
+        "bbbb  /opt/fund/ops/fund-pnl.service\n"
+        "cccc  /opt/fund/ops/fund-alert@.service\n"
+        "aaaa  /etc/systemd/system/fund-daily.service\n"
+        "stale  /etc/systemd/system/fund-pnl.service\n"
+        "zzzz  /etc/systemd/system/fund-old.service\n"
+    )
+    assert ds.parse_unit_hashes(raw) == [
+        UnitCopy("fund-alert@.service", "cccc", None),
+        UnitCopy("fund-daily.service", "aaaa", "aaaa"),
+        UnitCopy("fund-pnl.service", "bbbb", "stale"),
+    ]
+
+
+def test_a_stale_installed_unit_reads_red_naming_it():
+    """#220 end to end through the builder: the droplet answers with one
+    installed hash that differs from its ops/ source."""
+    raw = ("bbbb  /opt/fund/ops/fund-pnl.service\n"
+           "aaaa  /opt/fund/ops/fund-daily.service\n"
+           "aaaa  /etc/systemd/system/fund-daily.service\n"
+           "stale  /etc/systemd/system/fund-pnl.service\n")
+    with ds.using_transport(lambda cmd, timeout=15: raw):
+        units = ds._units_installed()
+    f = check_units_installed(replace(_snap_with([]), units=units))
+    assert f.severity == "alert"
+    assert "fund-pnl.service" in f.detail
+    assert "fund-daily.service" not in f.detail
+
+
+def test_units_installed_is_none_when_the_droplet_did_not_answer():
+    with ds.using_transport(lambda cmd, timeout=15: None):
+        assert ds._units_installed() is None
+
+
+def test_units_installed_is_empty_not_none_when_no_unit_was_found():
+    """An empty reply is a successful read that found nothing — the check
+    alerts on it. None is reserved for 'could not read'."""
+    with ds.using_transport(lambda cmd, timeout=15: ""):
+        assert ds._units_installed() == []
+
+
+def _local_db_transport(db_path):
+    """Answer the builder's droplet reads from a LOCAL fund DB: FUND_DB from
+    the env read, and each `sqlite3 -json` command by running its query here."""
+    def transport(cmd, timeout=15):
+        if cmd.startswith("grep -h '^FUND_DB='"):
+            return f"FUND_DB={db_path}\n"
+        if cmd.startswith("sqlite3 -json"):
+            query = cmd.split('"', 2)[1]
+            c = sqlite3.connect(db_path)
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute(query)]
+            c.close()
+            return json.dumps(rows) + "\n" if rows else ""
+        raise KeyError(cmd)
+    return transport
+
+
+def test_g1_pending_mirrors_the_selector_on_real_rows(tmp_path, monkeypatch):
+    """The builder cannot call state.specs.specs_awaiting_critique against a
+    DB it reaches over ssh, so it carries a copy of the predicate — and a second
+    copy of that predicate is what tests/test_register_spec_job.py warns about.
+    This holds the copy to the original on real rows: one spec pending, one
+    critiqued, one advanced past SPEC. Only the first awaits critique."""
+    from state.db import connect
+    from state.models import StrategySpec
+    from state.specs import (advance_to_backtest, insert_strategy_spec,
+                             specs_awaiting_critique)
+    from tests.test_state_specs import CRITIQUE_SQL, SPEC
+
+    db = tmp_path / "fund.sqlite"
+    conn = connect(db)
+    # 02:30 UTC on the 2nd is 22:30 ET on the 1st — registered_on is the ET date.
+    pending = insert_strategy_spec(conn, StrategySpec(**SPEC), "2026-09-02T02:30:00+00:00")
+    reviewed = insert_strategy_spec(
+        conn, StrategySpec(**{**SPEC, "hypothesis": "Momentum pays for bearing crash risk."}),
+        "2026-09-02T15:00:00+00:00")
+    advanced = insert_strategy_spec(
+        conn, StrategySpec(**{**SPEC, "hypothesis": "Carry pays for bearing funding risk."}),
+        "2026-09-02T15:00:00+00:00")
+    conn.execute(CRITIQUE_SQL, (reviewed, "2026-09-03T00:00:00+00:00"))
+    assert advance_to_backtest(conn, advanced, expected_state_version=0,
+                               now_iso="2026-09-03T00:00:00+00:00")
+    for d in ("2026-09-01", "2026-09-02", "2026-09-03"):
+        conn.execute("INSERT INTO checkpoints (run_date, stage, status, updated_at)"
+                     " VALUES (?, 'research', 'done', ?)", (d, d + "T14:00:00+00:00"))
+        conn.execute("INSERT INTO checkpoints (run_date, stage, status, updated_at)"
+                     " VALUES (?, 'gate', 'done', ?)", (d, d + "T14:00:00+00:00"))
+    conn.commit()
+    expected = [p["spec_id"] for p in specs_awaiting_critique(conn, limit=10)]
+    conn.close()
+    assert expected == [pending], "the fixture must leave exactly one spec pending"
+
+    monkeypatch.setattr(ds, "_ENV_CACHE", {})
+    with ds.using_transport(_local_db_transport(db)):
+        got, run_dates = ds._g1_state()
+
+    assert [p.spec_id for p in got] == expected
+    assert got[0].registered_on == "2026-09-01"
+    assert run_dates == ["2026-09-01", "2026-09-02", "2026-09-03"]   # distinct, ordered
+
+
+def test_g1_state_is_unread_when_either_query_fails():
+    """A pending list beside an unread calendar would age every spec as zero,
+    which is the quiet direction. Both or neither."""
+    def only_env(cmd, timeout=15):
+        return "FUND_DB=/x\n" if cmd.startswith("grep -h '^FUND_DB='") else None
+
+    with ds.using_transport(only_env):
+        pending, run_dates = ds._g1_state()
+    assert pending is None and run_dates == []
+    f = check_g1_backlog(replace(_snap_with([]), g1_pending=pending, run_dates=run_dates))
+    assert f.severity == "warn" and "not read" in f.detail
+
+
+def test_registered_on_et_converts_and_never_raises():
+    """created_at is ISO-8601 UTC (schema.sql). A malformed one yields "", which
+    the check reports rather than ageing the spec as zero."""
+    assert ds.registered_on_et("2026-09-02T02:30:00+00:00") == "2026-09-01"
+    assert ds.registered_on_et("2026-09-02T15:00:00+00:00") == "2026-09-02"
+    assert ds.registered_on_et("not a timestamp") == ""
+    assert ds.registered_on_et("2026-09-02T15:00:00") == ""     # naive: rejected, not assumed UTC
