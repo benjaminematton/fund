@@ -34,7 +34,12 @@ def test_alpaca_mcp_server_is_version_pinned(tmp_path):
     cfg = load_seat_config("agents/config/exec.yaml")
     clock = SimClock(datetime(2026, 7, 6, 15, 30, tzinfo=timezone.utc))
     opts = build_trader_options(cfg, tmp_path / "fund.sqlite", clock)
-    assert opts.mcp_servers["alpaca"]["args"] == [ALPACA_MCP_SPEC]
+    # The launch is a /bin/sh prologue that scopes the child's environment
+    # (#128, tests/test_alpaca_mcp_subprocess_env.py); its last two words are
+    # the real program, and THAT is what must carry the exact pin.
+    alpaca = opts.mcp_servers["alpaca"]
+    assert alpaca["command"] == "/bin/sh"
+    assert alpaca["args"][-2:] == ["uvx", ALPACA_MCP_SPEC]
 
 
 def test_build_trader_options_is_paper_only_with_hooks(tmp_path):

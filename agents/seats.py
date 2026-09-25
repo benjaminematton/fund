@@ -46,6 +46,63 @@ CHARTERS_DIR = Path(__file__).resolve().parents[1] / "charters"
 # transport instead — that is the probe that would have caught this on day one.
 ALPACA_MCP_SPEC = "alpaca-mcp-server@2.3.1"
 
+# WHAT THE ALPACA SUBPROCESS MAY INHERIT (#128). Both spawning hops are
+# ADDITIVE, so the `env` dict handed to the SDK below is an overlay, not a
+# scope: the SDK starts the CLI with {**os.environ, **options.env}
+# (claude_agent_sdk/_internal/transport/subprocess_cli.py, connect()), and the
+# CLI starts a stdio MCP server with {...process.env, ...config.env} — which
+# is how the server authenticates today although nothing here hands it a key.
+# On the droplet that parent environment is /etc/fund/env entire:
+# ANTHROPIC_API_KEY, the Slack tokens, HC_PING_URL, all handed to a process
+# that sits DOWNSTREAM of the order gate and holds the broker credentials. The
+# one lever this repo owns is the command it launches, so the seat launches a
+# POSIX-sh prologue (ALPACA_MCP_LAUNCH) that unsets every name not listed
+# here and then exec's uvx. The OS enforces it, whatever either hop merges.
+#
+# Every name, justified:
+#   PATH, HOME         uvx is found on PATH (ops/fund-daily.service sets it);
+#                      uv's cache and tool dirs default under $HOME, which is
+#                      where ops/README.md's pre-warm put them. Drop HOME and
+#                      the first tool call downloads at 09:35.
+#   ALPACA_API_KEY,    what the server authenticates with. NAMES only: sh
+#   ALPACA_SECRET_KEY  reads the values from its own environment at exec
+#                      time. Reading them here would put them in the CLI's
+#                      --mcp-config argv, which ps shows to every user.
+#   ALPACA_TOOLSETS    the per-seat toolset lock, set in the overlay below.
+#   UV_*               uv's own settings (cache dir, python dir, offline…).
+#                      None is set on the droplet; passed through so a host
+#                      that does configure uv pre-warms and launches the SAME
+#                      cache. Wildcard, kept only when set — `UV_CACHE_DIR=`
+#                      (empty) is a different setting from unset.
+#   XDG_CACHE_HOME,    the roots uv's defaults derive from, when set.
+#   XDG_DATA_HOME
+#   TMPDIR             where uv unpacks; a host with a noexec /tmp sets it.
+#   LANG, LC_*         the server's Python decodes stdio by locale.
+# Not kept, deliberately. ALPACA_PAPER_TRADE is not inherited but SET, to
+# true, by the prologue itself — invariant 1, and a parent saying otherwise
+# does not win. USER/LOGNAME/SHELL/TERM: uvx needs none. HTTP(S)_PROXY and
+# SSL_CERT_*: none on the droplet; a proxied host fails closed at
+# `make preflight`, never open.
+ALPACA_MCP_ENV_KEEP = (
+    "PATH", "HOME", "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_TOOLSETS",
+    "UV_*", "XDG_CACHE_HOME", "XDG_DATA_HOME", "TMPDIR", "LANG", "LC_*",
+)
+
+# The prologue. `set -eu`: a name that cannot be unset aborts the launch
+# rather than leaking. The sed keeps only well-formed names, so a value
+# carrying a newline can add a harmless spurious unset but never skip a real
+# one. `exec "$@"` replaces sh with uvx, so the process tree is unchanged
+# (ops/README.md's "Stopping a day" still describes it). /bin/sh, not `sh`:
+# the unit's PATH has no /bin, and POSIX guarantees the absolute path.
+ALPACA_MCP_LAUNCH = "\n".join((
+    "set -eu",
+    "for n in $(env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p'); do",
+    f'  case "$n" in {"|".join(ALPACA_MCP_ENV_KEEP)}) ;; *) unset "$n" ;; esac',
+    "done",
+    "export ALPACA_PAPER_TRADE=true",
+    'exec "$@"',
+))
+
 
 def load_seat_config(path: str | Path) -> dict:
     return yaml.safe_load(Path(path).read_text())
@@ -257,7 +314,13 @@ def build_seat_options(cfg: dict, db_path: str | Path, clock: Clock, *,
         # charter. Per-seat from cfg; default [] never loads a dev file.
         setting_sources=cfg.get("setting_sources", []),
         mcp_servers={
-            "alpaca": {"command": "uvx", "args": [ALPACA_MCP_SPEC],
+            # The prologue scopes the child's environment (see
+            # ALPACA_MCP_ENV_KEEP); the last two words are the real launch.
+            # `env` is an overlay the CLI merges over its own environment,
+            # not a scope — the prologue is what makes these the ONLY values.
+            "alpaca": {"command": "/bin/sh",
+                       "args": ["-c", ALPACA_MCP_LAUNCH, "sh",
+                                "uvx", ALPACA_MCP_SPEC],
                        "env": {"ALPACA_PAPER_TRADE": "true",     # invariant 1
                                "ALPACA_TOOLSETS": cfg["alpaca_toolsets"]}},
             "fund": build_fund_server(conn_factory, clock, cfg["seat"],

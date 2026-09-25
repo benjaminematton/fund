@@ -128,6 +128,29 @@ def test_the_queue_depth_comes_from_the_canonical_selector(db):
     assert len(specs_awaiting_critique(db)) == 1        # the default, for contrast
 
 
+def test_the_queue_depth_asks_the_selector_for_exactly_the_report_limit(
+        db, monkeypatch):
+    """The test above pins that SOME limit greater than one reaches the
+    selector — three specs, depth three — not that QUEUE_REPORT_LIMIT is the
+    limit that reaches it. `limit=10` kept it green while _count_text's '50+'
+    became unreachable and the alerts printed an exact-looking 10 for a queue
+    that was really >= 10: the saturation defect, relocated to the seam
+    between two constants (#209 item 3). Recorded through the name the job
+    calls, so a second copy of the predicate cannot slip in either."""
+    seen = []
+    real = register_spec.specs_awaiting_critique
+
+    def _recording(conn, **kwargs):
+        seen.append(kwargs)
+        return real(conn, **kwargs)
+
+    monkeypatch.setattr(register_spec, "specs_awaiting_critique", _recording)
+
+    register_spec.queue_depth(db)
+
+    assert seen == [{"limit": register_spec.QUEUE_REPORT_LIMIT}]
+
+
 def test_a_turn_that_writes_nothing_alerts_and_registers_nothing(db):
     """The likeliest real failure, and nothing else catches it:
     run_day.make_turn's own run() catches every exception and returns
@@ -189,8 +212,9 @@ def _saturated(capsys, db, monkeypatch, run_turn) -> tuple[str, str]:
 
     queue_depth is monkeypatched rather than registering 50 real specs: the
     behaviour under test is what the render sites do with a saturated count,
-    not whether the selector itself caps correctly (that is
-    test_the_queue_depth_comes_from_the_canonical_selector's job)."""
+    not whether queue_depth asks the selector for QUEUE_REPORT_LIMIT (that is
+    test_the_queue_depth_asks_the_selector_for_exactly_the_report_limit's
+    job)."""
     monkeypatch.setattr(register_spec, "queue_depth",
                         lambda conn: register_spec.QUEUE_REPORT_LIMIT)
     register_spec.register_and_log(db, FakeSlack(), SimClock(RUN_AT), run_turn)
