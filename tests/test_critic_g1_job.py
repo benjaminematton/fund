@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 
 from agents.tools.fund_server import handle_submit_spec_critique
+from evals.live import build_trace, file_sink
+from evals.trace import Trace
 from orchestrator.clock import SimClock, iso
 from slackkit.fake import FakeSlack
 from state.db import connect
@@ -461,7 +463,8 @@ def test_the_turn_is_built_with_the_narrowed_surface(db, monkeypatch):
     monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
 
     run_turn = critic_g1._make_run_turn(
-        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25")
+        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25",
+        environ={})
     run_turn({"spec_id": "0123456789abcdef"})
 
     assert seen["seat"] == "critic"
@@ -485,7 +488,8 @@ def test_the_turn_is_bound_to_the_spec_it_was_shown(db, monkeypatch):
     monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
 
     run_turn = critic_g1._make_run_turn(
-        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25")
+        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25",
+        environ={})
     run_turn({"spec_id": "0123456789abcdef"})
 
     assert seen["expected_spec_id"] == "0123456789abcdef"
@@ -518,7 +522,8 @@ def test_the_prompt_carries_no_per_run_value(db, monkeypatch):
     monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
 
     run_turn = critic_g1._make_run_turn(
-        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25")
+        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25",
+        environ={})
     run_turn({"spec_id": "0123456789abcdef"})
     run_turn({"spec_id": "fedcba9876543210"})
 
@@ -527,12 +532,11 @@ def test_the_prompt_carries_no_per_run_value(db, monkeypatch):
     assert "2026-08-25" not in critic_g1.G1_PROMPT
 
 
-def test_the_turn_emits_no_live_trace(db, monkeypatch):
-    """evals/live.py:64-80 deliberately skips strategy_critiques in its
-    rows_written scan, and says whoever adds the Critic stage must add a
-    `WHERE seat = ?` scan or live traces grade differently from eval traces of
-    the same turn. evals/ is out of this lane's region, so this job emits NO
-    live trace at all rather than a divergent one. Escalated in the plan."""
+# --- #184: the turn is recorded under FUND_TRACES, like a daily seat --------
+
+def _turn_kwargs(monkeypatch, db, environ):
+    """The turn factory against a captured make_turn: returns the run_turn
+    and the dict make_turn's kwargs land in."""
     seen = {}
 
     def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
@@ -541,11 +545,96 @@ def test_the_turn_emits_no_live_trace(db, monkeypatch):
         return lambda: None
 
     monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
+    run_turn = critic_g1._make_run_turn(
+        "critic", {}, ":memory:", SimClock(NIGHTLY), db, "2026-08-25",
+        environ=environ)
+    return run_turn, seen
 
-    critic_g1._make_run_turn("critic", {}, ":memory:", SimClock(NIGHTLY), db,
-                             "2026-08-25")({"spec_id": "abc"})
 
-    assert seen.get("trace_sink") is None
+def _trace(turn_seq: int, seat: str = "critic") -> Trace:
+    """One trace as run_day.emit_trace_guarded would build it for this night;
+    `result=None` is build_trace's documented no-ResultMessage input."""
+    return build_trace(seat=seat, run_date="2026-08-25", turn_seq=turn_seq,
+                       git_sha="abc1234", charter_text="x", model="m",
+                       snapshot={}, brief_tickers=[], tool_names=[],
+                       result=None)
+
+
+def test_the_turn_records_a_live_trace_under_fund_traces(db, monkeypatch,
+                                                         tmp_path):
+    """#184's second half. Until cab7527 this test pinned the OPPOSITE — no
+    sink — because evals/live.py's rows_written skipped strategy_critiques,
+    so a live G1 trace graded as a seat that wrote nothing while an eval
+    trace of the same turn carried the row. rows_written now scans that table
+    by seat and ET run-day and decodes `objections`, so the two grade alike
+    and the reason for silence is gone. A turn that leaves no trace is a
+    turn the regression ratchet cannot promote
+    (docs/agents/regression-ratchet.md).
+
+    Built the way scripts/run_day.py builds it: environ['FUND_TRACES']
+    through evals.live.file_sink, so the file lands in the
+    <git_sha>/<case>/<trial>.json layout grade_traces globs for."""
+    run_turn, seen = _turn_kwargs(monkeypatch, db,
+                                  {"FUND_TRACES": str(tmp_path)})
+    run_turn({"spec_id": "abc"})
+
+    seen["trace_sink"](_trace(0))
+
+    written = list(tmp_path.rglob("*.json"))
+    assert [p.relative_to(tmp_path).parts[-3:] for p in written] == [
+        ("abc1234", "live-2026-08-25", "0.json")]
+    assert Trace.read(written[0]).seat == "critic"
+
+
+def test_no_fund_traces_means_no_sink_exactly_as_run_day(db, monkeypatch):
+    """FUND_TRACES unset records nothing, and it is deliberately NOT in
+    REQUIRED_ENV (scripts/run_day.py): an older /etc/fund/env runs the night
+    exactly as before rather than failing to start over an evidence feature.
+    Empty counts as unset — run_day's own `if traces_root` test."""
+    for environ in ({}, {"FUND_TRACES": ""}):
+        run_turn, seen = _turn_kwargs(monkeypatch, db, environ)
+        run_turn({"spec_id": "abc"})
+
+        assert seen["trace_sink"] is None
+
+
+def test_one_turn_sequence_per_night_not_per_turn(db, monkeypatch, tmp_path):
+    """The sequence is the trace filename. run_day keeps ONE counter for the
+    whole day for exactly this reason, and a night that critiques two specs
+    needs the same: a fresh count per turn files both verdicts as 0.json and
+    the second silently replaces the first."""
+    run_turn, seen = _turn_kwargs(monkeypatch, db,
+                                  {"FUND_TRACES": str(tmp_path)})
+    run_turn({"spec_id": "abc"})
+    first = seen["turn_seq"]
+    run_turn({"spec_id": "def"})
+
+    assert seen["turn_seq"] is first
+    assert [next(first), next(first)] == [0, 1]
+
+
+def test_the_critics_traces_never_overwrite_the_days(db, monkeypatch,
+                                                     tmp_path):
+    """The one place this is NOT exactly run_day's wiring, and why.
+    Trace.write is a plain write_text; run_day's counter starts at 0 in its
+    own process; this leg fires at 16:35 ET on the SAME et_run_date against
+    the SAME checkout (so the same git_sha). A Critic sink rooted at
+    $FUND_TRACES itself would therefore file its first trace at
+    <root>/<sha>/live-<date>/0.json — the first research seat's trace of the
+    day — and replace real evidence without a word. The Critic's sink is
+    rooted one level down, <root>/critic_g1/, where grade_traces' rglob still
+    reads it and no other process writes."""
+    run_turn, seen = _turn_kwargs(monkeypatch, db,
+                                  {"FUND_TRACES": str(tmp_path)})
+    run_turn({"spec_id": "abc"})
+
+    file_sink(str(tmp_path))(_trace(0, seat="analyst"))   # the day's own sink
+    seen["trace_sink"](_trace(0))
+
+    days = tmp_path / "abc1234" / "live-2026-08-25" / "0.json"
+    assert Trace.read(days).seat == "analyst"
+    assert sorted(t.seat for t in map(Trace.read, tmp_path.rglob("0.json"))) \
+        == ["analyst", "critic"]
 
 
 # --- the leg is last, so a failure goes RED ---------------------------------
@@ -711,6 +800,38 @@ def test_a_bad_seat_config_fails_the_unit_rather_than_passing_silently(
     assert critic_g1.main([]) == 1
     assert "critic_g1_failed" in _alert_texts(db)[0]
     assert "FileNotFoundError" in _alert_texts(db)[0]
+
+
+def test_main_hands_the_turn_factory_the_process_environment(db, tmp_path,
+                                                             monkeypatch):
+    """The factory reading `environ` proves nothing unless main() hands it
+    os.environ — the composition root is where a green unit test hides a
+    dead wire. Everything main() builds is faked except that wire:
+    critique_and_log is replaced by one call of the run_turn it was given."""
+    monkeypatch.setattr(critic_g1.run_day, "paper_guard", lambda env: None)
+    monkeypatch.setattr(critic_g1.run_day, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
+    monkeypatch.setattr(critic_g1, "connect", lambda p: db)
+    monkeypatch.setattr(critic_g1.run_day, "_build_slack", lambda env, environ:
+                        FakeSlack())
+    monkeypatch.setattr(critic_g1, "critique_and_log",
+                        lambda conn, slack, clock, run_turn:
+                        run_turn({"spec_id": "abc"})
+                        or {"critiqued": 0, "failed": 0})
+    seen = {}
+
+    def _fake_make_turn(seat, cfg, db_path, clock, conn, run_date, prompt,
+                        **kwargs):
+        seen.update(kwargs)
+        return lambda: None
+
+    monkeypatch.setattr(critic_g1.run_day, "make_turn", _fake_make_turn)
+    monkeypatch.setenv("FUND_TRACES", str(tmp_path / "traces"))
+
+    assert critic_g1.main([]) == 0
+    assert seen["trace_sink"] is not None
 
 
 # --- environment and single-instance ---------------------------------------

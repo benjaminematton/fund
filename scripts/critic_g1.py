@@ -156,6 +156,7 @@ whatever make_turn already posted.
 """
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 
@@ -165,6 +166,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling run_day
 
 import run_day                                        # noqa: E402
 from agents.seats import load_seat_config             # noqa: E402
+from evals.live import file_sink                      # noqa: E402
 from orchestrator.clock import et_run_date, iso       # noqa: E402
 from slackkit.outbox import drain                     # noqa: E402
 from slackkit.redact import redact                    # noqa: E402
@@ -379,7 +381,7 @@ def critique_and_log(conn, slack, clock, run_turn) -> dict:
 
 
 def _make_run_turn(seat: str, cfg: dict, db_path: str, clock, conn,
-                   run_date: str):
+                   run_date: str, environ):
     """Build the per-spec `run_turn` callable `critique_and_log` drives.
 
     A named factory rather than a closure inline in main() so this seam — a
@@ -402,15 +404,42 @@ def _make_run_turn(seat: str, cfg: dict, db_path: str, clock, conn,
     spec permanently unreviewable — detection was never a mitigation for it,
     which is why this is a binding and not a post-turn check.
 
-    NO trace_sink, deliberately. evals/live.py's rows_written scan skips
-    strategy_critiques and documents that adding the Critic stage requires a
-    `WHERE seat = ?` scan there, or live traces grade differently from eval
-    traces of the same turn. evals/ is out of this lane's region, so this turn
-    emits no live trace at all rather than a divergent one."""
+    THE TURN IS RECORDED, the way scripts/run_day.py records a daily seat's:
+    `environ['FUND_TRACES']` through evals.live.file_sink, unset meaning no
+    recording (deliberately not in REQUIRED_ENV — an older /etc/fund/env runs
+    the night as before rather than failing over an evidence feature). Until
+    cab7527 this factory passed NO sink, because evals/live.py's rows_written
+    skipped strategy_critiques and a live G1 trace graded as a seat that
+    wrote nothing while an eval trace of the same turn carried the row.
+    rows_written now scans that table by seat and ET run-day and decodes
+    `objections` (#184), so the two grade alike, and a turn that leaves no
+    trace is a turn the regression ratchet cannot promote
+    (docs/agents/regression-ratchet.md).
+
+    ONE counter for the night, as run_day keeps one for the day: the sequence
+    is the trace filename, so a fresh count per spec would file every verdict
+    as 0.json and keep only the last.
+
+    Rooted at <FUND_TRACES>/critic_g1/, NOT at FUND_TRACES itself — the one
+    departure from run_day's wiring. Trace.write is a plain write_text, this
+    leg fires at 16:35 ET on the same et_run_date against the same checkout,
+    and its counter also starts at 0, so a sink rooted at FUND_TRACES would
+    put tonight's first trace on <sha>/live-<date>/0.json — the first
+    research seat's trace of the day — and replace evidence silently.
+    grade_traces rglobs, so the subtree is still read."""
+    traces_root = environ.get("FUND_TRACES")
+    trace_sink = (file_sink(str(Path(traces_root) / "critic_g1"))
+                  if traces_root else None)
+    turn_seq = itertools.count()
+    if traces_root:
+        log(f"{run_date}: recording critic traces under"
+            f" {traces_root}/critic_g1")
+
     def run_turn(job: dict) -> None:
         turn = run_day.make_turn(seat, cfg, db_path, clock, conn, run_date,
                                  G1_PROMPT, tools=G1_TOOLS,
-                                 expected_spec_id=job["spec_id"])
+                                 expected_spec_id=job["spec_id"],
+                                 trace_sink=trace_sink, turn_seq=turn_seq)
         turn()
     return run_turn
 
@@ -536,7 +565,8 @@ def main(argv: list[str] | None = None) -> int:
     def _body() -> int:
         cfg = load_seat_config(SEAT_CONFIG)
         run_date = et_run_date(clock.now())  # cost lands on the day it ran
-        run_turn = _make_run_turn(SEAT, cfg, db_path, clock, conn, run_date)
+        run_turn = _make_run_turn(SEAT, cfg, db_path, clock, conn, run_date,
+                                  environ)
         critique_and_log(conn, slack, clock, run_turn)
         return 0
 
