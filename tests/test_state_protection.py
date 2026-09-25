@@ -3,7 +3,7 @@ a position. Never a source of what protection exists — that stays a broker
 read in orchestrator/protection.py:_covering_qty (ADR-0004's standing rule)."""
 
 from orchestrator.clock import iso
-from state.protection import log_observed
+from state.protection import log_observed, qty_of
 
 
 def _leg(**kw):
@@ -122,3 +122,14 @@ def test_the_log_and_the_coverage_number_read_the_same_predicate(fund_db):
     from orchestrator.protection import _covering_qty
     assert _covering_qty([messy], "NVDA", "sell") == 80, (
         "guard: this order really does count toward cover")
+
+
+def test_a_non_finite_qty_is_unreadable_not_a_crash():
+    """#140. float("nan") and float("inf") both convert, so the old guard
+    passed them through to int(n), which raises ValueError / OverflowError
+    OUTSIDE the try — and out of scripts/dev_status.py, whose contract is exit
+    0 always. A broker numeric that will not parse is None, like every other
+    unreadable one; the caller then fails closed (invariant 4)."""
+    for bad in ("nan", "inf", "-inf", float("nan"), float("inf")):
+        assert qty_of(bad) is None, bad
+    assert qty_of("80") == 80, "guard: the readable case still reads"

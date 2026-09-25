@@ -18,6 +18,7 @@ and this module keeps it that way.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 
 # An order type that protects a long position by closing it on the way down.
@@ -61,7 +62,9 @@ def qty_of(value) -> int | None:
         n = float(value)
     except (TypeError, ValueError):
         return None
-    if n != int(n) or n <= 0:
+    # "nan" and "inf" both convert, and int() of either raises — outside the
+    # try, and out of scripts/dev_status.py, which must exit 0 always (#140).
+    if not math.isfinite(n) or n != int(n) or n <= 0:
         return None
     return int(n)
 
