@@ -124,10 +124,10 @@ def test_every_prose_count_or_position_of_the_nightly_legs_is_derived_from_the_u
     the next addition reddens each restatement instead of waiting for a sweep.
 
     The sites are deliberately few. ops/README.md's units table is the ONE
-    prose home for the list; the rest of the README, PROGRESS.md's timer row
-    and the Makefile point at it and are pinned NOT to restate. The unit's own
-    comments and the sibling test's docstring do name positions, because there
-    the order is the argument.
+    prose home for the list; the rest of the README, PROGRESS.md's timer row,
+    the Makefile and every leg script's own docstring point at it and are
+    pinned NOT to restate. The unit's own comments and the sibling test's
+    docstring do name positions, because there the order is the argument.
 
     Assumed, not derived: every leg from reflect_day on runs seat turns (the
     "seat-running legs" count), and every leg ahead of it is arithmetic.
@@ -164,6 +164,21 @@ def test_every_prose_count_or_position_of_the_nightly_legs_is_derived_from_the_u
     assert "ops/README.md" in MAKEFILE
     assert "last, after reflect" in MAKEFILE
     assert "not a systemd leg (CEO ruling B1)" in MAKEFILE
+
+    # scripts/<leg>.py — a leg's docstring argues its place from what it must
+    # follow (or from being last), never from an ordinal or a leg count. The
+    # one allowed ordinal counts seat turns off run_day.SEATS, not legs — the
+    # same word register_spec.py:27 uses for the same count (see above).
+    allowed = {"critic_g1.py": ["fifth scheduled seat turn"]}
+    offenders = []
+    for leg in legs:
+        text = (ROOT / "scripts" / leg).read_text()
+        for phrase in allowed.get(leg, []):
+            assert phrase in text, f"{leg}: allow-listed {phrase!r} is gone"
+            text = text.replace(phrase, "")
+        if m := _RESTATES.search(text):
+            offenders.append(f"{leg}: {m.group(0)!r}")
+    assert not offenders, "leg scripts restate a position or count: " + "; ".join(offenders)
 
     # ops/fund-pnl.service — a leg's own comment may name its position; if it
     # does, the position must be the one the ExecStart order gives it.

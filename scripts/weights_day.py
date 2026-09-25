@@ -9,8 +9,9 @@ job; agents read it"). One row per graded seat per night: every AgentScore
 field, the deterministic PM weight, and the behavioural rates the Proposer
 is later graded against. The morning brief reads the row as data.
 
-WHY IT RIDES THE 16:35 TIMER, THIRD. It needs tonight's resolutions, which
-resolve_day writes one leg earlier. It sits BEFORE reflect_day for two
+WHY IT RIDES THE 16:35 TIMER, BETWEEN resolve_day AND reflect_day
+(ops/README.md's units table has the order). It needs tonight's resolutions,
+which resolve_day writes ahead of it. It sits BEFORE reflect_day for two
 reasons: reflect_day drains the outbox, so an alert this job appends reaches
 Slack the same night without this job holding a token; and reflect_day is
 perishable (a reflection missed for seven nights is destroyed) while this

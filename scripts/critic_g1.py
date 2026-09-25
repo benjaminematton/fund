@@ -14,7 +14,8 @@ and 5 x SEAT_MAX_WALL_S = 1200s exceeds the 0.6 x 30min = 1080s it allows.
 reflect_day.py is the precedent — a seat turn on the nightly job, outside
 SEATS and outside design.md §3.
 
-WHY FIFTH AND LAST, i.e. AFTER reflect. Three reasons, each checkable:
+WHY LAST — after reflect, behind every deterministic leg (ops/README.md's
+units table has the order). Three reasons, each checkable:
 
   1. This unit's own comment already states the principle: reflect is last
      because "it is the only leg that spends LLM budget and the only one that
