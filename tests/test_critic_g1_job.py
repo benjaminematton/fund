@@ -578,6 +578,18 @@ def test_a_failure_in_this_leg_exits_nonzero_so_systemd_reports_it(db):
     assert _undrained(db) == 0
 
 
+def test_a_failure_that_dumps_a_credential_is_redacted_in_the_log(db, capsys):
+    """Issue #150, the same shape as run_day.guarded: the stored row is
+    redacted by append_alert, but _guarded logs the raw text first, and on the
+    droplet stdout is the journal."""
+    def _boom():
+        raise RuntimeError("env dump: ALPACA_SECRET_KEY=abc123verysecret")
+
+    assert critic_g1._guarded(db, FakeSlack(), SimClock(NIGHTLY), _boom) == 1
+    assert "abc123verysecret" not in capsys.readouterr().out
+    assert "abc123verysecret" not in _alert_texts(db)[0]
+
+
 def test_a_hard_stop_inside_the_body_is_still_alerted_and_still_red(db):
     """SystemExit alongside Exception, for run_day.guarded's reason: a config
     hard stop must still say so in Slack rather than exiting silently — and
@@ -635,7 +647,7 @@ def test_main_exits_one_when_the_guarded_body_fails(db, tmp_path, monkeypatch):
                         | {"FUND_DB": str(tmp_path / "fund.sqlite")})
     monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
     monkeypatch.setattr(critic_g1, "connect", lambda p: db)
-    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+    monkeypatch.setattr(critic_g1.run_day, "_build_slack", lambda env, environ:
                         FakeSlack())
     monkeypatch.setattr(critic_g1, "critique_and_log",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -652,7 +664,7 @@ def test_main_exits_zero_on_a_clean_night(db, tmp_path, monkeypatch):
                         | {"FUND_DB": str(tmp_path / "fund.sqlite")})
     monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
     monkeypatch.setattr(critic_g1, "connect", lambda p: db)
-    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+    monkeypatch.setattr(critic_g1.run_day, "_build_slack", lambda env, environ:
                         FakeSlack())
     monkeypatch.setattr(critic_g1, "critique_and_log",
                         lambda *a, **k: {"critiqued": 0, "failed": 0})
@@ -690,7 +702,7 @@ def test_a_bad_seat_config_fails_the_unit_rather_than_passing_silently(
                         | {"FUND_DB": str(tmp_path / "fund.sqlite")})
     monkeypatch.setattr(critic_g1.run_day, "acquire_lock", lambda p: object())
     monkeypatch.setattr(critic_g1, "connect", lambda p: db)
-    monkeypatch.setattr(critic_g1, "_build_slack", lambda env, environ:
+    monkeypatch.setattr(critic_g1.run_day, "_build_slack", lambda env, environ:
                         FakeSlack())
     monkeypatch.setattr(critic_g1, "load_seat_config",
                         lambda p: (_ for _ in ()).throw(

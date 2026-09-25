@@ -7,7 +7,8 @@ the market-closed guard, the channel remap, and the committed watchlist — and
 those are exactly the places a wrong answer trades against a shut market, an
 unfunded account, or the wrong Slack channel.
 
-Never calls main(): that builds real clients.
+main() is called only up to the lock refusal (issue #129), with everything
+before it faked; past the lock it builds real clients.
 """
 
 from __future__ import annotations
@@ -403,6 +404,20 @@ def test_the_audit_rollup_keeps_its_self_alert_marker(wired, monkeypatch):
     assert payload[run_day_script.audit_day.SELF_ALERT_KEY] is True
 
 
+# --- shared helpers live here once (issue #200) ------------------------------
+
+def test_build_slack_is_defined_exactly_once_under_scripts():
+    """Issue #200. _build_slack was byte-copied into three nightly jobs, one
+    copy still claiming to be "the ONE place" the Slack client is built. This
+    file is the home of every other helper those jobs share (paper_guard,
+    require_env, acquire_lock, parse_channel_overrides, RemappedSlack,
+    _alert), so the single definition lives here and they import it."""
+    import re
+    defs = sorted(p for p in (ROOT / "scripts").glob("*.py")
+                  if re.search(r"^def _build_slack\(", p.read_text(), re.M))
+    assert defs == [SCRIPT]
+
+
 # --- single-instance guard (Fix 5) ------------------------------------------
 
 def test_a_second_instance_backs_off_instead_of_racing(tmp_path):
@@ -424,6 +439,31 @@ def test_a_dead_process_leaves_no_lock_behind(tmp_path):
     held = run_day_script.acquire_lock(path)
     held.close()                                   # == the process going away
     assert run_day_script.acquire_lock(path) is not None
+
+
+def test_a_held_lock_is_a_red_unit_that_names_the_lock(tmp_path, monkeypatch,
+                                                       capsys):
+    """Issue #129. A lock still held at the timer's fire means an earlier
+    run_day is STILL RUNNING — the kernel drops a dead process's flock, so it
+    cannot be stale — and today's trading day is not happening. Exit 0 here
+    made that indistinguishable from a market holiday: OnFailure never fired
+    and the Healthchecks ping registered a success. No alert row can be
+    written on this path (connect() has not run), so the exit code is the
+    whole report; 2 rather than 1 so the operator can tell "held lock" from
+    "the day failed" (the code scripts/register_spec.py documents for the
+    same refusal). main() is driven only up to the refusal: everything after
+    the lock builds a real client and is faked to fail."""
+    monkeypatch.setattr(run_day_script, "paper_guard", lambda env: None)
+    monkeypatch.setattr(run_day_script, "require_env",
+                        lambda names, env: {n: "x" for n in names}
+                        | {"FUND_DB": str(tmp_path / "fund.sqlite")})
+    monkeypatch.setattr(run_day_script, "acquire_lock", lambda p: None)
+    monkeypatch.setattr(run_day_script, "WallClock",
+                        lambda: pytest.fail("must stop at the lock"))
+
+    assert run_day_script.main([]) == 2
+    out = capsys.readouterr().out
+    assert str(tmp_path / run_day_script.LOCK_NAME) in out
 
 
 # --- cost accounting must never take the day down (Fix 6) -------------------
@@ -798,6 +838,55 @@ def test_seat_turn_failure_uses_a_literal_code_not_the_seat_name(
     payload = _alert_payloads(conn)[-1]
     assert payload["code"] == "seat_turn_failed"
     assert payload["text"].startswith("analyst_turn_failed —")
+
+
+# --- the on-disk log line is redacted like the stored row (issue #150) ------
+
+SECRET = "ALPACA_SECRET_KEY=abc123verysecret"
+
+
+def _logged_alert_texts(capsys) -> list[str]:
+    return [ln.removeprefix("run_day: ALERT ")
+            for ln in capsys.readouterr().out.splitlines()
+            if ln.startswith("run_day: ALERT ")]
+
+
+def test_a_seat_failure_that_dumps_a_credential_is_redacted_in_the_log(
+        wired, monkeypatch, capsys):
+    """Issue #150. append_alert redacts `text` on its way into the outbox, so
+    Slack and the GitHub filer never see the secret — but _alert logged the
+    RAW text first, and on the droplet stdout is the journal and
+    logs/run_day.err.log. The log line must be the stored row, byte for
+    byte. Covers seat_turn_failed and exec_turn_violation, which both reach
+    the log through _alert."""
+    conn, _, clock = wired
+
+    async def _boom(*a, **k):
+        raise RuntimeError(f"env dump: {SECRET}")
+
+    monkeypatch.setattr(run_day_script, "_seat_session", _boom)
+    _turn(conn, clock, seat="analyst")()
+
+    logged = _logged_alert_texts(capsys)
+    assert len(logged) == 1
+    assert "abc123verysecret" not in logged[0]
+    assert logged == _alert_texts(conn)
+
+
+def test_a_day_failure_that_dumps_a_credential_is_redacted_in_the_log(
+        wired, capsys):
+    """The third site the issue cites: run_day_failed logs before it appends,
+    outside _alert."""
+    conn, slack, clock = wired
+
+    def body():
+        raise RuntimeError(f"env dump: {SECRET}")
+
+    assert run_day_script.guarded(conn, slack, clock, body) == 1
+    logged = _logged_alert_texts(capsys)
+    assert len(logged) == 1
+    assert "abc123verysecret" not in logged[0]
+    assert logged == _alert_texts(conn)
 
 
 # --- a seat turn that HANGS is a different failure from one that raises -----

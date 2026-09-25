@@ -167,6 +167,7 @@ import run_day                                        # noqa: E402
 from agents.seats import load_seat_config             # noqa: E402
 from orchestrator.clock import et_run_date, iso       # noqa: E402
 from slackkit.outbox import drain                     # noqa: E402
+from slackkit.redact import redact                    # noqa: E402
 from state.db import connect                          # noqa: E402
 from state.specs import specs_awaiting_critique       # noqa: E402
 
@@ -449,7 +450,7 @@ def _guarded(conn, slack, clock, body) -> int:
         text = (f"critic_g1_failed — {type(exc).__name__}: {exc}. The G1 leg"
                 " stopped here; no verdict was written, no default row exists,"
                 " and every pending spec stays pending for the next night.")
-        log(f"ALERT {text}")
+        log(f"ALERT {redact(text)}")            # issue #150; see run_day._alert
         try:
             run_day._alert(conn, clock, "critic_g1_failed", text)
             drain(conn, slack, iso(clock.now()))
@@ -458,24 +459,6 @@ def _guarded(conn, slack, clock, body) -> int:
                 f" {inner}) — the failure above is the one that matters."
                 " systemd's OnFailure is what carries it out of the box now")
         return 1
-
-
-def _build_slack(env: dict, environ):
-    """The Slack client _guarded needs in order to report anything, plus this
-    run's channel remapping.
-
-    A named seam so tests can drive main() without a network client, and so the
-    ONE thing that must exist before the guard can report is built in one
-    place."""
-    from slackkit.real import RealSlack
-
-    slack = RealSlack(env["SLACK_BOT_TOKEN"])
-    overrides = run_day.parse_channel_overrides(
-        environ.get("SLACK_CHANNEL_OVERRIDES"))
-    if overrides:
-        log(f"channel overrides active: {overrides}")
-        slack = run_day.RemappedSlack(slack, overrides)
-    return slack
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -548,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = WallClock()
     conn = connect(db_path)
-    slack = _build_slack(env, environ)
+    slack = run_day._build_slack(env, environ)
 
     def _body() -> int:
         cfg = load_seat_config(SEAT_CONFIG)

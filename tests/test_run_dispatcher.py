@@ -43,7 +43,7 @@ def test_no_consumer_raises_naming_the_kind():
 def test_main_fails_every_row_loudly_and_exits_zero(tmp_path, monkeypatch):
     _env(monkeypatch, tmp_path)
     slack = FakeSlack()
-    monkeypatch.setattr(run_dispatcher, "_build_slack", lambda env, environ: slack)
+    monkeypatch.setattr(run_dispatcher.run_day, "_build_slack", lambda env, environ: slack)
     monkeypatch.setattr(run_dispatcher.time, "sleep", lambda s: None)
     conn = connect(tmp_path / "fund.sqlite")
     wid = worklist.enqueue(conn, kind="spec_review", producer="orchestrator",
@@ -67,7 +67,7 @@ def test_main_fails_every_row_loudly_and_exits_zero(tmp_path, monkeypatch):
 def test_main_exits_one_and_alerts_when_the_body_raises(tmp_path, monkeypatch):
     _env(monkeypatch, tmp_path)
     slack = FakeSlack()
-    monkeypatch.setattr(run_dispatcher, "_build_slack", lambda env, environ: slack)
+    monkeypatch.setattr(run_dispatcher.run_day, "_build_slack", lambda env, environ: slack)
 
     def boom(*a, **k):
         raise RuntimeError("db on fire")
@@ -82,6 +82,21 @@ def test_main_exits_one_and_alerts_when_the_body_raises(tmp_path, monkeypatch):
     assert len(slack.posts["#risk"]) == 1
 
 
+def test_a_failure_that_dumps_a_credential_is_redacted_in_the_log(tmp_path,
+                                                                  capsys):
+    """Issue #150, the same shape as run_day.guarded: append_alert redacts the
+    stored row, but _guarded logs the raw text first."""
+    conn = connect(tmp_path / "fund.sqlite")
+
+    def _body():
+        raise RuntimeError("env dump: ALPACA_SECRET_KEY=abc123verysecret")
+
+    assert run_dispatcher._guarded(conn, FakeSlack(), SimClock(START), _body) == 1
+    out = capsys.readouterr().out
+    assert "abc123verysecret" not in out
+    assert "dispatcher_failed" in out
+
+
 def test_main_refuses_to_run_without_the_paper_flag(tmp_path, monkeypatch):
     _env(monkeypatch, tmp_path)
     monkeypatch.setenv("ALPACA_PAPER_TRADE", "false")
@@ -93,6 +108,6 @@ def test_main_exits_zero_when_another_dispatcher_holds_the_lock(tmp_path, monkey
     _env(monkeypatch, tmp_path)
     lock = run_dispatcher.run_day.acquire_lock(tmp_path / run_dispatcher.LOCK_NAME)
     assert lock is not None
-    monkeypatch.setattr(run_dispatcher, "_build_slack",
+    monkeypatch.setattr(run_dispatcher.run_day, "_build_slack",
                         lambda env, environ: pytest.fail("must not build slack"))
     assert run_dispatcher.main(["--cycles", "1"]) == 0

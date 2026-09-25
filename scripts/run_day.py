@@ -12,7 +12,9 @@ here — and then injected.
 Posture (invariant 4: the default is HOLD):
   * ALPACA_PAPER_TRADE != 'true'      -> exit 1 before a single client is built
   * a missing env var                 -> exit 1 naming every missing var
-  * another run_day already running   -> log, exit 0, touch nothing
+  * another run_day already running   -> log the lock path, exit 2, touch
+                                          nothing: the day is LOST, and a red
+                                          unit is how anyone learns it (#129)
   * market closed / clock unreadable  -> log, exit 0, trade nothing
   * a seat turn that raises            -> one `alert`, then the stage's own
                                           default (neutral/0, pm_timeout hold)
@@ -77,6 +79,7 @@ from orchestrator.daily import (StageCtx, allowed_actions,        # noqa: E402
 from orchestrator.ingest_guard import account_snapshot             # noqa: E402
 from orchestrator.preconditions import assert_account_config_unchanged  # noqa: E402
 from slackkit.outbox import append_alert, drain                    # noqa: E402
+from slackkit.redact import redact                                 # noqa: E402
 from state.db import connect                                       # noqa: E402
 
 # Core env. ALPACA_PAPER_TRADE is checked separately and first (invariant 1).
@@ -100,8 +103,9 @@ LOCK_NAME = "run_day.lock"
 # Wall-clock ceiling for ONE seat turn (issue #44). max_turns and
 # max_budget_usd bound turns and dollars; a stalled MCP tool call or model
 # stream spends neither, so without this a hung turn hangs the whole day —
-# holding the flock, so tomorrow's timer finds the lock and exits 0, which
-# reads exactly like a market-closed day.
+# holding the flock, so tomorrow's timer finds the lock and loses its day too
+# (exit 2 since #129; before that exit 0, which read exactly like a
+# market-closed day).
 #
 # Sized to fire BEFORE ops/fund-daily.service's TimeoutStartSec=30min, whose
 # SIGTERM can land between the broker accepting a place_stock_order and the
@@ -220,6 +224,23 @@ class RemappedSlack:
              icon_emoji: str | None = None) -> str:
         return self._slack.post(self._overrides.get(channel, channel), text,
                                 thread_ts, blocks, username, icon_emoji)
+
+
+def _build_slack(env: dict, environ):
+    """The Slack client a guard needs in order to report anything, plus this
+    run's channel remapping.
+
+    A named seam so tests can drive main() without a network client, and so the
+    ONE thing that must exist before a guard can report is built in one place —
+    here, for this day and for every nightly job that imports it (issue #200)."""
+    from slackkit.real import RealSlack
+
+    slack = RealSlack(env["SLACK_BOT_TOKEN"])
+    overrides = parse_channel_overrides(environ.get("SLACK_CHANNEL_OVERRIDES"))
+    if overrides:
+        log(f"channel overrides active: {overrides}")
+        slack = RemappedSlack(slack, overrides)
+    return slack
 
 
 # --- market gate ------------------------------------------------------------
@@ -470,7 +491,10 @@ def record_cost_guarded(conn, clock, run_date: str, seat: str, result,
 
 
 def _alert(conn, clock, code: str, text: str, **payload) -> None:
-    log(f"ALERT {text}")
+    # Redacted with the same function append_alert applies, so the on-disk
+    # log line is the stored row (issue #150): three callers interpolate a raw
+    # exception, and a traceback that touches os.environ carries credentials.
+    log(f"ALERT {redact(text)}")
     append_alert(conn, code, text, now_iso=iso(clock.now()), **payload)
 
 
@@ -587,7 +611,7 @@ def guarded(conn, slack, clock, body: Callable[[], int]) -> int:
         text = (f"run_day_failed — {type(exc).__name__}: {exc}. The day"
                 " stopped here and the audit did not run; nothing further was"
                 " traded (default is HOLD).")
-        log(f"ALERT {text}")
+        log(f"ALERT {redact(text)}")            # issue #150; see _alert
         try:
             append_alert(conn, "run_day_failed", text, now_iso=iso(clock.now()))
             drain(conn, slack, iso(clock.now()))
@@ -601,7 +625,6 @@ def guarded(conn, slack, clock, body: Callable[[], int]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     from market.source_alpaca import AlpacaSource
-    from slackkit.real import RealSlack
 
     environ = os.environ
     paper_guard(environ)                     # invariant 1, before anything else
@@ -612,9 +635,23 @@ def main(argv: list[str] | None = None) -> int:
     lock_path = Path(db_path).parent / LOCK_NAME
     lock = acquire_lock(lock_path)           # must outlive the run; kept in scope
     if lock is None:
-        log(f"another run_day holds {lock_path} — exiting 0 rather than racing"
-            " it (two overlapping runs = two seat turns and two drains)")
-        return 0
+        # Issue #129. Not a race that resolves itself: flock dies with its
+        # process (ops/README.md "Stopping a day"), so a held lock at the
+        # timer's fire is an earlier run_day STILL RUNNING and today's day is
+        # lost. Exit 0 read as a market holiday — OnFailure never fired and
+        # the Healthchecks ping registered a success. No alert row is possible
+        # here (connect() has not run and every alert path lives in the
+        # process that holds the lock), so the exit code is the whole report:
+        # non-zero fires fund-alert@fund-daily.service, and 2 rather than 1
+        # tells the operator "held lock" apart from "the day failed" (the code
+        # scripts/register_spec.py uses for the same refusal). Always, not
+        # only past some lock age: fund-daily.timer fires once a day, so any
+        # overlap is either a hang or a human's `systemctl start`, and both
+        # want to be told.
+        log(f"another run_day holds {lock_path} — exiting 2 rather than racing"
+            " it (two overlapping runs = two seat turns and two drains). No"
+            " trading day ran; that is a red unit, not a quiet one")
+        return 2
 
     clock = WallClock()                      # the one real clock, injected below
     source = AlpacaSource()                  # re-guards ALPACA_PAPER_TRADE
@@ -625,11 +662,7 @@ def main(argv: list[str] | None = None) -> int:
     run_date = et_run_date(clock.now())
     conn = connect(db_path)
 
-    slack = RealSlack(env["SLACK_BOT_TOKEN"])
-    overrides = parse_channel_overrides(environ.get("SLACK_CHANNEL_OVERRIDES"))
-    if overrides:
-        log(f"channel overrides active: {overrides}")
-        slack = RemappedSlack(slack, overrides)
+    slack = _build_slack(env, environ)
 
     # From here (after connect(), RealSlack construction and channel-override
     # parsing) onward nothing may die silently: the guard covers the
