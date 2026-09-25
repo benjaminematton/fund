@@ -279,18 +279,40 @@ def _run_local(*argv: str) -> str:
 def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None, str]:
     """Positions with aggregate stop coverage, straight from the broker.
 
-    Coverage is computed by orchestrator.protection._covering_qty — the same
+    Wrapped whole, and the wrapper classifies rather than merely catches
+    (#140). A broker, network or credentials failure is rendered as one by
+    _read_positions_and_coverage; anything else that reaches here is a defect
+    in THIS program — an ImportError, a TypeError, a numeric that would not
+    parse — and is rendered under its own type. Not 'broker unavailable': that
+    reads as a network problem and invites waiting rather than fixing, which
+    is how #119 stayed unnoticed. Not a raise either: a non-zero exit hides
+    every other check behind this one.
+    """
+    try:
+        return _read_positions_and_coverage()
+    except Exception as exc:
+        return None, [], None, f"check crashed: {type(exc).__name__}: {exc}"
+
+
+def _read_positions_and_coverage() -> tuple[list[Position] | None, list, int | None, str]:
+    """Coverage is computed by orchestrator.protection._covering_qty — the same
     function the fund's own protection pass uses. Re-deriving it here would
     be a second answer to a question that already has one, and its careful
     'unreadable order means unknown, never a smaller number' behaviour is the
     part a re-derivation would lose.
     """
-    try:
-        from market.source_alpaca import AlpacaSource
-        from orchestrator.protection import _covering_qty
-        from state.protection import CLOSING_SIDE, qty_of
-    except Exception as exc:
-        return None, [], None, f"broker client unavailable: {exc}"
+    from alpaca.common.exceptions import APIError, RetryException
+    from requests.exceptions import RequestException
+
+    from market.source_alpaca import AlpacaSource
+    from orchestrator.protection import _covering_qty
+    from state.protection import CLOSING_SIDE, qty_of
+
+    # What an OUTAGE looks like from alpaca-py 0.44: APIError for every non-2xx
+    # (401/403 included), RetryException when its retries are spent, and
+    # requests' own family for a socket that never connected. Nothing else is
+    # one, so nothing else is caught here.
+    broker_errors = (APIError, RetryException, RequestException)
 
     missing = [k for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY") if not os.environ.get(k)]
     if missing:
@@ -304,7 +326,7 @@ def _positions_and_coverage() -> tuple[list[Position] | None, list, int | None, 
         source = AlpacaSource()
         raw_positions = source.open_positions()
         raw_orders = source.open_orders()
-    except Exception as exc:
+    except broker_errors as exc:
         return None, [], None, f"broker read failed: {exc}"
 
     out: list[Position] = []
