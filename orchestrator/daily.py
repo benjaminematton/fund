@@ -83,19 +83,22 @@ def run_stage(ctx: StageCtx, stage: str, body: Callable[[], object]):
     return result
 
 
-def _sized(inputs, side: str, mode: str):
+def _sized(inputs, side: str):
     """size() over a PLAIN DICT — never a constructed GateInputs (review C3).
     Garbage (NaN vol, missing sector) must reach the gate's own validator and
     come back as Rejected('gate_error'), not raise inside the orchestrator."""
-    return size({**dict(inputs), "side": side}, mode)
+    return size({**dict(inputs), "side": side})
 
 
 def allowed_actions(market_inputs: dict) -> dict[str, dict[str, int]]:
     """The gate's ADVISORY allowed-actions snapshot: `{ticker: {buy, sell}}` in
     shares, the PM's sizing budget for the day (charters/pm.md Inputs).
 
-    Computed by the same size() code path the enforcement pass uses (design
-    §5, invariant §3.9), which is what makes "what the PM was shown is what
+    Computed by the same size() code path the enforcement pass uses
+    (specs/design.md §5 "Deterministic risk gate": advisory and enforcement
+    "may differ only via price/account drift between runs" — pinned by
+    tests/test_risk.py::test_advisory_equals_enforcement_on_identical_inputs),
+    which is what makes "what the PM was shown is what
     the gate enforces" a fact rather than a hope — an unreachable shape is 0,
     and a ticker where BOTH shapes are 0 is absent entirely, so the key set of
     this dict IS run_pre_gate's active set. Pure: no writes, no clock, no
@@ -104,7 +107,7 @@ def allowed_actions(market_inputs: dict) -> dict[str, dict[str, int]]:
     for ticker, inputs in market_inputs.items():
         shapes = {}
         for side in ("buy", "sell"):
-            result = _sized(inputs, side, "advisory")
+            result = _sized(inputs, side)
             shapes[side] = result.max_qty if isinstance(result, Approved) else 0
         if shapes["buy"] or shapes["sell"]:
             snapshot[ticker] = shapes
@@ -140,7 +143,7 @@ def _pre_gate_stage(ctx: StageCtx) -> list[str]:
     active: list[str] = []
     now = iso(ctx.clock.now())
     for ticker, inputs in ctx.market_inputs.items():
-        results = [_sized(inputs, side, "advisory") for side in ("buy", "sell")]
+        results = [_sized(inputs, side) for side in ("buy", "sell")]
         if any(isinstance(r, Approved) for r in results):
             active.append(ticker)
         elif all(isinstance(r, Rejected) and r.reason == "gate_error" for r in results):
@@ -273,8 +276,7 @@ def _gate_handle(ctx: StageCtx, d: sqlite3.Row, now: str, expires_at: str,
     # ticket is already there, not just mint-or-skip on the approve branch.
     existing = ctx.conn.execute("SELECT * FROM tickets WHERE decision_id = ?",
                                 (d["id"],)).fetchone()
-    result = _sized(ctx.market_inputs.get(d["ticker"]) or {}, d["action"],
-                    "enforce")
+    result = _sized(ctx.market_inputs.get(d["ticker"]) or {}, d["action"])
     # The gate CAPS the PM's ask; it never sizes UP a smaller one
     # (golden day: min(80, 66) = 66).
     max_qty = min(d["qty"], result.max_qty) if isinstance(result, Approved) else 0

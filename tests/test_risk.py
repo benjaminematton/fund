@@ -3,6 +3,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from gate.risk import GateInputs, size, Approved, Rejected
+from orchestrator.clock import iso
+from orchestrator.daily import StageCtx, allowed_actions, run_gate
+from slackkit.fake import FakeSlack
 
 FIX = json.loads((Path(__file__).resolve().parents[1]
                   / "fixtures" / "golden-day-market.json").read_text())
@@ -36,15 +39,32 @@ def golden_dict(**over):
     return base
 
 def test_golden_day_vector_both_step_values():
-    r = size(golden_inputs(), mode="enforce")
+    r = size(golden_inputs())
     assert isinstance(r, Approved)
     assert r.pre_sector_qty == 105        # the intermediate is asserted too
     assert r.max_qty == GOLDEN_MAX_QTY
 
-def test_advisory_equals_enforcement_on_identical_inputs():
-    a = size(golden_inputs(), mode="advisory")
-    e = size(golden_inputs(), mode="enforce")
-    assert a.max_qty == e.max_qty == GOLDEN_MAX_QTY
+def test_advisory_equals_enforcement_on_identical_inputs(fund_db, sim_clock):
+    """specs/design.md §5 "Deterministic risk gate": advisory and enforcement
+    share one code path and "may differ only via price/account drift between
+    runs". Pinned on the two REAL passes, not on size() called twice (#137):
+    allowed_actions() is the advisory snapshot the PM is shown, run_gate() is
+    the 11:15 enforcement pass that mints the ticket. On identical market
+    inputs the number shown must be the number enforced. The PM's ask (80)
+    sits above the cap so the ticket carries the gate's number, not the ask.
+    A haircut, rounding, or extra clamp on either side alone trips this."""
+    market = {"NVDA": golden_dict()}
+    shown = allowed_actions(market)["NVDA"]["buy"]
+    fund_db.execute(
+        "INSERT INTO decisions (run_date,ticker,action,qty,thesis,"
+        "invalidation,status,created_at) VALUES (?,?,?,?,?,?,'submitted',?)",
+        ("2026-07-06", "NVDA", "buy", 80, "t", "i", iso(sim_clock.now())))
+    fund_db.commit()
+    run_gate(StageCtx(conn=fund_db, run_date="2026-07-06", clock=sim_clock,
+                      slack=FakeSlack(), research_seats=(),
+                      market_inputs=market))
+    enforced = fund_db.execute("SELECT max_qty FROM tickets").fetchone()["max_qty"]
+    assert shown == enforced == GOLDEN_MAX_QTY
 
 @pytest.mark.parametrize("field", ["daily_pnl_pct", "cash", "avg_corr"])
 def test_post_construction_nan_mutation_is_refused(field):
@@ -67,14 +87,14 @@ def test_post_construction_nan_mutation_is_refused(field):
     ("avg_corr", 1.5),
 ])
 def test_negative_nonsensical_inputs_rejected(field, value):
-    r = size(golden_inputs(**{field: value}), mode="enforce")
+    r = size(golden_inputs(**{field: value}))
     assert r == Rejected("gate_error")
 
 @pytest.mark.parametrize("value", [-1.0, 1.0])
 def test_avg_corr_boundary_still_accepted(value):
     """-1.0 and 1.0 are legitimate perfect correlations, not malformed
     input — the out-of-range guard must not reject them."""
-    r = size(golden_inputs(avg_corr=value), mode="enforce")
+    r = size(golden_inputs(avg_corr=value))
     assert isinstance(r, Approved)
 
 
@@ -88,7 +108,7 @@ def test_model_copy_nan_bypass_is_rejected(field):
     isinstance(inputs, GateInputs) to mean "already validated"."""
     g = golden_inputs()
     bad = g.model_copy(update={field: float("nan")})
-    assert size(bad, "enforce") == Rejected("gate_error")
+    assert size(bad) == Rejected("gate_error")
 
 
 def test_model_copy_nan_held_qty_with_position_count_bypass_is_rejected():
@@ -97,13 +117,13 @@ def test_model_copy_nan_held_qty_with_position_count_bypass_is_rejected():
     with a valid held_qty=0."""
     g = golden_inputs()
     bad = g.model_copy(update={"held_qty": float("nan"), "position_count": 8})
-    assert size(bad, "enforce") == Rejected("gate_error")
+    assert size(bad) == Rejected("gate_error")
 
 
 def test_valid_held_qty_zero_with_position_count_at_limit_still_rejected():
     """Sanity check for the case above: with a legitimate held_qty=0, the
     same position_count=8 must still be rejected on MAX_POSITIONS."""
-    r = size(golden_inputs(held_qty=0, position_count=8), mode="enforce")
+    r = size(golden_inputs(held_qty=0, position_count=8))
     assert r == Rejected("position_count")
 
 
@@ -112,7 +132,7 @@ def test_model_copy_nan_position_count_bypass_is_rejected():
     bypassing the MAX_POSITIONS check."""
     g = golden_inputs()
     bad = g.model_copy(update={"position_count": float("nan")})
-    assert size(bad, "enforce") == Rejected("gate_error")
+    assert size(bad) == Rejected("gate_error")
 
 
 def test_model_construct_nan_held_qty_bypass_is_rejected():
@@ -125,7 +145,7 @@ def test_model_construct_nan_held_qty_bypass_is_rejected():
         sector_value=120 * 232.0 + 40 * 505.0,
         daily_pnl_pct=FIX["daily_pnl_pct"])
     bad = GateInputs.model_construct(**base, held_qty=float("nan"), position_count=8)
-    assert size(bad, "enforce") == Rejected("gate_error")
+    assert size(bad) == Rejected("gate_error")
 
 
 def test_model_copy_inf_held_qty_sell_bypass_is_rejected():
@@ -133,7 +153,7 @@ def test_model_copy_inf_held_qty_sell_bypass_is_rejected():
     non-integer, unbounded max_qty — the worst-case bypass."""
     g = golden_inputs()
     bad = g.model_copy(update={"held_qty": float("inf"), "side": "sell"})
-    assert size(bad, "enforce") == Rejected("gate_error")
+    assert size(bad) == Rejected("gate_error")
 
 
 def test_position_count_positive_inf_still_rejected():
@@ -143,7 +163,7 @@ def test_position_count_positive_inf_still_rejected():
     normal constructor."""
     g = golden_inputs()
     bad = g.model_copy(update={"position_count": float("inf")})
-    r = size(bad, "enforce")
+    r = size(bad)
     assert isinstance(r, Rejected)
 
 
@@ -152,34 +172,34 @@ def test_held_qty_negative_inf_still_rejected():
     held_qty=-inf is caught by the held_qty < 0 comparison."""
     g = golden_inputs()
     bad = g.model_copy(update={"held_qty": float("-inf")})
-    assert size(bad, "enforce") == Rejected("gate_error")
+    assert size(bad) == Rejected("gate_error")
 
 
 def test_legitimate_sell_still_approved():
-    r = size(golden_inputs(side="sell", held_qty=40), mode="enforce")
+    r = size(golden_inputs(side="sell", held_qty=40))
     assert r == Approved(max_qty=40, pre_sector_qty=40, side="sell")
 
 
 def test_boundary_zero_and_edge_inputs_still_approved():
     r = size(golden_inputs(held_qty=0, position_count=0, sector_value=0.0,
-                            vol_60d=0.0, daily_pnl_pct=-0.0299), mode="enforce")
+                            vol_60d=0.0, daily_pnl_pct=-0.0299))
     assert isinstance(r, Approved)
 
 
 @pytest.mark.parametrize("vol,tier", [(0.149, 0.25), (0.15, 0.20),
                                       (0.499, 0.20), (0.50, 0.20), (0.501, 0.10)])
 def test_vol_tier_boundaries(vol, tier):
-    r = size(golden_inputs(vol_60d=vol, avg_corr=0.0, sector_value=0.0), "enforce")
+    r = size(golden_inputs(vol_60d=vol, avg_corr=0.0, sector_value=0.0))
     assert r.pre_sector_qty == int((100000 * tier * 1.10) // 180)
 
 @pytest.mark.parametrize("corr,mult", [(0.19, 1.10), (0.2, 1.00), (0.39, 1.00),
     (0.4, 0.95), (0.6, 0.85), (0.79, 0.85), (0.8, 0.70)])
 def test_corr_multiplier_boundaries(corr, mult):
-    r = size(golden_inputs(avg_corr=corr, sector_value=0.0), "enforce")
+    r = size(golden_inputs(avg_corr=corr, sector_value=0.0))
     assert r.pre_sector_qty == int((100000 * 0.20 * mult) // 180)
 
 def test_cash_cap_binds():
-    r = size(golden_inputs(cash=1800.0, sector_value=0.0), "enforce")
+    r = size(golden_inputs(cash=1800.0, sector_value=0.0))
     assert r.max_qty == 10                       # floor(1800/180)
 
 _NO_HEADROOM = Rejected("no_headroom")
@@ -203,21 +223,21 @@ def test_sector_cap_boundaries(sector_value, expected):
     the sector cap and never cash -- the same separation the golden-day vector
     makes at one interior point (tests/test_risk.py:38), asserted here at the
     edge."""
-    assert size(golden_inputs(sector_value=sector_value), "enforce") == expected
+    assert size(golden_inputs(sector_value=sector_value)) == expected
 
 def test_position_count_hard_reject_new_position_only():
-    assert size(golden_inputs(position_count=8), "enforce") == Rejected("position_count")
-    r = size(golden_inputs(position_count=8, held_qty=5), "enforce")
+    assert size(golden_inputs(position_count=8)) == Rejected("position_count")
+    r = size(golden_inputs(position_count=8, held_qty=5))
     # adding to an existing position is not a new slot
     assert r == Approved(max_qty=GOLDEN_MAX_QTY, pre_sector_qty=105, side="buy")
 
 def test_circuit_breaker_rejects_buys():
-    assert size(golden_inputs(daily_pnl_pct=-0.03), "enforce") == Rejected("circuit_breaker")
+    assert size(golden_inputs(daily_pnl_pct=-0.03)) == Rejected("circuit_breaker")
 
 def test_sell_is_capped_at_held():
-    r = size(golden_inputs(side="sell", held_qty=40), "enforce")
+    r = size(golden_inputs(side="sell", held_qty=40))
     assert r.max_qty == 40
-    assert size(golden_inputs(side="sell", held_qty=0), "enforce") == Rejected("nothing_held")
+    assert size(golden_inputs(side="sell", held_qty=0)) == Rejected("nothing_held")
 
 MALFORMED_FIELDS = [
     ("vol_60d", float("nan")), ("vol_60d", float("inf")), ("avg_corr", float("nan")),
@@ -240,7 +260,7 @@ def test_fail_closed_on_malformed(field, val):
     input must never reach Approved, regardless of which layer inside
     size() catches it."""
     base = golden_dict(**{field: val})
-    assert size(base, "enforce") == Rejected("gate_error")
+    assert size(base) == Rejected("gate_error")
 
 @pytest.mark.parametrize("field,val", MALFORMED_NONFINITE_FIELDS)
 def test_fail_closed_on_malformed_rejected_at_construction(field, val):
@@ -252,16 +272,18 @@ def test_fail_closed_on_malformed_rejected_at_construction(field, val):
         GateInputs(**golden_dict(**{field: val}))
 
 def test_fail_closed_on_garbage_types():
-    assert size({"ticker": "NVDA"}, "enforce") == Rejected("gate_error")
-    assert size(None, "enforce") == Rejected("gate_error")
+    assert size({"ticker": "NVDA"}) == Rejected("gate_error")
+    assert size(None) == Rejected("gate_error")
 
 def test_hold_skip_shape():
     """{buy:0, sell:0} shape the pre-gate uses: no cash, nothing held.
     Pins the exact reason codes -- a normal no_headroom/nothing_held skip
     is semantically different from a gate_error malfunction and drives a
-    different downstream event. The buy branch runs in advisory mode to
-    pin the advisory==enforce invariant (spec §3.9) on a reject path too."""
-    buy = size(golden_inputs(cash=0.0), "advisory")
-    sell = size(golden_inputs(side="sell", held_qty=0), "enforce")
+    different downstream event. There is no advisory mode to run the buy
+    branch in: advisory and enforcement are one size() (specs/design.md §5
+    "Deterministic risk gate"), pinned on the real passes by
+    test_advisory_equals_enforcement_on_identical_inputs."""
+    buy = size(golden_inputs(cash=0.0))
+    sell = size(golden_inputs(side="sell", held_qty=0))
     assert buy == Rejected("no_headroom")
     assert sell == Rejected("nothing_held")

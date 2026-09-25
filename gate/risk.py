@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
-Mode = Literal["advisory", "enforce"]
 SECTOR_CAP = 0.60
 MAX_POSITIONS = 8
 CIRCUIT_BREAKER = -0.03
@@ -57,7 +56,7 @@ def _corr_mult(corr: float) -> float:
     if corr >= 0.2: return 1.00
     return 1.10
 
-def size(inputs, mode: Mode):
+def size(inputs):
     """Approved(max_qty, pre_sector_qty, side) or Rejected(reason).
     inputs is a GateInputs or anything else (a dict, garbage). frozen=True
     blocks plain attribute assignment, but pydantic v2's model_copy(update=...)
@@ -67,7 +66,10 @@ def size(inputs, mode: Mode):
     every call, on any GateInputs it receives, regardless of how it was
     built. Anything that isn't already a GateInputs is validated here via
     model_validate.
-    Advisory and enforce run the IDENTICAL computation (invariant §3.9)."""
+    Advisory and enforcement are this one computation — there is no mode to
+    branch on (specs/design.md §5 "Deterministic risk gate": "advisory and
+    enforcement share one code path; they may differ only via price/account
+    drift between runs")."""
     try:
         i = inputs if isinstance(inputs, GateInputs) else GateInputs.model_validate(inputs)
         if (i.price <= 0 or i.equity <= 0 or i.cash < 0 or i.held_qty < 0
