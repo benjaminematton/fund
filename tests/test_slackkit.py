@@ -757,6 +757,80 @@ def test_real_slack_leaves_every_other_slack_error_transient():
     assert not isinstance(exc.value, PermanentPostError)
 
 
+def test_the_text_fallback_is_clipped_with_a_visible_marker():
+    """#123: `_md` clips every block at 3000, but `Post.text` — the fallback
+    Slack renders in notifications — went out unclipped. Slack's hard limit
+    for `text` is 40,000 chars (docs.slack.dev chat.postMessage: past it the
+    message is truncated, and a `msg_too_long` rejection would stop the drain
+    for every channel). Clip it here, with a marker a reader can see, so the
+    projection never depends on how Slack handles an oversized payload."""
+    long_thesis = {**DECISION, "thesis": "x" * 41_000}
+    post = render("decision", long_thesis)
+    assert len(post.text) <= 40_000
+    assert post.text.endswith("…")
+    assert post.text.startswith(render("decision", DECISION).text[:20])
+    # anything within the limit is untouched
+    assert render("decision", DECISION).text.endswith(DECISION["thesis"])
+
+
+def test_real_slack_treats_a_rejected_payload_as_permanent():
+    """#123: Slack refuses an oversized or invalid message identically on
+    every retry — same class as msg_blocks_too_long, which was already
+    permanent while its sibling msg_too_long was not."""
+    from slack_sdk.errors import SlackApiError
+
+    from slackkit.port import PermanentPostError
+    from slackkit.real import RealSlack
+
+    for code in ("msg_too_long", "invalid_arguments"):
+        slack = RealSlack("xoxb-not-a-real-token")
+
+        def _raise(**kwargs):
+            raise SlackApiError("boom", {"ok": False, "error": code})
+
+        slack._client.chat_postMessage = _raise
+        with pytest.raises(PermanentPostError) as exc:
+            slack.post("#trading-floor", "x" * 50_000)
+        assert code in str(exc.value)
+
+
+def test_a_message_slack_rejects_as_too_long_dead_letters_instead_of_jamming_every_channel(fund_db):
+    """#123: drain() stops on any non-PermanentPostError so ordering holds,
+    and its cursor spans every channel — so one row Slack rejects
+    deterministically would block every later event in every channel,
+    forever. Through the real port's classification: the rejected row is
+    marked and named by a projection_error (never re-posted, never silently
+    dropped — invariant 6), and the next row, in another channel, posts."""
+    from slack_sdk.errors import SlackApiError
+
+    from slackkit.real import RealSlack
+
+    slack = RealSlack("xoxb-not-a-real-token")
+    calls: list[dict] = []
+
+    def _post(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise SlackApiError("boom", {"ok": False, "error": "msg_too_long"})
+        return {"ts": f"{len(calls)}.0"}
+
+    slack._client.chat_postMessage = _post
+    append_event(fund_db, "decision", DECISION, NOW)     # row 1, #trading-floor
+    append_event(fund_db, "fill", FILL, NOW)             # row 2, #trade-log
+
+    posted = drain(fund_db, slack, NOW)
+
+    assert [c["channel"] for c in calls] == ["#trading-floor", "#trade-log", "#risk"]
+    assert posted == 2                                   # the fill + the projection_error
+    assert _queue(fund_db) == (0, 1)                     # nothing queued, one dead letter
+    assert "projection error" in calls[2]["text"]
+    # the poison row is marked, and a second drain never re-posts it
+    assert fund_db.execute(
+        "SELECT posted_at FROM events WHERE id = 1").fetchone()["posted_at"] == NOW
+    assert drain(fund_db, slack, NOW) == 0
+    assert len(calls) == 3
+
+
 def test_append_alert_carries_code_ticker_and_extra_payload(fund_db):
     conn = fund_db
     from slackkit.outbox import append_alert

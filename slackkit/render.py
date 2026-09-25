@@ -32,11 +32,23 @@ class Post(NamedTuple):
 # dead-lettered and lost from the projection instead of retried. Clip instead.
 TEXT_LIMIT = 3000
 
+# The message `text` (the notification/screen-reader fallback) has its own
+# limit: Slack truncates it past 40,000 chars, silently (docs.slack.dev
+# chat.postMessage), and a msg_too_long rejection is permanent (#123). Clipped
+# here so the cut is visible and the outbox never learns how Slack handles an
+# oversized payload.
+MESSAGE_TEXT_LIMIT = 40_000
+CLIP_MARK = "…"
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) > limit:
+        text = text[:limit - len(CLIP_MARK)] + CLIP_MARK
+    return text
+
 
 def _md(text: str) -> dict:
-    if len(text) > TEXT_LIMIT:
-        text = text[:TEXT_LIMIT - 1] + "…"
-    return {"type": "mrkdwn", "text": text}
+    return {"type": "mrkdwn", "text": _clip(text, TEXT_LIMIT)}
 
 
 def _section(text: str) -> dict:
@@ -378,4 +390,5 @@ def render(kind: str, payload: dict) -> Post:
     renderer = RENDERERS.get(kind)
     if renderer is None:
         raise ValueError(f"no renderer for event kind {kind!r}")
-    return renderer(payload)
+    post = renderer(payload)
+    return post._replace(text=_clip(post.text, MESSAGE_TEXT_LIMIT))
