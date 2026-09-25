@@ -8,6 +8,8 @@ from state.models import REGISTERED_FAMILIES, StrategySpec
 
 ROOT = Path(__file__).resolve().parents[1]
 
+_PREDICTED = {"net_sharpe": 0.8, "max_dd": 0.14, "hit_rate": 0.55}
+
 
 def _spec(**over) -> dict:
     """A minimal valid spec payload; override one field per test."""
@@ -16,7 +18,7 @@ def _spec(**over) -> dict:
         universe={}, liquidity_bucket="small", signal_rule={}, param_ranges={},
         search_budget=1, holding_period_d=1, rebalance="daily",
         expected_turnover=0.0, exit_rule="x", invalidation="i",
-        capacity_usd=1.0, predicted={}, llm_in_loop=0)
+        capacity_usd=1.0, predicted=dict(_PREDICTED), llm_in_loop=0)
     base.update(over)
     return base
 
@@ -72,10 +74,54 @@ def test_a_family_off_the_menu_is_refused(bad):
 
 
 def test_constraining_family_did_not_move_the_spec_id():
-    """The one frozen StrategySpec-derived id in the tree. It exists because
+    """The first frozen StrategySpec-derived id in the tree. It exists because
     nothing else would go red if a model change altered the hash: every other
     expected id is recomputed from the same payload at test time, so it agrees
     with any model. If this fails, a model change moved every spec_id in the
-    fund — STOP and ask; do NOT re-record it."""
+    fund — STOP and ask; do NOT re-record it.
+
+    The pinned payload carried `predicted={}`, which #206 made unregistrable.
+    The hash input is model_dump(), so the dump is taken through validation
+    and `predicted` restored to the pinned value before hashing: the literal
+    is untouched and every other field still passes through its validator.
+    `predicted`'s own serialisation is pinned by the test below it."""
     from fundbt.hashing import spec_id
-    assert spec_id(StrategySpec(**_spec()).model_dump()) == "spec_39997bfd29606bb9"
+    dump = StrategySpec(**_spec()).model_dump()
+    dump["predicted"] = {}
+    assert spec_id(dump) == "spec_39997bfd29606bb9"
+
+
+@pytest.mark.parametrize("bad", [
+    {},                                                       # #206's case
+    {"net_sharpe": 0.8, "max_dd": 0.14},                      # one missing
+    {**_PREDICTED, "sharpe": 0.8},                            # one extra
+    {"net_sharpe": 0.8, "max_dd": 0.14, "hitrate": 0.55},     # misspelled
+    {**_PREDICTED, "net_sharpe": "0.8"},                      # a string
+    {**_PREDICTED, "net_sharpe": None},
+    {**_PREDICTED, "net_sharpe": True},                       # bool is not a number
+    {**_PREDICTED, "max_dd": float("nan")},
+    {**_PREDICTED, "hit_rate": float("inf")},
+])
+def test_predicted_without_exactly_the_three_finite_metrics_is_refused(bad):
+    """strategy_specs is write-once (strategy.md §2: a change is a NEW spec),
+    and `predicted` is the calibration record prediction-vs-realisation is
+    scored against. A spec registered without the three metrics
+    strategy-contracts.md §2 names ({net_sharpe, max_dd, hit_rate}) can never
+    be scored and can never be corrected — only superseded (#206)."""
+    with pytest.raises(ValidationError) as exc:
+        StrategySpec(**_spec(predicted=bad))
+    assert exc.value.errors()[0]["loc"] == ("predicted",)
+
+
+def test_constraining_predicted_did_not_move_the_spec_id():
+    """Both ids recorded at d2abb97, BEFORE the `predicted` constraint existed,
+    on the bare-`dict` model — so this is the pin that goes red if the
+    constraint coerces a value (an int Sharpe of 1 serialising as 1.0 would
+    move every id carrying one). If this fails, STOP and ask; do NOT
+    re-record it."""
+    from fundbt.hashing import spec_id
+    assert spec_id(StrategySpec(**_spec()).model_dump()) == "spec_7cfa870b517cb6b8"
+    ints = {"net_sharpe": 1, "max_dd": 0, "hit_rate": 1}
+    dump = StrategySpec(**_spec(predicted=ints)).model_dump()
+    assert all(type(v) is int for v in dump["predicted"].values())
+    assert spec_id(dump) == "spec_3315af3250be257f"
