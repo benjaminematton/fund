@@ -25,10 +25,12 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from evals.trace import DAILY_TABLES, ROW_COLUMNS, WRITE_TABLES, Trace
+from orchestrator.clock import et_run_date
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,8 +69,9 @@ def rows_written(conn, seat: str, run_date: str) -> dict:
     A table outside `DAILY_TABLES` is scoped by SEAT instead. `strategy_critiques`
     has no `run_date` and no `ticker` (a spec is reviewed once, not once per
     day), so it takes `WHERE seat = ?` ordered by `spec_id` — the rig's
-    `evals/runner.py:ROW_SCOPE` order, with the seat scope a live database
-    needs and a fresh trial database does not. scripts/critic_g1.py runs that
+    `evals/runner.py:ROW_SCOPE` order — and keeps only rows whose `created_at`
+    falls on `run_date` in ET: the seat and day scope a live database needs
+    and a fresh trial database does not. scripts/critic_g1.py runs that
     seat nightly (#169), so until #184 a live G1 trace graded as a seat that
     wrote nothing while an eval trace of the same turn carried the row.
 
@@ -91,12 +94,19 @@ def rows_written(conn, seat: str, run_date: str) -> dict:
                 + " ORDER BY ticker",
                 (run_date, seat) if scoped else (run_date,)).fetchall()
         else:
-            rows = conn.execute(
-                f"SELECT {', '.join(cols)} FROM {table} WHERE seat = ?"
-                " ORDER BY spec_id", (seat,)).fetchall()
+            # No run_date column, so the day comes from `created_at` through
+            # the same ET rule scripts/critic_g1.py derives run_date with; the
+            # two agree by construction. A seat scope alone would hand night
+            # N's trace every critique the seat ever wrote. This is a pure
+            # function of a stored timestamp, not a clock read.
+            rows = [r for r in conn.execute(
+                f"SELECT {', '.join(cols)}, created_at FROM {table}"
+                " WHERE seat = ? ORDER BY spec_id", (seat,)).fetchall()
+                if et_run_date(datetime.fromisoformat(r["created_at"]))
+                == run_date]
         if rows:
-            out[table] = [{c: json.loads(v) if c in JSON_COLUMNS else v
-                           for c, v in zip(cols, tuple(r))} for r in rows]
+            out[table] = [{c: json.loads(r[c]) if c in JSON_COLUMNS else r[c]
+                           for c in cols} for r in rows]
     return out
 
 

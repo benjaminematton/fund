@@ -355,13 +355,13 @@ def _spec(conn, **override) -> str:
     return insert_strategy_spec(conn, StrategySpec(**{**SPEC, **override}), NOW)
 
 
-def _critique(conn, spec_id, seat="critic", objections=()):
+def _critique(conn, spec_id, seat="critic", objections=(), created_at=NOW):
     conn.execute(
         "INSERT INTO strategy_critiques (spec_id, verdict, objections, seat,"
         " charter_version, model_id, created_at) VALUES (?, ?, ?, ?, 'v2',"
         " 'm', ?)",
         (spec_id, "objections" if objections else "clear",
-         json.dumps(list(objections)), seat, NOW))
+         json.dumps(list(objections)), seat, created_at))
     conn.commit()
 
 
@@ -398,3 +398,31 @@ def test_critique_rows_are_scoped_by_seat_and_ordered_by_spec_id(tmp_path):
     assert [r["spec_id"] for r in rows] == [ids[0], ids[2]]
     assert all(r["seat"] == "critic" for r in rows)
     assert all(r["objections"] == [] for r in rows)
+
+
+def test_a_critique_from_an_earlier_night_is_not_tonights(tmp_path):
+    """A seat scope alone is not "the rows THIS seat wrote today": the live DB
+    holds every night's critiques, so a scan by seat would hand night N's
+    trace every verdict the Critic ever wrote. The table has no run_date, so
+    the day comes from `created_at` through the same ET rule
+    scripts/critic_g1.py derives run_date with. The row written at 02:00 UTC
+    is 22:00 ET the night before — RUN's — and pins that it is the ET rule,
+    not a string prefix, doing the scoping. `created_at` itself is not a
+    ROW_COLUMNS column and must not leak into the trace."""
+    from evals.live import rows_written
+    from evals.runner import _rows
+
+    conn = connect(tmp_path / "fund.sqlite")
+    ids = sorted(_spec(conn, hypothesis=h) for h in ("h-one", "h-two", "h-3"))
+    _critique(conn, ids[0], created_at="2026-08-19T13:00:00+00:00")
+    _critique(conn, ids[1], created_at=NOW)
+    _critique(conn, ids[2], created_at="2026-08-21T02:00:00+00:00")
+
+    rows = rows_written(conn, "critic", RUN)["strategy_critiques"]
+    assert [r["spec_id"] for r in rows] == [ids[1], ids[2]]
+    assert "created_at" not in rows[0]
+
+    # On a DB where every row is today's, the live scan and the rig still agree.
+    conn.execute("DELETE FROM strategy_critiques WHERE spec_id = ?", (ids[0],))
+    conn.commit()
+    assert rows_written(conn, "critic", RUN) == _rows(conn, "critic", RUN)
