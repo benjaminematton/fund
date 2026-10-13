@@ -230,3 +230,26 @@ def test_stop_gate_never_runs_a_suite(repo: Path):
     src = (HOOKS / "stop_gate.py").read_text()
     assert "subprocess" not in src
     assert "make" not in src.replace("make test", "")
+
+
+# --- the committed settings file ------------------------------------------------
+
+def test_settings_file_registers_both_hooks_and_carries_no_personal_allow():
+    """`.claude/settings.json` is tracked so the hooks reach every worktree.
+    It carries repo policy (hooks, deny, ask) and nothing personal: an
+    absolute path in an allow entry would be one machine's approvals handed
+    to everyone (see .gitignore)."""
+    settings = json.loads((ROOT / ".claude" / "settings.json").read_text())
+    hooks = settings["hooks"]
+    pre = [h for m in hooks["PreToolUse"] if m["matcher"] == "Bash"
+           for h in m["hooks"]]
+    assert any("scripts/hooks/commit_gate.py" in h["command"] for h in pre)
+    stop = [h for m in hooks["Stop"] for h in m["hooks"]]
+    assert any("scripts/hooks/stop_gate.py" in h["command"] for h in stop)
+    for h in pre + stop:
+        assert "$CLAUDE_PROJECT_DIR" in h["command"]
+    perms = settings["permissions"]
+    assert "deny" in perms and "ask" in perms
+    assert "allow" not in perms
+    assert "additionalDirectories" not in perms
+    assert "/Users/" not in json.dumps(settings)
