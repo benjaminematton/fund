@@ -124,10 +124,10 @@ seat hooks that live only in `agents/runtime.py`; see "Canonical edits".
 `scripts/hooks/commit_gate.py`, stdlib only, runs under any `python3` (no
 3.12 syntax: a fresh worktree may have no venv yet).
 
-1. Read stdin JSON. Split `tool_input.command` into segments on `;`, `&&`,
-   `||` and `|`, and shell-split each segment. The gate applies when any
-   segment's tokens begin `git commit`, `git -C <path> commit`, or
-   `gh pr create`. Otherwise exit 0 (pass through).
+1. Read stdin JSON. Split `tool_input.command` into segments on `;`, `&`,
+   `|`, newline and parentheses, shell-split each segment, drop leading
+   `NAME=value` tokens, and skip git global options. The gate applies when
+   the git subcommand is `commit`, or the segment begins `gh pr create`. Otherwise exit 0 (pass through).
 2. Take the target checkout from the stdin `cwd` field, never from
    `CLAUDE_PROJECT_DIR`, which stays pinned to the starting root after a
    session enters a worktree `[R: Claude Code docs]`.

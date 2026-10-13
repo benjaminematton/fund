@@ -477,22 +477,46 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _tree import is_green, toplevel, tree_id, write_marker  # noqa: E402
 
-SPLIT = re.compile(r"\|\||&&|;|\|")
 TAIL_LINES = 40
 
 
+# Segment separators: `&&` and `||` are two adjacent separators and yield an
+# empty segment, which is harmless. Parens cover subshells. Newline covers
+# multi-line commands, which shlex would otherwise fold into one segment.
+SPLIT = re.compile(r"[;&|\n()]")
+# git global options that take a separate value argument.
+_GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                   "--exec-path", "--super-prefix", "--config-env"}
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _strip_env(toks: list) -> list:
+    i = 0
+    while i < len(toks) and _ENV_ASSIGN.match(toks[i]):
+        i += 1
+    return toks[i:]
+
+
+def _git_subcommand(toks: list):
+    """The git subcommand after any global options, or None if not git."""
+    if not toks or toks[0] != "git":
+        return None
+    i = 1
+    while i < len(toks) and toks[i].startswith("-"):
+        i += 2 if toks[i] in _GIT_VALUE_OPTS else 1
+    return toks[i] if i < len(toks) else None
+
+
 def gated(command: str) -> bool:
-    """True when any shell segment is `git commit`, `git -C <path> commit`,
-    or `gh pr create`."""
+    """True when any shell segment is a `git commit` (with any env-assignment
+    or git global-option prefix) or a `gh pr create`."""
     for segment in SPLIT.split(command):
         try:
             toks = shlex.split(segment)
         except ValueError:
             toks = segment.split()
-        if toks[:2] == ["git", "commit"]:
-            return True
-        if len(toks) >= 4 and toks[0] == "git" and toks[1] == "-C" \
-                and toks[3] == "commit":
+        toks = _strip_env(toks)
+        if _git_subcommand(toks) == "commit":
             return True
         if toks[:3] == ["gh", "pr", "create"]:
             return True

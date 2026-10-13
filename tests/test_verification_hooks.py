@@ -126,6 +126,17 @@ def _payload(cwd: Path, command: str | None = None, **extra) -> io.StringIO:
     ("echo 'git commit'", False),
     ("gh pr list", False),
     ("git commitish", False),
+    ("git add a\ngit commit -m x", True),
+    ("git commit -m x &", True),
+    ("(git commit -m x)", True),
+    ("FOO=1 git commit -m x", True),
+    ("git -c user.name=t commit -m x", True),
+    ("git --no-pager commit -m x", True),
+    ("git --git-dir=/x/.git commit -m x", True),
+    ("git commit -m 'a; b'", True),
+    ("FOO=1 gh pr create --title t", True),
+    ("git -c k=v status", False),
+    ("git add a\ngit status", False),
 ])
 def test_gated_matches_commit_and_pr_create_only(command: str, expected: bool):
     assert commit_gate.gated(command) is expected
