@@ -184,3 +184,49 @@ def test_commit_gate_resolves_cwd_from_a_subdirectory(repo: Path, capsys):
     sub.mkdir()
     assert commit_gate.main(_payload(sub, "git commit -m x"), suite=OK) == 0
     assert _tree.read_marker(repo) == _tree.tree_id(repo)
+
+
+# --- stop_gate -------------------------------------------------------------------
+
+import stop_gate  # noqa: E402
+
+
+def test_stop_gate_allows_when_already_continuing(repo: Path, capsys):
+    (repo / "a.py").write_text("x = 2\n")
+    assert stop_gate.main(_payload(repo, stop_hook_active=True)) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_stop_gate_allows_a_clean_tree(repo: Path, capsys):
+    assert stop_gate.main(_payload(repo, stop_hook_active=False)) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_stop_gate_allows_untracked_only_changes(repo: Path, capsys):
+    (repo / "b.py").write_text("y = 2\n")
+    assert stop_gate.main(_payload(repo, stop_hook_active=False)) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_stop_gate_allows_a_dirty_tree_that_is_green(repo: Path, capsys):
+    (repo / "a.py").write_text("x = 2\n")
+    _tree.write_marker(repo, _tree.tree_id(repo))
+    assert stop_gate.main(_payload(repo, stop_hook_active=False)) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_stop_gate_blocks_a_dirty_stale_tree_once(repo: Path, capsys):
+    (repo / "a.py").write_text("x = 2\n")
+    assert stop_gate.main(_payload(repo, stop_hook_active=False)) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"] == "block"
+    assert "make test" in out["reason"]
+
+
+def test_stop_gate_never_runs_a_suite(repo: Path):
+    """There is no suite parameter to inject: the gate has no subprocess
+    other than git. Pinned on the source so a future 'helpful' run cannot
+    sneak in."""
+    src = (HOOKS / "stop_gate.py").read_text()
+    assert "subprocess" not in src
+    assert "make" not in src.replace("make test", "")
