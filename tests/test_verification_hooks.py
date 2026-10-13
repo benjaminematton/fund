@@ -79,3 +79,22 @@ def test_dirty_tracked_ignores_untracked_only_changes(repo: Path):
     assert not _tree.dirty_tracked(repo)
     (repo / "a.py").write_text("x = 2\n")
     assert _tree.dirty_tracked(repo)
+
+
+# --- mark_green ---------------------------------------------------------------
+
+def test_mark_green_writes_the_current_tree_id(repo: Path):
+    subprocess.run([sys.executable, str(HOOKS / "mark_green.py")],
+                   cwd=repo, check=True)
+    assert _tree.read_marker(repo) == _tree.tree_id(repo)
+
+
+def test_make_test_recipe_marks_green():
+    """The `test` recipe writes the marker after pytest, so a green run by
+    hand is a green run for the hooks. Pinned on the Makefile text because
+    running make here would recurse into the whole suite."""
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\ntest: lint\n")[1].split("\n\n")[0]
+    lines = [l.strip() for l in recipe.splitlines()]
+    assert lines == ["$(PYTHON) -m pytest tests/",
+                     "$(PYTHON) scripts/hooks/mark_green.py"]

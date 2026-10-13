@@ -35,8 +35,11 @@ deps-relock:
 	@$(BOOT_PY) scripts/relock.py
 
 # Full offline suite: no network, no API keys. Must pass before every commit.
+# On green, record the tree id so the verification hooks (scripts/hooks/) know
+# this exact tree passed — a hand-run `make test` is a green run for them too.
 test: lint
 	$(PYTHON) -m pytest tests/
+	$(PYTHON) scripts/hooks/mark_green.py
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
 # Alert-code lint: every alert carries a stable code (docs/agents/devops.md).
