@@ -98,3 +98,78 @@ def test_make_test_recipe_marks_green():
     lines = [l.strip() for l in recipe.splitlines()]
     assert lines == ["$(PYTHON) -m pytest tests/",
                      "$(PYTHON) scripts/hooks/mark_green.py"]
+
+
+# --- commit_gate ---------------------------------------------------------------
+
+import commit_gate  # noqa: E402
+
+OK = (sys.executable, "-c", "pass")
+RED = (sys.executable, "-c", "print('boom: 1 failed'); raise SystemExit(1)")
+
+
+def _payload(cwd: Path, command: str | None = None, **extra) -> io.StringIO:
+    data: dict = {"cwd": str(cwd), **extra}
+    if command is not None:
+        data.update(tool_name="Bash", tool_input={"command": command})
+    return io.StringIO(json.dumps(data))
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("git commit -m 'x'", True),
+    ("git -C /tmp/wt commit -q -m x", True),
+    ("gh pr create --title t --body b", True),
+    ("git add -A && git commit -m 'x'", True),
+    ("make test; git commit -m x", True),
+    ("git status", False),
+    ("git log --oneline | head", False),
+    ("echo 'git commit'", False),
+    ("gh pr list", False),
+    ("git commitish", False),
+])
+def test_gated_matches_commit_and_pr_create_only(command: str, expected: bool):
+    assert commit_gate.gated(command) is expected
+
+
+def test_commit_gate_passes_through_other_commands(repo: Path, capsys):
+    assert commit_gate.main(_payload(repo, "git status"), suite=RED) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_commit_gate_passes_through_other_tools(repo: Path, capsys):
+    stdin = io.StringIO(json.dumps({"cwd": str(repo), "tool_name": "Read",
+                                    "tool_input": {"file_path": "x"}}))
+    assert commit_gate.main(stdin, suite=RED) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_commit_gate_skips_the_suite_when_the_marker_matches(repo: Path, capsys):
+    _tree.write_marker(repo, _tree.tree_id(repo))
+    assert commit_gate.main(_payload(repo, "git commit -m x"), suite=RED) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_commit_gate_runs_the_suite_and_marks_green(repo: Path, capsys):
+    (repo / "a.py").write_text("x = 2\n")
+    assert _tree.read_marker(repo) is None
+    assert commit_gate.main(_payload(repo, "git commit -m x"), suite=OK) == 0
+    assert capsys.readouterr().out == ""
+    assert _tree.read_marker(repo) == _tree.tree_id(repo)
+
+
+def test_commit_gate_denies_with_the_tail_on_red(repo: Path, capsys):
+    (repo / "a.py").write_text("x = 2\n")
+    assert commit_gate.main(_payload(repo, "git commit -m x"), suite=RED) == 0
+    out = json.loads(capsys.readouterr().out)
+    hook = out["hookSpecificOutput"]
+    assert hook["hookEventName"] == "PreToolUse"
+    assert hook["permissionDecision"] == "deny"
+    assert "boom: 1 failed" in hook["permissionDecisionReason"]
+    assert _tree.read_marker(repo) is None
+
+
+def test_commit_gate_resolves_cwd_from_a_subdirectory(repo: Path, capsys):
+    sub = repo / "pkg"
+    sub.mkdir()
+    assert commit_gate.main(_payload(sub, "git commit -m x"), suite=OK) == 0
+    assert _tree.read_marker(repo) == _tree.tree_id(repo)
