@@ -124,20 +124,27 @@ seat hooks that live only in `agents/runtime.py`; see "Canonical edits".
 `scripts/hooks/commit_gate.py`, stdlib only, runs under any `python3` (no
 3.12 syntax: a fresh worktree may have no venv yet).
 
-1. Read stdin JSON. Split `tool_input.command` into segments on `;`, `&&`,
-   `||` and `|`, and shell-split each segment. The gate applies when any
-   segment's tokens begin `git commit`, `git -C <path> commit`, or
-   `gh pr create`. Otherwise exit 0 (pass through).
-2. Take the target checkout from the stdin `cwd` field, never from
-   `CLAUDE_PROJECT_DIR`, which stays pinned to the starting root after a
-   session enters a worktree `[R: Claude Code docs]`.
-3. Compute the tree id. If it equals the marker, exit 0.
-4. Otherwise run `make test` in that cwd (which bootstraps the venv if
-   needed). Green: the recipe wrote the marker; exit 0. Red: emit
+1. Read stdin JSON. Split `tool_input.command` into segments on `;`, `&`,
+   `|`, newline and parentheses, shell-split each segment, drop leading
+   `NAME=value` tokens, and skip git global options. The gate applies when
+   the git subcommand is `commit`, or the segment begins `gh pr create`. Otherwise exit 0 (pass through).
+2. Take the target checkout from the stdin `cwd` field, or from the
+   `-C <path>` of the gated segment when present (resolved against `cwd`),
+   never from `CLAUDE_PROJECT_DIR`, which stays pinned to the starting root
+   after a session enters a worktree `[R: Claude Code docs]`.
+3. Pass through if that path is not inside a git repository, or if the
+   repository is not a checkout of this repo (no `scripts/hooks/mark_green.py`
+   at its top level). The hooks never govern another repo a session happens to
+   be working in. An unresolvable path (a `-C` target that does not exist, or
+   a deleted cwd) also passes through; `~` in a `-C` value is expanded.
+4. Compute the tree id. If it equals the marker, exit 0.
+5. Otherwise capture the tree id, then run `make test` at the top level of that checkout (which
+   bootstraps the venv if needed). Green: write the captured id as the marker,
+   so an edit made while the suite ran leaves the tree stale; exit 0. Red: emit
    `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
    "permissionDecision": "deny", "permissionDecisionReason": <last 40 lines
    of output>}}` and exit 0, so the model sees what broke.
-5. Hook timeout in settings: 300 s.
+6. Hook timeout in settings: 300 s.
 
 ### Done gate — `Stop`
 
@@ -154,7 +161,9 @@ so turn ends stay fast.
 3. Clean tree, or tree id equals the marker: exit 0.
 4. Dirty and stale: emit `{"decision": "block", "reason": "tracked files
    changed since the last green `make test` on this tree; run it and report
-   the result"}`.
+   the result"}`. The reason also says: if you changed no tracked files this
+   turn (the edits are another session's, in a shared checkout), say so and
+   end the turn without running it.
 
 ### The committed settings file
 
@@ -163,6 +172,8 @@ so turn ends stay fast.
   policy. Hook commands are referenced as
   `python3 "$CLAUDE_PROJECT_DIR"/scripts/hooks/<name>.py`: the script copy
   comes from the starting root, the tree it acts on comes from stdin `cwd`.
+- The `.env` denies are `Read(//**/.env)` and `Read(//**/.env.*)`: any `.env`
+  anywhere, not only the session's own root.
 - The current `allow` block, which carries absolute paths from one machine,
   moves to `.claude/settings.local.json` (already ignored).
 - Hook commands are not subject to the permission allow/deny lists `[R]`.
@@ -176,6 +187,14 @@ so turn ends stay fast.
 - A session that starts in a subdirectory would compute `cwd` there; the
   scripts call `git rev-parse --show-toplevel` on `cwd` first.
 - `disableAllHooks` turns both off; there is no per-hook switch `[R]`.
+- Green describes the working tree, not the commit: untracked files count
+  toward the tree id, so a new module the agent forgot to `git add` passes the
+  gate with the file present and is missing from the commit. CI on the PR
+  catches it.
+- The command matcher is best-effort against an honest agent that forgot to
+  test, not a lock against evasion: `env`/`time` wrappers, `bash -c`,
+  `if ... then` bodies and line continuations pass through. Only the first
+  gated segment of a compound command is examined.
 
 **Acceptance** (tests against a temporary git repo; the suite command is
 injected so tests never recurse into `make test`):
