@@ -169,9 +169,7 @@ so turn ends stay fast.
 
 - `.claude/settings.json` is committed containing: the two hook
   registrations, and the existing `deny` and `ask` lists, which are repo
-  policy. Hook commands are referenced as
-  `python3 "$CLAUDE_PROJECT_DIR"/scripts/hooks/<name>.py`: the script copy
-  comes from the starting root, the tree it acts on comes from stdin `cwd`.
+  policy. Hook commands resolve the script from the cwd's `git rev-parse --show-toplevel` first, then `$CLAUDE_PROJECT_DIR`, and exit 0 when neither has it. A session that enters a worktree loads that worktree's settings while `CLAUDE_PROJECT_DIR` stays at the launch root; a bare launch-root path exits 2 on a missing file, which PreToolUse reads as deny, blocking every Bash call (demonstrated 2026-10-14, right after PR #257 merged).
 - The `.env` denies are `Read(//**/.env)` and `Read(//**/.env.*)`: any `.env`
   anywhere, not only the session's own root.
 - The current `allow` block, which carries absolute paths from one machine,
