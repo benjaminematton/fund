@@ -50,9 +50,11 @@ test: lint
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
 # Alert-code lint: every alert carries a stable code (docs/agents/devops.md).
+# Typecheck ratchet: pyright per-file errors never exceed scripts/typing_baseline.json.
 lint: deps
 	$(PYTHON) scripts/check_purity.py
 	$(PYTHON) scripts/check_alert_codes.py
+	$(PYTHON) scripts/check_typing.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,
 # real tool/gate/DB execution. No network, no API keys, no LLM cost.

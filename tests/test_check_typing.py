@@ -71,3 +71,26 @@ def test_write_baseline_records_sorted_counts(tmp_path):
     run = lambda: {"z.py": ["1: a"], "a.py": ["1: b", "2: c"]}
     assert ct.main(["--write-baseline"], run=run, baseline_path=base) == 0
     assert base.read_text() == '{\n  "a.py": 2,\n  "z.py": 1\n}\n'
+
+
+def test_run_pyright_finds_a_real_error_in_a_tmp_package(tmp_path):
+    """One real pyright run, on a package of one file, so the JSON parsing
+    and the --pythonpath handoff are exercised against the pinned binary."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pyright]\ninclude = ["pkg"]\ntypeCheckingMode = "standard"\n')
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "bad.py").write_text('x: int = "not an int"\n')
+    (tmp_path / "pkg" / "good.py").write_text("y: int = 1\n")
+    diags = ct.run_pyright(root=tmp_path)
+    assert list(diags) == ["pkg/bad.py"]
+    assert len(diags["pkg/bad.py"]) == 1
+    assert diags["pkg/bad.py"][0].startswith("1: ")
+
+
+def test_committed_baseline_matches_the_tree():
+    """The ratchet's own precondition: the baseline is never above reality.
+    Below is allowed (someone fixed errors and forgot to shrink it)."""
+    baseline = json.loads(ct.BASELINE.read_text())
+    current = ct.counts(ct.run_pyright())
+    regressions, _ = ct.compare(current, baseline)
+    assert regressions == []
