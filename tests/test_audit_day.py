@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_sim_day import _nvda, golden_day, sim_day
+from tests.simday import _nvda, golden_day, sim_day
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "audit_day.py"
 RUN_DAY_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_day.py"

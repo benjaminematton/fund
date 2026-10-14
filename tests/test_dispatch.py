@@ -228,7 +228,7 @@ def test_run_dispatcher_retries_a_transiently_failed_drain_on_the_next_idle_cycl
 def test_idle_queue_costs_nothing(tmp_path):
     """Design R1 acceptance: a completed sim-day plus an empty queue -> zero
     wakes, zero new cost rows, zero new alerts across several cycles."""
-    from tests.test_sim_day import golden_day
+    from tests.simday import golden_day
     sim = golden_day(tmp_path)
     costs_before = _costs(sim.conn)
     alerts_before = len(_alerts(sim.conn))

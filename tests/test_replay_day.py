@@ -1,6 +1,6 @@
 """scripts/replay_day.py, the CLI behind `make replay REC=<recording>` (#163).
 
-One recording, replayed through tests/test_sim_day.py's composition — the
+One recording, replayed through tests/simday.py's composition — the
 same injected clock, FakeSlack, FakeAlpaca, temp DB and REAL tools, gate and
 hooks that `make sim-day` runs — with a printed summary and the audit's exit
 code. The recordings are the tracked corpus in tests/recordings/, so the

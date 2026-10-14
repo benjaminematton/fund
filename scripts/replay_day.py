@@ -4,7 +4,7 @@
 
     .venv/bin/python3 scripts/replay_day.py tests/recordings/mvf_pm_hold.jsonl
 
-The day is `make sim-day`'s own composition, tests/test_sim_day.py's
+The day is `make sim-day`'s own composition, tests/simday.py's
 sim_day(): injected clock, FakeSlack, FakeAlpaca, a temp DB, and the REAL fund
 tools, PreToolUse order gate, PostToolUse order recorder, risk math, ticket
 store, stage machine and fill-poll. Not a second harness — the one the six
@@ -16,7 +16,7 @@ each seat's lines become that seat's turn: analyst and news -> research, pm ->
 decision, exec -> execution. A seat the recording does not carry runs the
 golden day's default recording for that seat, so a single seat-turn file from
 tests/recordings/ replays as a whole day. The market is fixtures/golden-day.md's
-book, exactly as tests/test_sim_day.golden_day. Any other seat is refused: a
+book, exactly as tests/simday.golden_day. Any other seat is refused: a
 Critic or Quant turn is a nightly job, not a stage of the trading day.
 
 Offline, no keys, no LLM: nothing on this path constructs an SDK client, and
@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling audit_day
 
 import audit_day                                           # noqa: E402
 from agents.replay import load_recording                   # noqa: E402
-from tests.test_sim_day import _nvda, sim_day              # noqa: E402
+from tests.simday import _nvda, sim_day                    # noqa: E402
 
 # seat -> the sim_day() keyword holding that seat's recording files.
 SLOTS = {"analyst": "analyst_recs", "news": "news_recs", "pm": "pm_recs",
