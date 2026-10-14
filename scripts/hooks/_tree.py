@@ -20,10 +20,24 @@ from pathlib import Path
 MARKER_NAME = "fund-green-tree"
 
 
+class GitError(RuntimeError):
+    """A git call failed; the message carries the command, cwd and stderr."""
+
+
 def _git(cwd: Path, *args: str, env: dict | None = None) -> str:
-    out = subprocess.run(["git", *args], cwd=str(cwd), env=env,
-                         capture_output=True, text=True, check=True)
+    try:
+        out = subprocess.run(["git", *args], cwd=str(cwd), env=env,
+                             capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        raise GitError(f"git {' '.join(args)} failed in {cwd}: "
+                       f"{e.stderr.strip()}") from e
     return out.stdout.strip()
+
+
+def is_hooked_checkout(root: Path) -> bool:
+    """True for a checkout of this repo: the one place the hooks apply.
+    Any other git repo the session happens to be in passes through."""
+    return (root / "scripts" / "hooks" / "mark_green.py").exists()
 
 
 def toplevel(cwd: Path) -> Path:

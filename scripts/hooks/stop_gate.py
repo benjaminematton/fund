@@ -20,18 +20,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _tree import dirty_tracked, is_green, toplevel  # noqa: E402
+from _tree import (GitError, dirty_tracked, is_green,  # noqa: E402
+                   is_hooked_checkout, toplevel)
 
 REASON = ("stop gate: tracked files changed since the last green `make test`"
           " on this tree. Run `make test` and report the result before"
-          " ending the turn.")
+          " ending the turn. If you changed no tracked files this turn (the"
+          " edits are another session's, in a shared checkout), say so and"
+          " end the turn without running it.")
 
 
 def main(stdin=sys.stdin) -> int:
     payload = json.load(stdin)
     if payload.get("stop_hook_active"):
         return 0
-    cwd = toplevel(Path(payload.get("cwd") or os.getcwd()))
+    try:
+        cwd = toplevel(Path(payload.get("cwd") or os.getcwd()))
+    except GitError:
+        return 0                          # not a git repo: pass through
+    if not is_hooked_checkout(cwd):
+        return 0
     if not dirty_tracked(cwd) or is_green(cwd):
         return 0
     print(json.dumps({"decision": "block", "reason": REASON}))

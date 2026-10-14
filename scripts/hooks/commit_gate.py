@@ -11,6 +11,11 @@ root after a session enters a worktree. Then one of four outcomes:
   * otherwise run the suite (`make test`); green writes the marker and allows;
   * red: deny, with the last TAIL_LINES of output as the reason the model sees.
 
+Applies only to a checkout of this repo (one that has
+`scripts/hooks/mark_green.py`); any other repo, or a cwd outside git, passes
+through. A `git -C <path> commit` is gated on `<path>`'s tree, not the
+session's cwd.
+
 Exit code is always 0; a denial is the JSON on stdout.
 """
 
@@ -26,7 +31,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _tree import is_green, toplevel, tree_id, write_marker  # noqa: E402
+from _tree import (GitError, is_green, is_hooked_checkout,  # noqa: E402
+                   toplevel, tree_id, write_marker)
 
 TAIL_LINES = 40
 
@@ -58,9 +64,21 @@ def _git_subcommand(toks: list):
     return toks[i] if i < len(toks) else None
 
 
-def gated(command: str) -> bool:
-    """True when any shell segment is a `git commit` (with any env-assignment
-    or git global-option prefix) or a `gh pr create`."""
+def _git_c_target(toks: list, cwd: Path) -> Path:
+    """The directory a `git -C ...` segment acts on, resolved against cwd."""
+    target = cwd
+    i = 1
+    while i < len(toks) and toks[i].startswith("-"):
+        if toks[i] == "-C" and i + 1 < len(toks):
+            target = target / toks[i + 1]
+        i += 2 if toks[i] in _GIT_VALUE_OPTS else 1
+    return target
+
+
+def gated_target(command: str, cwd: Path) -> Path | None:
+    """The directory the first gated segment acts on, or None when no segment
+    is a `git commit` (any env-assignment or git global-option prefix) or a
+    `gh pr create`."""
     for segment in SPLIT.split(command):
         try:
             toks = shlex.split(segment)
@@ -68,10 +86,14 @@ def gated(command: str) -> bool:
             toks = segment.split()
         toks = _strip_env(toks)
         if _git_subcommand(toks) == "commit":
-            return True
+            return _git_c_target(toks, cwd)
         if toks[:3] == ["gh", "pr", "create"]:
-            return True
-    return False
+            return cwd
+    return None
+
+
+def gated(command: str) -> bool:
+    return gated_target(command, Path(".")) is not None
 
 
 def _deny(reason: str) -> None:
@@ -86,15 +108,23 @@ def main(stdin=sys.stdin, suite=("make", "test")) -> int:
     if payload.get("tool_name") != "Bash":
         return 0
     command = payload.get("tool_input", {}).get("command", "")
-    if not gated(command):
+    session_cwd = Path(payload.get("cwd") or os.getcwd())
+    target = gated_target(command, session_cwd)
+    if target is None:
         return 0
-    cwd = toplevel(Path(payload.get("cwd") or os.getcwd()))
+    try:
+        cwd = toplevel(target)
+    except GitError:
+        return 0                          # not a git repo: pass through
+    if not is_hooked_checkout(cwd):
+        return 0
     if is_green(cwd):
         return 0
+    tid = tree_id(cwd)          # before the suite: an edit during the run stays stale
     run = subprocess.run(list(suite), cwd=str(cwd),
                          capture_output=True, text=True)
     if run.returncode == 0:
-        write_marker(cwd, tree_id(cwd))
+        write_marker(cwd, tid)
         return 0
     tail = "\n".join((run.stdout + run.stderr).splitlines()[-TAIL_LINES:])
     _deny("commit gate: `make test` is red on this tree, so the command was"

@@ -32,6 +32,19 @@ def repo(tmp_path: Path) -> Path:
     _git(tmp_path, "config", "user.name", "t")
     (tmp_path / "a.py").write_text("x = 1\n")
     (tmp_path / ".gitignore").write_text("ignored.txt\n")
+    (tmp_path / "scripts" / "hooks").mkdir(parents=True)
+    (tmp_path / "scripts" / "hooks" / "mark_green.py").write_text("# marker\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "init")
+    return tmp_path
+
+
+@pytest.fixture
+def foreign_repo(tmp_path: Path) -> Path:
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "a.py").write_text("x = 1\n")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-q", "-m", "init")
     return tmp_path
@@ -63,6 +76,19 @@ def test_marker_lives_in_the_git_dir(repo: Path):
     _tree.write_marker(repo, "abc")
     assert _tree.marker_path(repo) == (repo / ".git" / "fund-green-tree").resolve()
     assert _tree.read_marker(repo) == "abc"
+
+
+def test_marker_lives_in_a_linked_worktrees_own_git_dir(repo: Path):
+    _git(repo, "worktree", "add", str(repo / "wt"), "-b", "wt")
+    assert _tree.marker_path(repo / "wt") == (
+        repo / ".git" / "worktrees" / "wt" / "fund-green-tree").resolve()
+    _tree.write_marker(repo / "wt", "abc")
+    assert _tree.read_marker(repo) is None
+
+
+def test_git_error_carries_stderr(tmp_path: Path):
+    with pytest.raises(_tree.GitError, match="not a git repository"):
+        _tree.toplevel(tmp_path)
 
 
 def test_is_green_compares_marker_to_current_tree(repo: Path):
@@ -186,6 +212,43 @@ def test_commit_gate_resolves_cwd_from_a_subdirectory(repo: Path, capsys):
     assert _tree.read_marker(repo) == _tree.tree_id(repo)
 
 
+def test_commit_gate_passes_through_a_foreign_repo(foreign_repo: Path, capsys):
+    assert commit_gate.main(_payload(foreign_repo, "git commit -m x"),
+                            suite=RED) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_commit_gate_passes_through_outside_git(tmp_path: Path, capsys):
+    assert commit_gate.main(_payload(tmp_path, "git commit -m x"),
+                            suite=RED) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_commit_gate_gates_the_minus_c_target(repo: Path, capsys):
+    wt = repo / "wt"
+    _git(repo, "worktree", "add", str(wt), "-b", "wt")
+    (wt / "a.py").write_text("x = 2\n")
+    _tree.write_marker(repo, _tree.tree_id(repo))
+    assert commit_gate.main(_payload(repo, f"git -C {wt} commit -m x"),
+                            suite=OK) == 0
+    assert capsys.readouterr().out == ""
+    assert _tree.read_marker(wt) == _tree.tree_id(wt)
+    # reverse: main stale, worktree green, so the suite never runs
+    (repo / "a.py").write_text("x = 3\n")
+    assert commit_gate.main(_payload(repo, f"git -C {wt} commit -m x"),
+                            suite=RED) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_commit_gate_marks_the_pre_suite_tree(repo: Path):
+    (repo / "a.py").write_text("x = 2\n")
+    touch = (sys.executable, "-c",
+             "open('a.py','a').write('# touched by suite\\n')")
+    assert commit_gate.main(_payload(repo, "git commit -m x"), suite=touch) == 0
+    assert not _tree.is_green(repo)
+    assert _tree.read_marker(repo) is not None
+
+
 # --- stop_gate -------------------------------------------------------------------
 
 import stop_gate  # noqa: E402
@@ -221,6 +284,18 @@ def test_stop_gate_blocks_a_dirty_stale_tree_once(repo: Path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["decision"] == "block"
     assert "make test" in out["reason"]
+    assert "another session's" in out["reason"]
+
+
+def test_stop_gate_passes_through_a_foreign_repo(foreign_repo: Path, capsys):
+    (foreign_repo / "a.py").write_text("x = 2\n")
+    assert stop_gate.main(_payload(foreign_repo, stop_hook_active=False)) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_stop_gate_passes_through_outside_git(tmp_path: Path, capsys):
+    assert stop_gate.main(_payload(tmp_path, stop_hook_active=False)) == 0
+    assert capsys.readouterr().out == ""
 
 
 def test_stop_gate_never_runs_a_suite(repo: Path):
@@ -244,6 +319,10 @@ def test_settings_file_registers_both_hooks_and_carries_no_personal_allow():
     pre = [h for m in hooks["PreToolUse"] if m["matcher"] == "Bash"
            for h in m["hooks"]]
     assert any("scripts/hooks/commit_gate.py" in h["command"] for h in pre)
+    assert [m["matcher"] for m in hooks["PreToolUse"]] == ["Bash"]
+    assert any(h["timeout"] == 300 and "commit_gate.py" in h["command"]
+               for h in pre)
+    assert "Read(//**/.env)" in settings["permissions"]["deny"]
     stop = [h for m in hooks["Stop"] for h in m["hooks"]]
     assert any("scripts/hooks/stop_gate.py" in h["command"] for h in stop)
     for h in pre + stop:
