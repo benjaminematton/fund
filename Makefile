@@ -34,6 +34,13 @@ deps:
 deps-relock:
 	@$(BOOT_PY) scripts/relock.py
 
+# Add a dependency without moving any existing pin: the committed lock's pins
+# are pip constraints, so only the new package and its requirements resolve.
+# A conflict fails loudly — that is when a real deps-relock is due.
+.PHONY: deps-add
+deps-add:
+	@$(BOOT_PY) scripts/relock.py --hold
+
 # Full offline suite: no network, no API keys. Must pass before every commit.
 # On green, record the tree id so the verification hooks (scripts/hooks/) know
 # this exact tree passed — a hand-run `make test` is a green run for them too.

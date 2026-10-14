@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 vbt = ["vectorbt>=1.0.0,<1.1"]   # fast engine; numba>=0.60 comes with it
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pyright[nodejs]>=1.1.400,<2"]
 
 # CI must enforce (same rules as gate/):
 #  - stratgate/ and fundbt/ import no LLM/SDK code
@@ -30,3 +30,10 @@ markers = [
 ]
 filterwarnings = ["error::DeprecationWarning:fund.*",
   "ignore::DeprecationWarning:websockets.legacy.*"]
+
+[tool.pyright]
+# scripts/check_typing.py runs pyright over exactly this list and ratchets
+# the per-file error counts in scripts/typing_baseline.json (only down).
+include = ["agents", "orchestrator", "gate", "state", "stratgate", "calibration",
+           "fundbt", "scripts", "evals", "market", "slackkit", "devcheck"]
+typeCheckingMode = "standard"

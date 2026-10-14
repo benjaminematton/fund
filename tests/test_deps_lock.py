@@ -196,6 +196,19 @@ def test_relock_reuses_the_committed_header(tmp_path):
         "# why this file exists\n#\n# REGENERATE: make deps-relock\n")
 
 
+def test_held_pins_keeps_exact_pins_and_drops_header_and_installer():
+    text = "# header\n# more\nalpha==1.0\nPip==24.0\nsetuptools==70.0\nzeta==2.1\n\n"
+    assert relock.held_pins(text) == "alpha==1.0\nzeta==2.1\n"
+
+
+def test_hold_constraints_come_from_the_committed_lock():
+    committed = relock.committed_lock_text()
+    held = relock.held_pins(committed)
+    assert "claude-agent-sdk==" in committed
+    assert "claude-agent-sdk==" in held
+    assert not any(line.startswith("#") for line in held.splitlines())
+
+
 def test_drift_reports_a_version_mismatch(tmp_path):
     """The case that actually happened: present, importable, wrong version."""
     lock = tmp_path / "requirements.lock"
