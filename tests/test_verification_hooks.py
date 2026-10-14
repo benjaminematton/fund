@@ -353,3 +353,69 @@ def test_settings_file_registers_both_hooks_and_carries_no_personal_allow():
     assert "allow" not in perms
     assert "additionalDirectories" not in perms
     assert "/Users/" not in json.dumps(settings)
+
+
+# --- registered command resolution -----------------------------------------------
+
+def _registered_commands() -> dict:
+    settings = json.loads((ROOT / ".claude" / "settings.json").read_text())
+    pre = [h["command"] for m in settings["hooks"]["PreToolUse"] for h in m["hooks"]][0]
+    stop = [h["command"] for m in settings["hooks"]["Stop"] for h in m["hooks"]][0]
+    return {"pre": pre, "stop": stop}
+
+
+def _run_registered(command: str, cwd, project_dir, payload) -> subprocess.CompletedProcess:
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project_dir))
+    stdin = payload if isinstance(payload, str) else json.dumps(payload)
+    return subprocess.run(["sh", "-c", command], cwd=str(cwd), env=env,
+                          input=stdin, capture_output=True, text=True)
+
+
+def _reg_payload(cwd, command: str, stop_hook_active: bool = False) -> dict:
+    return {"cwd": str(cwd), "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "stop_hook_active": stop_hook_active}
+
+
+@pytest.mark.parametrize("which", ["pre", "stop"])
+def test_registered_commands_exit_0_when_no_checkout_has_the_script(tmp_path, which):
+    cwd = tmp_path / "a"
+    cwd.mkdir()
+    project_dir = tmp_path / "b"
+    project_dir.mkdir()
+    r = _run_registered(_registered_commands()[which], cwd, project_dir,
+                        _reg_payload(cwd, "git commit -m x"))
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+
+
+@pytest.mark.parametrize("which", ["pre", "stop"])
+def test_registered_commands_resolve_the_cwd_checkouts_copy(tmp_path, which):
+    project_dir = tmp_path / "b"
+    project_dir.mkdir()
+    cmd = _registered_commands()[which]
+    r = _run_registered(cmd, ROOT, project_dir,
+                        _reg_payload(ROOT, "gh pr list", stop_hook_active=True))
+    assert (r.returncode, r.stdout) == (0, "")
+    # Malformed stdin makes the script itself raise: proves python ran.
+    r = _run_registered(cmd, ROOT, project_dir, "not json")
+    assert r.returncode != 0
+    assert "json" in r.stderr.lower()
+
+
+def test_registered_pre_command_passes_a_commit_outside_any_repo(tmp_path):
+    cwd = tmp_path / "a"
+    cwd.mkdir()
+    project_dir = tmp_path / "b"
+    project_dir.mkdir()
+    r = _run_registered(_registered_commands()["pre"], ROOT, project_dir,
+                        _reg_payload(cwd, "git commit -m x"))
+    assert (r.returncode, r.stdout) == (0, "")
+
+
+@pytest.mark.parametrize("which", ["pre", "stop"])
+def test_registered_commands_fall_back_to_the_launch_root(tmp_path, which):
+    cwd = tmp_path / "a"
+    cwd.mkdir()
+    r = _run_registered(_registered_commands()[which], cwd, ROOT, "not json")
+    assert r.returncode != 0
+    assert "json" in r.stderr.lower()
