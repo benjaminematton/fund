@@ -19,15 +19,31 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "typing_baseline.json"
 
 
+def include_dirs(root: Path) -> list[str]:
+    """[tool.pyright].include from root/pyproject.toml; raises if any entry
+    is not an existing directory, so a renamed package cannot silently fall
+    out of the ratchet (pyright itself only warns and exits 0)."""
+    with (root / "pyproject.toml").open("rb") as fh:
+        include = tomllib.load(fh)["tool"]["pyright"]["include"]
+    missing = [d for d in include if not (root / d).is_dir()]
+    if missing:
+        raise RuntimeError(
+            f"[tool.pyright].include names missing directories: {missing}"
+            " — fix pyproject.toml before trusting the baseline")
+    return include
+
+
 def run_pyright(root: Path = ROOT, python: str = sys.executable) -> dict[str, list[str]]:
     """Error diagnostics per file, repo-relative posix paths. Files with no
     errors are absent. Raises if pyright produced no report at all."""
+    include_dirs(root)
     proc = subprocess.run(
         [python, "-m", "pyright", "--outputjson", "--pythonpath", python],
         cwd=str(root), capture_output=True, text=True)
@@ -35,6 +51,8 @@ def run_pyright(root: Path = ROOT, python: str = sys.executable) -> dict[str, li
         raise RuntimeError(
             f"pyright produced no JSON (exit {proc.returncode}):\n{proc.stderr}")
     report = json.loads(proc.stdout)
+    if report["summary"]["filesAnalyzed"] == 0:
+        raise RuntimeError("pyright analyzed 0 files: check [tool.pyright].include")
     diags: dict[str, list[str]] = {}
     for d in report["generalDiagnostics"]:
         if d["severity"] != "error":

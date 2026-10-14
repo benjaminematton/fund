@@ -37,3 +37,5 @@ filterwarnings = ["error::DeprecationWarning:fund.*",
 include = ["agents", "orchestrator", "gate", "state", "stratgate", "calibration",
            "fundbt", "scripts", "evals", "market", "slackkit", "devcheck"]
 typeCheckingMode = "standard"
+# `# type: ignore` cannot silence the ratchet (0 uses in scope at 2026-10-14).
+enableTypeIgnoreComments = false

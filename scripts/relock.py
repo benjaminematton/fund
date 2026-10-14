@@ -57,16 +57,15 @@ def render_lock(header: str, freeze: str) -> str:
 def held_pins(lock_text: str) -> str:
     """The lock's exact pins as a pip constraints file: name==version lines
     only, header and installer lines dropped."""
-    lines = []
-    for raw in lock_text.splitlines():
-        m = PIN.match(raw.strip())
-        if m and m.group(1).lower() not in INSTALLER:
-            lines.append(m.group(0))
-    return "".join(f"{line}\n" for line in lines)
+    return render_lock("", lock_text)
 
 
 def committed_lock_text() -> str:
-    """The lock as committed at HEAD, so a dirty working lock cannot poison it."""
+    """The lock as committed at HEAD, so a dirty working lock cannot poison it.
+
+    Reads HEAD, not the working file, so two `deps-add` runs before a commit
+    constrain against the same committed pins; commit between them if the
+    second must honour the first's additions."""
     return subprocess.check_output(
         ["git", "show", "HEAD:requirements.lock"], cwd=ROOT, text=True)
 

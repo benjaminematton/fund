@@ -1,12 +1,15 @@
 """The typecheck ratchet (docs/superpowers/specs/
 2026-10-13-agent-self-verification-design.md, piece 1). The pyright run is
-injected in every test but one, so the ratchet's rules are pinned without
-spending two seconds of pyright each."""
+injected in most tests, so the ratchet's rules are pinned without spending
+two seconds of pyright each. Real pyright runs in three: the tmp-package run,
+the committed-baseline check, and the missing-include refusal."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+import pytest
 
 import scripts.check_typing as ct
 
@@ -94,3 +97,28 @@ def test_committed_baseline_matches_the_tree():
     current = ct.counts(ct.run_pyright())
     regressions, _ = ct.compare(current, baseline)
     assert regressions == []
+
+
+def test_include_dirs_rejects_a_missing_entry(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pyright]\ninclude = ["pkg", "gone"]\n')
+    (tmp_path / "pkg").mkdir()
+    with pytest.raises(RuntimeError, match=r"missing directories: \['gone'\]"):
+        ct.include_dirs(tmp_path)
+
+
+def test_include_dirs_returns_the_list_when_all_exist(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[tool.pyright]\ninclude = ["pkg"]\n')
+    (tmp_path / "pkg").mkdir()
+    assert ct.include_dirs(tmp_path) == ["pkg"]
+
+
+def test_run_pyright_refuses_a_missing_include_entry(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pyright]\ninclude = ["gone"]\ntypeCheckingMode = "standard"\n')
+    with pytest.raises(RuntimeError, match="missing directories"):
+        ct.run_pyright(root=tmp_path)
+
+
+def test_committed_include_list_exists():
+    assert ct.include_dirs(ct.ROOT)
