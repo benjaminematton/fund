@@ -34,6 +34,13 @@ deps:
 deps-relock:
 	@$(BOOT_PY) scripts/relock.py
 
+# Add a dependency without moving any existing pin: the committed lock's pins
+# are pip constraints, so only the new package and its requirements resolve.
+# A conflict fails loudly — that is when a real deps-relock is due.
+.PHONY: deps-add
+deps-add:
+	@$(BOOT_PY) scripts/relock.py --hold
+
 # Full offline suite: no network, no API keys. Must pass before every commit.
 # On green, record the tree id so the verification hooks (scripts/hooks/) know
 # this exact tree passed — a hand-run `make test` is a green run for them too.
@@ -43,9 +50,11 @@ test: lint
 
 # Purity lint: no LLM imports, no wall clock in business logic (CLAUDE.md invariant 3).
 # Alert-code lint: every alert carries a stable code (docs/agents/devops.md).
+# Typecheck ratchet: pyright per-file errors never exceed scripts/typing_baseline.json.
 lint: deps
 	$(PYTHON) scripts/check_purity.py
 	$(PYTHON) scripts/check_alert_codes.py
+	$(PYTHON) scripts/check_typing.py
 
 # Full simulated trading day: injected clock, FakeSlack, recorded LLM decisions,
 # real tool/gate/DB execution. No network, no API keys, no LLM cost.

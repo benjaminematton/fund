@@ -71,9 +71,10 @@ on growth.
   one is below, it exits 0 and prints the lower counts with "baseline can
   shrink: commit the regenerated file". `--write-baseline` regenerates it.
 - **Only down, by human commit.** The checker cannot see history, so the
-  direction rule is a review rule, backed by two mechanisms: the file is
-  added to `devloop/tamper_guard.py`'s `PROTECTED_FILES`, so the unattended
-  loop cannot raise it, and CI runs the checker so a raised baseline is
+  direction rule is a review rule, backed by two mechanisms: the file lives
+  under `scripts/`, already in `devloop/tamper_guard.py`'s `PROTECTED_DIRS`,
+  so the unattended loop cannot raise it (verified at plan time; no guard
+  edit needed), and CI runs the checker so a raised baseline is
   visible in the PR diff.
 - **Pin:** `pyright[nodejs]` in the `dev` extra of `pyproject.toml`,
   upper-bounded at the next major, exact version taken by `make deps-relock`
