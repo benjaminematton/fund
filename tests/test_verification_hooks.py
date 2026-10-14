@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -298,6 +299,25 @@ def test_stop_gate_passes_through_outside_git(tmp_path: Path, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_stop_gate_passes_through_a_deleted_cwd(tmp_path: Path, capsys):
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    gone.rmdir()
+    assert stop_gate.main(_payload(gone, stop_hook_active=False)) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_git_c_target_expands_tilde():
+    assert commit_gate._git_c_target(["git", "-C", "~/x", "commit"],
+                                     Path("/s")) == Path(os.path.expanduser("~")) / "x"
+
+
+def test_commit_gate_passes_through_an_unresolvable_minus_c_path(repo: Path, capsys):
+    assert commit_gate.main(_payload(repo, "git -C does-not-exist commit -m x"),
+                            suite=RED) == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_stop_gate_never_runs_a_suite(repo: Path):
     """There is no suite parameter to inject: the gate has no subprocess
     other than git. Pinned on the source so a future 'helpful' run cannot
@@ -323,6 +343,7 @@ def test_settings_file_registers_both_hooks_and_carries_no_personal_allow():
     assert any(h["timeout"] == 300 and "commit_gate.py" in h["command"]
                for h in pre)
     assert "Read(//**/.env)" in settings["permissions"]["deny"]
+    assert "Read(//**/.env.*)" in settings["permissions"]["deny"]
     stop = [h for m in hooks["Stop"] for h in m["hooks"]]
     assert any("scripts/hooks/stop_gate.py" in h["command"] for h in stop)
     for h in pre + stop:

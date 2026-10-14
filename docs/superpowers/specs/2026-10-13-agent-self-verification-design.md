@@ -135,9 +135,10 @@ seat hooks that live only in `agents/runtime.py`; see "Canonical edits".
 3. Pass through if that path is not inside a git repository, or if the
    repository is not a checkout of this repo (no `scripts/hooks/mark_green.py`
    at its top level). The hooks never govern another repo a session happens to
-   be working in.
+   be working in. An unresolvable path (a `-C` target that does not exist, or
+   a deleted cwd) also passes through; `~` in a `-C` value is expanded.
 4. Compute the tree id. If it equals the marker, exit 0.
-5. Otherwise capture the tree id, then run `make test` in that cwd (which
+5. Otherwise capture the tree id, then run `make test` at the top level of that checkout (which
    bootstraps the venv if needed). Green: write the captured id as the marker,
    so an edit made while the suite ran leaves the tree stale; exit 0. Red: emit
    `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -192,7 +193,8 @@ so turn ends stay fast.
   catches it.
 - The command matcher is best-effort against an honest agent that forgot to
   test, not a lock against evasion: `env`/`time` wrappers, `bash -c`,
-  `if ... then` bodies and line continuations pass through.
+  `if ... then` bodies and line continuations pass through. Only the first
+  gated segment of a compound command is examined.
 
 **Acceptance** (tests against a temporary git repo; the suite command is
 injected so tests never recurse into `make test`):

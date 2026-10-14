@@ -31,6 +31,8 @@ def _git(cwd: Path, *args: str, env: dict | None = None) -> str:
     except subprocess.CalledProcessError as e:
         raise GitError(f"git {' '.join(args)} failed in {cwd}: "
                        f"{e.stderr.strip()}") from e
+    except OSError as e:                  # bad cwd: missing or not a directory
+        raise GitError(f"git {' '.join(args)} failed in {cwd}: {e}") from e
     return out.stdout.strip()
 
 

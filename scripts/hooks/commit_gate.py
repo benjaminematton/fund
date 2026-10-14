@@ -70,7 +70,7 @@ def _git_c_target(toks: list, cwd: Path) -> Path:
     i = 1
     while i < len(toks) and toks[i].startswith("-"):
         if toks[i] == "-C" and i + 1 < len(toks):
-            target = target / toks[i + 1]
+            target = target / os.path.expanduser(toks[i + 1])
         i += 2 if toks[i] in _GIT_VALUE_OPTS else 1
     return target
 
