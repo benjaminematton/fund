@@ -74,6 +74,6 @@ thresholds are Benjamin's, in his own window.
   - `evals/live.py` (PR #245): `strategy_critiques` is scanned by seat AND ET run-day via
     `created_at` (a seat-only scan returns every critique ever written on the live DB).
   - `make replay REC=<file>` (PR #250) exists: `scripts/replay_day.py` imports
-    `tests.test_sim_day.sim_day` (no second harness); a single-seat recording replays as a
+    `tests.simday.sim_day` (no second harness); a single-seat recording replays as a
     whole day with the golden day filling the other seats. Only hand-authored fixtures can be
     replayed — `make_decision_recorder` is still wired nowhere in production.

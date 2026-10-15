@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_sim_day import golden_day
+from tests.simday import golden_day
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "score_day.py"
 

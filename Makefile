@@ -1,6 +1,6 @@
 # fund — see CLAUDE.md for what each mode means.
 
-.PHONY: test lint sim-day replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status mcp-probe record-status status-faithful
+.PHONY: test lint sim-day sim-report replay live-day live-paper close-pnl resolve weights reflect schema-pin surface-pin score-day preflight dev-status mcp-probe record-status status-faithful
 .PHONY: staging-day staging-reset eval eval-report critic-g1 critic-gate
 .PHONY: register-spec
 .PHONY: eval-critic-dev eval-critic-holdout
@@ -61,8 +61,14 @@ lint: deps
 sim-day: deps
 	$(PYTHON) -m pytest tests/test_sim_day.py -v
 
+# Render one sim-day scenario as a human reads it: the Slack transcript, the
+# day's rows, the scorecard. stdout only, never a fixture — run it on master
+# and on a branch and diff. Scenario names: tests/simday.py SCENARIOS.
+sim-report: deps
+	$(PYTHON) scripts/sim_report.py $(SCENARIO)
+
 # Replay ONE recording's LLM decisions against current code: the same simulated
-# day sim-day runs (tests/test_sim_day.py's composition — injected clock,
+# day sim-day runs (tests/simday.py's composition — injected clock,
 # FakeSlack, FakeAlpaca, temp DB, REAL tools/gate/hooks), with the recording's
 # seats slotted into their stage turns and the golden day's recordings filling
 # the rest. Offline, no keys, no LLM. Exit 0 iff the day audits clean
