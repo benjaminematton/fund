@@ -27,11 +27,23 @@ def test_golden_report_shows_the_day_from_its_three_sources():
     assert "== slack ==" in text
     assert "-- #trade-log --" in text and "-- #pnl --" in text
     assert "bought *66 NVDA* at *$180.14*" in text
-    for table in ("signals", "decisions", "tickets", "orders", "events"):
+    for table in ("signals", "decisions", "critiques", "tickets", "orders",
+                  "events", "checkpoints", "costs", "offered"):
         assert f"== {table} (" in text, table
     assert TID in text
+    assert "== broker ==" in text
+    assert "-- place_attempts (1) --" in text
+    assert "symbol='NVDA'" in text
     assert "== scorecard ==" in text
     assert "SCORECARD 2026-07-06" in text
+
+
+def test_stop_expires_report_shows_the_broker_request():
+    out = _run("stop_expires")
+    assert out.returncode == 0, out.stderr
+    text = out.stdout
+    assert "stop_loss_stop_price='168.0'" in text
+    assert "-- open_orders (0) --" in text
 
 
 def test_default_scenario_is_golden():

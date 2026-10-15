@@ -504,3 +504,5 @@ def test_every_scenario_runs_and_completes_or_alerts(tmp_path):
     for name in SCENARIOS:
         sim = run_scenario(name, tmp_path / name)
         assert sim.run_date, name
+        assert _checkpoints(sim).get("close") == "done", name
+        _assert_day_completed(sim)

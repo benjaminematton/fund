@@ -68,7 +68,7 @@ sim-report: deps
 	$(PYTHON) scripts/sim_report.py $(SCENARIO)
 
 # Replay ONE recording's LLM decisions against current code: the same simulated
-# day sim-day runs (tests/test_sim_day.py's composition — injected clock,
+# day sim-day runs (tests/simday.py's composition — injected clock,
 # FakeSlack, FakeAlpaca, temp DB, REAL tools/gate/hooks), with the recording's
 # seats slotted into their stage turns and the golden day's recordings filling
 # the rest. Offline, no keys, no LLM. Exit 0 iff the day audits clean

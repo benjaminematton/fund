@@ -228,8 +228,11 @@ and a branch. For a system whose UI is Slack and a database, that is what
   in fixed order:
   1. the Slack transcript as `FakeSlack` recorded it, by channel, in posting
      order;
-  2. the day's rows from `signals`, `decisions`, `tickets`, `orders`,
-     `events`, `alerts`, in stable (primary key) order, as aligned text;
+  2. the day's rows from `signals`, `decisions`, `critiques`, `tickets`,
+     `orders`, `events`, `checkpoints`, `costs`, `offered`, in rowid order,
+     as aligned text (alerts are `events` of kind `alert`; there is no
+     `alerts` table); then the fake broker's `place_attempts`,
+     `open_positions()` and `open_orders()`;
   3. the scorecard, by running `scripts/score_day.py <db> <run_date>` as a
      subprocess, unchanged; it already takes both on argv `[R]`, and the
      sim's `run_date` is on `SimResult`.
