@@ -48,7 +48,7 @@ def _locked() -> dict[str, str]:
 
 
 def _declared() -> list[Requirement]:
-    project = tomllib.load(PYPROJECT.open("rb"))["project"]
+    project = tomllib.loads(PYPROJECT.read_text())["project"]
     deps = project["dependencies"] + project["optional-dependencies"]["dev"]
     return [Requirement(d) for d in deps]
 
