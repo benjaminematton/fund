@@ -90,10 +90,10 @@ def _assert_day_completed(sim: SimResult) -> None:
 
 # --- 1. golden day ----------------------------------------------------------
 
-def test_golden_day(tmp_path):
+def test_golden_day(tmp_path, closing):
     """NVDA active, analyst bullish/72, PM buys 80, gate caps at the golden 66,
     order fills at 180.14 through the real fill-poll."""
-    sim = golden_day(tmp_path)
+    sim = closing(golden_day(tmp_path))
 
     # each seat's OWN signal, not run_research's neutral/0 default. Both
     # lenses land under distinct agents — the whole point of a second seat.
@@ -171,10 +171,10 @@ def test_golden_day(tmp_path):
     _assert_day_completed(sim)
 
 
-def test_golden_day_records_its_offered_set(tmp_path):
+def test_golden_day_records_its_offered_set(tmp_path, closing):
     """specs/acceptance.md Phase 2b: under sim, the pre-gate stage writes one
     `offered` row per surviving ticker. The golden day offers NVDA alone."""
-    sim = golden_day(tmp_path)
+    sim = closing(golden_day(tmp_path))
     rows = sim.conn.execute(
         "SELECT run_date, ticker FROM offered").fetchall()
     assert [(r["run_date"], r["ticker"]) for r in rows] == [(sim.run_date, "NVDA")]
@@ -182,10 +182,10 @@ def test_golden_day_records_its_offered_set(tmp_path):
 
 # --- 2. all-hold day --------------------------------------------------------
 
-def test_all_hold_day(tmp_path):
+def test_all_hold_day(tmp_path, closing):
     """PM holds: nothing is ticketed, the exec seat is never woken (no LLM
     spend on a hold day), and the day still completes and still posts."""
-    sim = run_scenario("all_hold", tmp_path)
+    sim = closing(run_scenario("all_hold", tmp_path))
 
     d = _decision(sim, "NVDA")
     assert (d["action"], d["qty"], d["status"]) == ("hold", 0, "held")
@@ -218,9 +218,9 @@ def test_all_hold_day(tmp_path):
 
 # --- 3. mixed day -----------------------------------------------------------
 
-def test_mixed_day(tmp_path):
+def test_mixed_day(tmp_path, closing):
     """Two tickers, one traded and one held, in the same day."""
-    sim = run_scenario("mixed", tmp_path)
+    sim = closing(run_scenario("mixed", tmp_path))
 
     nvda, msft = _decision(sim, "NVDA"), _decision(sim, "MSFT")
     assert (nvda["action"], nvda["status"]) == ("buy", "executed")
@@ -245,11 +245,11 @@ def test_mixed_day(tmp_path):
 
 # --- 4. gate-reject day -----------------------------------------------------
 
-def test_gate_reject_day(tmp_path):
+def test_gate_reject_day(tmp_path, closing):
     """The vol feed goes NaN between the PM's submit and the gate's enforce
     pass. The decision is rejected, nothing is ticketed, nothing is placed,
     the reject is announced, and the day still completes (invariant 4)."""
-    sim = run_scenario("gate_reject", tmp_path)
+    sim = closing(run_scenario("gate_reject", tmp_path))
 
     d = _decision(sim, "NVDA")
     assert (d["action"], d["qty"], d["status"]) == ("buy", 80, "rejected")
@@ -266,14 +266,14 @@ def test_gate_reject_day(tmp_path):
     _assert_day_completed(sim)
 
 
-def test_gate_reject_day_circuit_breaker(tmp_path):
+def test_gate_reject_day_circuit_breaker(tmp_path, closing):
     """Fix 4: a blanket `except Exception: reject('gate_error')` can fake the
     NaN case above by simply blowing up on anything. It cannot fake a
     circuit-breaker rejection, which is a value the gate computes correctly
     and returns as data, never an exception. The daily P&L feed breaches
     CIRCUIT_BREAKER (-0.03) between the PM's submit and the gate's enforce
     pass."""
-    sim = run_scenario("circuit_breaker", tmp_path)
+    sim = closing(run_scenario("circuit_breaker", tmp_path))
 
     d = _decision(sim, "NVDA")
     assert (d["action"], d["qty"], d["status"]) == ("buy", 80, "rejected")
@@ -292,12 +292,12 @@ def test_gate_reject_day_circuit_breaker(tmp_path):
 
 # --- 5. two orders in one day ------------------------------------------------
 
-def test_two_orders_same_day(tmp_path):
+def test_two_orders_same_day(tmp_path, closing):
     """Fix 3: NVDA buys, MSFT sells, in the same day — two tickets, two
     orders, both live in reconcile_orders' multi-pending poll loop and both
     rendered in the same fill-line/trade-log pass at once, for the first
     time at any level."""
-    sim = run_scenario("two_orders", tmp_path)
+    sim = closing(run_scenario("two_orders", tmp_path))
 
     nvda, msft = _decision(sim, "NVDA"), _decision(sim, "MSFT")
     assert (nvda["action"], nvda["qty"], nvda["status"]) == ("buy", 80, "executed")
@@ -332,7 +332,7 @@ def test_two_orders_same_day(tmp_path):
 
 # --- 6. the PM can actually see the analyst's work ---------------------------
 
-def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
+def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path, closing):
     """README's headline claim, as a test: "what the PM was shown is what the
     gate enforces".
 
@@ -342,7 +342,7 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
     values never go into prompts). The day then runs the REAL gate against the
     same fixture, so the number the PM was shown and the number the broker was
     sent are compared, not assumed."""
-    sim = run_scenario("pm_brief", tmp_path)
+    sim = closing(run_scenario("pm_brief", tmp_path))
 
     # the analyst's brief: account context + its own journal, nothing PM-only
     analyst = _brief(sim, "research")
@@ -391,7 +391,7 @@ def test_pm_brief_carries_the_signal_and_the_budget_the_gate_enforces(tmp_path):
     _assert_day_completed(sim)
 
 
-def test_the_pm_brief_renders_the_row_the_scoring_job_wrote(tmp_path):
+def test_the_pm_brief_renders_the_row_the_scoring_job_wrote(tmp_path, closing):
     """specs/acceptance.md Phase 2b item 2, under sim: the PM's brief
     `weights` section equals the latest row for every analyst seat, each
     with its as_of_date — read off the replayed tool result, never
@@ -411,8 +411,8 @@ def test_the_pm_brief_renders_the_row_the_scoring_job_wrote(tmp_path):
     expected = latest_weights(conn)
     conn.close()
 
-    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
-                  pm_recs=("mvf_pm_brief.jsonl",))
+    sim = closing(sim_day(tmp_path, market={"NVDA": _nvda()},
+                          pm_recs=("mvf_pm_brief.jsonl",)))
 
     pm = _brief(sim, "decision")
     assert pm["weights"] == expected
@@ -423,7 +423,7 @@ def test_the_pm_brief_renders_the_row_the_scoring_job_wrote(tmp_path):
 
 # --- 5. the stop that expired at the bell (2026-08-19) ----------------------
 
-def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path):
+def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path, closing):
     """2026-08-19, reproduced end to end. A stopped NVDA entry fills, its OTO
     stop leg then EXPIRES at the close exactly as the real one did on 08-17,
     and the day must not end quietly.
@@ -433,7 +433,7 @@ def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path):
     suite proved nothing then. This is what proving looks like: the real gate,
     the real hooks, the real fill-poll, and a broker whose protection dies on
     schedule."""
-    sim = run_scenario("stop_expires", tmp_path)
+    sim = closing(run_scenario("stop_expires", tmp_path))
 
     # the entry really happened, carrying the ticket's stop
     placed = sim.broker.place_attempts[0]
@@ -456,7 +456,7 @@ def test_the_stop_that_expired_at_the_bell_is_caught(tmp_path):
 
 # --- 7. the HOLD-only ticker never reaches a seat ---------------------------
 
-def test_a_hold_only_ticker_never_reaches_the_pipeline(tmp_path):
+def test_a_hold_only_ticker_never_reaches_the_pipeline(tmp_path, closing):
     """acceptance.md Phase 2, criterion 7: a ticker the pre-gate resolves to
     {buy:0, sell:0} "never reaches the LLM pipeline (assert zero agent turns
     for it)" (#157). The chain was pinned link by link in test_daily_stages.py
@@ -474,7 +474,7 @@ def test_a_hold_only_ticker_never_reaches_the_pipeline(tmp_path):
     AAPL carries no cash and no shares: nothing to buy, nothing to sell. NVDA
     trades its normal golden day beside it, so this is a drop and not an empty
     day."""
-    sim = run_scenario("hold_only_ticker", tmp_path)
+    sim = closing(run_scenario("hold_only_ticker", tmp_path))
 
     # the snapshot the PM was actually shown, off the replayed tool result
     assert list(_brief(sim, "decision")["allowed_actions"]) == ["NVDA"]
@@ -493,7 +493,7 @@ def test_a_hold_only_ticker_never_reaches_the_pipeline(tmp_path):
 
 # --- the scenario table --------------------------------------------------------
 
-def test_every_scenario_runs_and_completes_or_alerts(tmp_path):
+def test_every_scenario_runs_and_completes_or_alerts(tmp_path, closing):
     """Every name in SCENARIOS is a day the sim can run. Each test above
     builds its day from this table, so a scenario sim-report can render is a
     scenario a test pins — the table cannot drift from the assertions."""
@@ -502,7 +502,7 @@ def test_every_scenario_runs_and_completes_or_alerts(tmp_path):
         "golden", "all_hold", "mixed", "gate_reject", "circuit_breaker",
         "two_orders", "pm_brief", "stop_expires", "hold_only_ticker"}
     for name in SCENARIOS:
-        sim = run_scenario(name, tmp_path / name)
+        sim = closing(run_scenario(name, tmp_path / name))
         assert sim.run_date, name
         assert _checkpoints(sim).get("close") == "done", name
         _assert_day_completed(sim)

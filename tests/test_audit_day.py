@@ -55,9 +55,9 @@ run_day_script = _load_run_day()
 
 
 @pytest.fixture
-def day(tmp_path):
+def day(tmp_path, closing):
     """A real golden-day sim: DB path + the live connection to doctor it."""
-    sim = golden_day(tmp_path)
+    sim = closing(golden_day(tmp_path))
     return sim, str(tmp_path / "fund.sqlite")
 
 
@@ -102,21 +102,21 @@ def test_golden_day_audits_clean(day):
 
 
 @pytest.fixture
-def all_hold_day(tmp_path):
+def all_hold_day(tmp_path, closing):
     """Fix 2: the all-hold day shape — no orders, no tickets, so several
     checks are trivially satisfied. Must still audit clean for real, not by
     accident."""
-    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
-                  pm_recs=("mvf_pm_hold.jsonl",))
+    sim = closing(sim_day(tmp_path, market={"NVDA": _nvda()},
+                          pm_recs=("mvf_pm_hold.jsonl",)))
     return sim, str(tmp_path / "fund.sqlite")
 
 
 @pytest.fixture
-def gate_reject_day(tmp_path):
+def gate_reject_day(tmp_path, closing):
     """Fix 2: the gate-reject day shape — a rejected decision, no ticket, no
     order."""
-    sim = sim_day(tmp_path, market={"NVDA": _nvda()},
-                  feed_break={"NVDA": {"vol_60d": float("nan")}})
+    sim = closing(sim_day(tmp_path, market={"NVDA": _nvda()},
+                          feed_break={"NVDA": {"vol_60d": float("nan")}}))
     return sim, str(tmp_path / "fund.sqlite")
 
 
@@ -174,7 +174,7 @@ def test_undrained_outbox_event(day):
     assert _audit(day) == ["undrained outbox events: 1"]
 
 
-def test_a_total_slack_outage_never_audits_clean(tmp_path):
+def test_a_total_slack_outage_never_audits_clean(tmp_path, closing):
     """Fix 1 — reviewer's repro: a golden day run against a Slack whose
     post() raises on every call. The day must not audit clean.
 
@@ -182,7 +182,8 @@ def test_a_total_slack_outage_never_audits_clean(tmp_path):
     (that discarded the day's whole projection forever): the rows stay
     unposted and the undrained check is what fails the day — and every
     message is still deliverable once Slack is back."""
-    sim = sim_day(tmp_path, market={"NVDA": _nvda()}, slack=FailingSlack())
+    sim = closing(sim_day(tmp_path, market={"NVDA": _nvda()},
+                          slack=FailingSlack()))
     path = str(tmp_path / "fund.sqlite")
 
     projection_errors = sim.conn.execute(

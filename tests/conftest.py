@@ -15,6 +15,19 @@ def fund_db(tmp_path):
 
 
 @pytest.fixture
+def closing():
+    """Wrap each SimResult a test opens; closes them all at teardown."""
+    opened = []
+
+    def track(sim):
+        opened.append(sim)
+        return sim
+    yield track
+    for sim in opened:
+        sim.close()
+
+
+@pytest.fixture
 def sim_clock():
     """11:30 ET on the golden day (15:30 UTC)."""
     return SimClock(datetime(2026, 7, 6, 15, 30, tzinfo=timezone.utc))

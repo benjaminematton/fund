@@ -81,6 +81,9 @@ class SimResult:
     journals: Path
     outcomes: dict[str, list]      # stage -> the turn's replayed tool results
 
+    def close(self) -> None:
+        self.conn.close()
+
 
 def sim_day(tmp_path, *, market: dict,
             analyst_recs=("mvf_analyst.jsonl",),
