@@ -132,7 +132,8 @@ def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
     Fail closed everywhere the broker's answer is ambiguous — a cancel that
     errored while the order still works, a re-query that errored or returned
     nothing, a status that is not confirmed-dead, fill numbers that do not
-    parse, a dead status with no legal edge from the row's current status:
+    parse, a missing orders row, a dead status with no legal edge from the
+    row's current status:
     leave the row as-is for the next run and alert. Requesting a cancel twice
     is harmless (idempotent by client_order_id); recording a cancel that did
     not happen is not."""
@@ -168,7 +169,12 @@ def _timeout_close(conn, row, broker, now, max_wait_s) -> bool:
     dead = _CONFIRMED_DEAD[status]
     cur = conn.execute("SELECT status, qty FROM orders WHERE client_order_id=?",
                        (coid,)).fetchone()
-    from_status = cur["status"] if cur is not None else "submitted"
+    if cur is None:
+        append_alert(conn, "order_unreconciled",
+            f"order {coid[:8]} has no orders row at cap — nothing recorded;"
+            f" broker reports '{status}'", now_iso=now)
+        return False
+    from_status = cur["status"]
     if (from_status, dead) not in EDGES["orders"]:
         append_alert(conn, "order_unreconciled", stale.format(
             why=f"broker reports '{status}' but the order is '{from_status}'"
