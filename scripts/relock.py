@@ -72,7 +72,7 @@ def committed_lock_text() -> str:
 
 def main(argv: list[str]) -> int:
     hold = "--hold" in argv
-    project = tomllib.load(PYPROJECT.open("rb"))["project"]
+    project = tomllib.loads(PYPROJECT.read_text())["project"]
     deps = project["dependencies"] + project["optional-dependencies"]["dev"]
 
     with tempfile.TemporaryDirectory() as tmp:

@@ -38,8 +38,8 @@ score_day = _load()
 
 
 @pytest.fixture
-def day(tmp_path):
-    sim = golden_day(tmp_path)
+def day(tmp_path, closing):
+    sim = closing(golden_day(tmp_path))
     return sim, str(tmp_path / "fund.sqlite")
 
 

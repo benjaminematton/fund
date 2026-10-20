@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -12,6 +13,42 @@ def fund_db(tmp_path):
     conn = connect(tmp_path / "fund.sqlite")
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def closing():
+    """Wrap each SimResult a test opens; closes them all at teardown."""
+    opened = []
+
+    def track(sim):
+        opened.append(sim)
+        return sim
+    yield track
+    for sim in opened:
+        sim.close()
+
+
+@pytest.fixture(autouse=True)
+def _sim_connections_closed(monkeypatch):
+    """Every connection a sim day opens must be closed by the test's end."""
+    from tests import simday
+    opened: list[sqlite3.Connection] = []
+    real_connect = simday.connect
+
+    def recording_connect(db_path):
+        conn = real_connect(db_path)
+        opened.append(conn)
+        return conn
+    monkeypatch.setattr(simday, "connect", recording_connect)
+    yield
+    leaked = 0
+    for conn in opened:
+        try:
+            conn.execute("SELECT 1")
+        except sqlite3.ProgrammingError:
+            continue
+        leaked += 1
+    assert leaked == 0, f"{leaked} sim connection(s) left open"
 
 
 @pytest.fixture
