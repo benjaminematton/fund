@@ -390,6 +390,41 @@ def test_partial_then_canceled_records_the_shares_held(fund_db, sim_clock):
     assert _codes(fund_db) == ["partial_fill_manual_review", "order_partial_then_dead"]
 
 
+class _RowDeletedOnCancel:
+    """Another writer deletes the orders row while the cancel is in flight;
+    the re-query then reports canceled with a partial fill."""
+
+    def __init__(self, conn) -> None:
+        self.conn, self.canceled = conn, False
+
+    def get_order_by_client_order_id(self, coid):
+        if not self.canceled:
+            return {"status": "accepted", "filled_qty": "0",
+                    "filled_avg_price": None}
+        return {"status": "canceled", "filled_qty": "5",
+                "filled_avg_price": "180.0"}
+
+    def cancel_order(self, coid):
+        self.conn.execute("DELETE FROM orders WHERE client_order_id=?", (coid,))
+        self.conn.commit()
+        self.canceled = True
+
+
+def test_missing_orders_row_at_cap_fails_closed(fund_db, sim_clock):
+    """No orders row at the cap means nothing to transition from: record
+    nothing and alert, never guess the row was 'submitted'."""
+    _pending(fund_db, sim_clock, qty=10)
+    n = reconcile_orders(fund_db, clock=sim_clock,
+                         broker=_RowDeletedOnCancel(fund_db),
+                         sleep=lambda s: None, poll_s=3.0, max_wait_s=6.0)
+    assert n == 0
+    assert fund_db.execute(
+        "SELECT status FROM decisions").fetchone()["status"] == "approved"
+    assert fund_db.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='fill'").fetchone()["c"] == 0
+    assert _codes(fund_db)[-1:] == ["order_unreconciled"]
+
+
 def test_zero_fill_cancel_fails_the_decision_and_writes_no_fill(fund_db, sim_clock):
     """The other half: nothing was filled, so the decision is 'failed' and no
     fill event is written (the pre-existing path, pinned)."""
