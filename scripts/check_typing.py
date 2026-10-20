@@ -7,7 +7,9 @@ above its baseline, or any file with errors the baseline does not list,
 fails with the offending diagnostics. Counts below baseline pass and print a
 reminder to commit the lower file. The baseline only moves down, by human
 commit: `--write-baseline` is the one writer, and scripts/ is a tamper-guard
-protected dir so the unattended loop cannot raise it.
+protected dir so the unattended loop cannot raise it. A `pyright: ignore` comment counts as
+an error too (#261): `enableTypeIgnoreComments = false` already stops
+`type: ignore`, and this closes the one spelling pyright still honours.
 
 The interpreter is handed to pyright explicitly, so one invocation resolves
 the installed packages on a laptop (.venv), in CI (global pip) and on the
@@ -17,6 +19,7 @@ droplet.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -24,6 +27,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "typing_baseline.json"
+_IGNORE_COMMENT = re.compile(r"#\s*pyright:\s*ignore\b")
+_IGNORE_MESSAGE = "pyright: ignore comment silences an error without moving the baseline"
 
 
 def include_dirs(root: Path) -> list[str]:
@@ -38,6 +43,19 @@ def include_dirs(root: Path) -> list[str]:
             f"[tool.pyright].include names missing directories: {missing}"
             " — fix pyproject.toml before trusting the baseline")
     return include
+
+
+def ignore_comments(root: Path) -> dict[str, list[str]]:
+    """Every pyright ignore comment under the include dirs, as one error
+    diagnostic per line, repo-relative posix paths."""
+    diags: dict[str, list[str]] = {}
+    for d in include_dirs(root):
+        for f in sorted((root / d).rglob("*.py")):
+            for n, line in enumerate(f.read_text().splitlines(), 1):
+                if _IGNORE_COMMENT.search(line):
+                    rel = f.relative_to(root).as_posix()
+                    diags.setdefault(rel, []).append(f"{n}: {_IGNORE_MESSAGE}")
+    return diags
 
 
 def run_pyright(root: Path = ROOT, python: str = sys.executable) -> dict[str, list[str]]:
@@ -60,6 +78,8 @@ def run_pyright(root: Path = ROOT, python: str = sys.executable) -> dict[str, li
         rel = Path(d["file"]).resolve().relative_to(root.resolve()).as_posix()
         line = d["range"]["start"]["line"] + 1
         diags.setdefault(rel, []).append(f"{line}: {d['message'].splitlines()[0]}")
+    for rel, lines in ignore_comments(root).items():
+        diags.setdefault(rel, []).extend(lines)
     return diags
 
 

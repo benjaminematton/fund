@@ -122,3 +122,31 @@ def test_run_pyright_refuses_a_missing_include_entry(tmp_path):
 
 def test_committed_include_list_exists():
     assert ct.include_dirs(ct.ROOT)
+
+
+def test_ignore_comments_finds_every_spelling_per_file(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[tool.pyright]\ninclude = ["pkg"]\n')
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "hushed.py").write_text(
+        'a = 1  # pyright: ignore\n'
+        'b = 2  #pyright:ignore[reportAssignmentType]\n'
+        'c = 3  # type: ignore\n'
+        'd = 4  # a comment that mentions pyright: nothing here\n')
+    (tmp_path / "pkg" / "clean.py").write_text("y: int = 1\n")
+    assert ct.ignore_comments(tmp_path) == {"pkg/hushed.py": [
+        "1: pyright: ignore comment silences an error without moving the baseline",
+        "2: pyright: ignore comment silences an error without moving the baseline"]}
+
+
+def test_run_pyright_counts_a_pyright_ignore_comment_as_an_error(tmp_path):
+    """#261: pyright itself reports nothing for a silenced line, so the
+    ratchet must count the comment, or a regression hides behind it."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pyright]\ninclude = ["pkg"]\ntypeCheckingMode = "standard"\n')
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "hushed.py").write_text(
+        'x: int = "not an int"  # pyright: ignore[reportAssignmentType]\n')
+    diags = ct.run_pyright(root=tmp_path)
+    assert list(diags) == ["pkg/hushed.py"]
+    assert diags["pkg/hushed.py"] == [
+        "1: pyright: ignore comment silences an error without moving the baseline"]
